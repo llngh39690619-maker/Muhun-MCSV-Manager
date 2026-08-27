@@ -28,6 +28,7 @@ $stableLauncherDirectoryName = 'launcher'
 $stableLauncherFileName = 'Muhun MCSV Updater.exe'
 $startMenuShortcutName = 'Muhun MCSV Manager.lnk'
 $startupShortcutName = 'Muhun MCSV GUI Activation Broker.lnk'
+$serviceStopTimeoutSeconds = 120
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -658,9 +659,15 @@ namespace Muhun.Mcsv.Installer
         private const uint ScManagerConnect = 0x0001;
         private const uint ServiceQueryConfig = 0x0001;
         private const uint ServiceChangeConfig = 0x0002;
+        private const uint ServiceStart = 0x0010;
         private const uint ServiceConfigFailureActions = 2;
         private const uint ServiceConfigFailureActionsFlag = 4;
         private const int ErrorInsufficientBuffer = 122;
+        private const int ScActionNone = 0;
+        private const int ScActionRestart = 1;
+        private const int ScActionReboot = 2;
+        private const int ScActionRunCommand = 3;
+        private const int MaximumFailureActionCount = 1024;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ServiceFailureActionsNative
@@ -733,6 +740,8 @@ namespace Muhun.Mcsv.Installer
         public static void Restore(string serviceName, ServiceFailureConfigurationSnapshot snapshot)
         {
             if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            var managedActions = snapshot.Actions ?? Array.Empty<ServiceFailureAction>();
+            var requiredAccess = GetRequiredRestoreAccess(snapshot);
             IntPtr manager = IntPtr.Zero;
             IntPtr service = IntPtr.Zero;
             IntPtr actionsBuffer = IntPtr.Zero;
@@ -744,18 +753,24 @@ namespace Muhun.Mcsv.Installer
             {
                 manager = OpenSCManagerW(null, null, ScManagerConnect);
                 if (manager == IntPtr.Zero) ThrowLastError("OpenSCManagerW");
-                service = OpenServiceW(manager, serviceName, ServiceChangeConfig);
+                service = OpenServiceW(manager, serviceName, requiredAccess);
                 if (service == IntPtr.Zero) ThrowLastError("OpenServiceW");
 
-                var managedActions = snapshot.Actions ?? Array.Empty<ServiceFailureAction>();
                 int actionSize = Marshal.SizeOf<ServiceActionNative>();
-                if (managedActions.Length != 0)
+                int actionBufferElementCount = Math.Max(managedActions.Length, 1);
+                actionsArray = Marshal.AllocHGlobal(checked(actionSize * actionBufferElementCount));
+                if (managedActions.Length == 0)
                 {
-                    actionsArray = Marshal.AllocHGlobal(checked(actionSize * managedActions.Length));
+                    // SERVICE_FAILURE_ACTIONS uses a non-null pointer with cActions == 0
+                    // to delete an existing reset period/action list. A null pointer means
+                    // "leave unchanged", which is not a faithful rollback of an empty list.
+                    Marshal.StructureToPtr(new ServiceActionNative(), actionsArray, false);
+                }
+                else
+                {
                     for (int index = 0; index < managedActions.Length; index++)
                     {
-                        var action = managedActions[index]
-                            ?? throw new InvalidOperationException("A failure action is null.");
+                        var action = managedActions[index];
                         var native = new ServiceActionNative
                         {
                             Type = action.Type,
@@ -764,10 +779,10 @@ namespace Muhun.Mcsv.Installer
                         Marshal.StructureToPtr(native, IntPtr.Add(actionsArray, index * actionSize), false);
                     }
                 }
-                if (!string.IsNullOrEmpty(snapshot.RebootMessage))
-                    rebootMessage = Marshal.StringToHGlobalUni(snapshot.RebootMessage);
-                if (!string.IsNullOrEmpty(snapshot.Command))
-                    command = Marshal.StringToHGlobalUni(snapshot.Command);
+                // Empty strings delete any values introduced after the snapshot. Passing
+                // null would instead leave those values unchanged.
+                rebootMessage = Marshal.StringToHGlobalUni(snapshot.RebootMessage ?? string.Empty);
+                command = Marshal.StringToHGlobalUni(snapshot.Command ?? string.Empty);
 
                 var actions = new ServiceFailureActionsNative
                 {
@@ -800,6 +815,38 @@ namespace Muhun.Mcsv.Installer
                 if (service != IntPtr.Zero) CloseServiceHandle(service);
                 if (manager != IntPtr.Zero) CloseServiceHandle(manager);
             }
+        }
+
+        private static uint GetRequiredRestoreAccess(
+            ServiceFailureConfigurationSnapshot snapshot)
+        {
+            if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            var actions = snapshot.Actions ?? Array.Empty<ServiceFailureAction>();
+            if (actions.Length > MaximumFailureActionCount)
+                throw new InvalidOperationException("The Service failure action count is unreasonable.");
+
+            uint requiredAccess = ServiceChangeConfig;
+            foreach (var action in actions)
+            {
+                if (action == null)
+                    throw new InvalidOperationException("A failure action is null.");
+                switch (action.Type)
+                {
+                    case ScActionNone:
+                    case ScActionReboot:
+                    case ScActionRunCommand:
+                        break;
+                    case ScActionRestart:
+                        // ChangeServiceConfig2 requires SERVICE_START on the handle when
+                        // any configured failure action restarts the service.
+                        requiredAccess |= ServiceStart;
+                        break;
+                    default:
+                        throw new InvalidOperationException(
+                            $"Unsupported Service failure action type: {action.Type}.");
+                }
+            }
+            return requiredAccess;
         }
 
         public static bool Equivalent(
@@ -866,7 +913,7 @@ namespace Muhun.Mcsv.Installer
                         out bytesNeeded))
                     ThrowLastError("QueryServiceConfig2W(failure actions data)");
                 var actions = Marshal.PtrToStructure<ServiceFailureActionsNative>(buffer);
-                if (actions.ActionCount > 1024)
+                if (actions.ActionCount > MaximumFailureActionCount)
                     throw new InvalidOperationException("The Service failure action count is unreasonable.");
                 var managedActions = new ServiceFailureAction[actions.ActionCount];
                 int actionSize = Marshal.SizeOf<ServiceActionNative>();
@@ -1648,6 +1695,122 @@ function Assert-ManagedRootOrEmpty {
     }
 }
 
+function Get-ExistingVersionPayloadState {
+    param(
+        [string]$VersionRoot,
+        [string]$Source,
+        [object[]]$CopyEntries)
+
+    if (-not (Test-Path -LiteralPath $VersionRoot -PathType Container)) {
+        if (Test-Path -LiteralPath $VersionRoot) {
+            throw "既有版本路徑不是目錄：$VersionRoot"
+        }
+        return 'Missing'
+    }
+
+    Assert-NoExistingReparsePoints $VersionRoot '既有版本目錄'
+    $items = @(Get-ChildItem -LiteralPath $VersionRoot -Recurse -Force -ErrorAction Stop)
+    if (@($items | Where-Object {
+        ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    }).Count -ne 0) {
+        throw "既有版本目錄含有 reparse point，拒絕重用或隔離：$VersionRoot"
+    }
+
+    $expectedFiles = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    $expectedDirectories = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $CopyEntries) {
+        $relative = [string]$entry.path
+        if (-not (Test-SafeRelativePath $relative) -or $expectedFiles.ContainsKey($relative)) {
+            throw '已驗證 release 含有不安全或重複的版本檔案。'
+        }
+        $expectedFiles.Add($relative, [pscustomobject]@{
+            SizeBytes = [long]$entry.sizeBytes
+            Sha256 = ([string]$entry.sha256).ToLowerInvariant()
+        })
+        $segments = $relative.Split('/')
+        for ($segmentIndex = 1; $segmentIndex -lt $segments.Length; $segmentIndex++) {
+            [void]$expectedDirectories.Add(($segments[0..($segmentIndex - 1)] -join '/'))
+        }
+    }
+
+    $installedMetadataRelativePath = 'installed-version.v1.json'
+    $installedMetadataSource = Resolve-SafeSourceFile $Source $installedMetadataRelativePath
+    $installedMetadataExpectation = [pscustomobject]@{
+        SizeBytes = (Get-Item -LiteralPath $installedMetadataSource -Force).Length
+        Sha256 = Get-Sha256Hex $installedMetadataSource
+    }
+    if ($expectedFiles.ContainsKey($installedMetadataRelativePath)) {
+        throw '已驗證 release 不得重複宣告 installed-version metadata。'
+    }
+    $expectedFiles.Add($installedMetadataRelativePath, $installedMetadataExpectation)
+
+    $metadataPath = Join-Path $VersionRoot $installedMetadataRelativePath
+    $metadataMatches = (Test-Path -LiteralPath $metadataPath -PathType Leaf) -and
+        (Get-Item -LiteralPath $metadataPath -Force).Length -eq $installedMetadataExpectation.SizeBytes -and
+        (Get-Sha256Hex $metadataPath) -eq $installedMetadataExpectation.Sha256
+
+    $actualFiles = @($items | Where-Object { $_ -is [IO.FileInfo] })
+    $actualDirectories = @($items | Where-Object { $_ -is [IO.DirectoryInfo] })
+    if ($actualFiles.Count -ne $expectedFiles.Count -or
+        $actualDirectories.Count -ne $expectedDirectories.Count) {
+        return $(if ($metadataMatches) { 'RecognizedPartial' } else { 'Unrecognized' })
+    }
+
+    foreach ($directory in $actualDirectories) {
+        $relative = [IO.Path]::GetRelativePath($VersionRoot, $directory.FullName).Replace('\', '/')
+        if (-not (Test-SafeRelativePath $relative) -or
+            -not $expectedDirectories.Contains($relative)) {
+            return $(if ($metadataMatches) { 'RecognizedPartial' } else { 'Unrecognized' })
+        }
+    }
+
+    foreach ($file in $actualFiles) {
+        $relative = [IO.Path]::GetRelativePath($VersionRoot, $file.FullName).Replace('\', '/')
+        if (-not (Test-SafeRelativePath $relative) -or -not $expectedFiles.ContainsKey($relative)) {
+            return $(if ($metadataMatches) { 'RecognizedPartial' } else { 'Unrecognized' })
+        }
+        $expected = $expectedFiles[$relative]
+        if ($file.Length -ne $expected.SizeBytes -or
+            (Get-Sha256Hex $file.FullName) -ne $expected.Sha256) {
+            return $(if ($metadataMatches) { 'RecognizedPartial' } else { 'Unrecognized' })
+        }
+    }
+    return 'Exact'
+}
+
+function Move-ProvisionedVersionToQuarantine {
+    param(
+        [string]$VersionRoot,
+        [string]$VersionsRoot,
+        [string]$Version)
+
+    if (-not (Test-Path -LiteralPath $VersionRoot -PathType Container)) {
+        return $null
+    }
+    $normalizedVersionsRoot = [IO.Path]::GetFullPath($VersionsRoot).TrimEnd('\', '/')
+    $normalizedVersionRoot = [IO.Path]::GetFullPath($VersionRoot).TrimEnd('\', '/')
+    if (-not (Test-IsUnderRoot $normalizedVersionRoot $normalizedVersionsRoot) -or
+        -not [string]::Equals(
+            [IO.Path]::GetDirectoryName($normalizedVersionRoot),
+            $normalizedVersionsRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw '拒絕隔離不在受管理 versions 根目錄正下方的版本目錄。'
+    }
+    Assert-NoExistingReparsePoints $normalizedVersionRoot '待隔離版本目錄'
+    if (@(Get-ChildItem -LiteralPath $normalizedVersionRoot -Recurse -Force -ErrorAction Stop |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) {
+        throw '待隔離版本目錄含有 reparse point。'
+    }
+
+    $safeVersion = $Version -replace '[^0-9A-Za-z.-]', '_'
+    $quarantine = Join-Path $normalizedVersionsRoot `
+        ".failed-install-$safeVersion-$([guid]::NewGuid().ToString('N'))"
+    [IO.Directory]::Move($normalizedVersionRoot, $quarantine)
+    return $quarantine
+}
+
 Assert-Administrator
 Assert-LocalGroupDescriptionSupported
 $source = Resolve-SafeLocalDirectory $SourceDirectory '安裝來源'
@@ -1687,6 +1850,7 @@ if (-not (Test-IsUnderRoot $versionRoot $install) -or -not (Test-IsUnderRoot $st
 
 $serviceCreated = $false
 $versionProvisioned = $false
+$retryQuarantineRoot = $null
 $startMenuShortcutCreated = $false
 $startupShortcutCreated = $false
 $serviceWasRunning = $false
@@ -1816,32 +1980,53 @@ try {
         Write-AtomicText (Join-Path $install $installMarker) $expectedMarker
         Write-AtomicText (Join-Path $data $dataMarker) $expectedMarker
         Write-AtomicText (Join-Path $data $installerOperatorSidRelativePath) $installerSidValue
-        if (Test-Path -LiteralPath $versionRoot) {
-            throw "版本目錄已存在，為避免覆寫已驗證版本而停止：$versionRoot"
+        $existingVersionState = Get-ExistingVersionPayloadState `
+            -VersionRoot $versionRoot `
+            -Source $source `
+            -CopyEntries $verifiedRelease.CopyEntries
+        if ($existingVersionState -eq 'RecognizedPartial') {
+            $targetWasActive = [string]::Equals(
+                $previousActiveVersion,
+                [string]$manifest.version,
+                [StringComparison]::OrdinalIgnoreCase)
+            $serviceUsedTarget = -not [string]::IsNullOrWhiteSpace($previousServiceExecutablePath) -and
+                (Test-IsUnderRoot $previousServiceExecutablePath $versionRoot)
+            if ($targetWasActive -or $serviceUsedTarget) {
+                throw "既有版本目錄不完整但仍被啟用，拒絕自動隔離：$versionRoot"
+            }
+            $retryQuarantineRoot = Move-ProvisionedVersionToQuarantine `
+                -VersionRoot $versionRoot `
+                -VersionsRoot $versionsRoot `
+                -Version $manifest.version
+            $existingVersionState = 'Missing'
+        } elseif ($existingVersionState -eq 'Unrecognized') {
+            throw "版本目錄已存在但無法證明屬於相同已驗證版本，為避免覆寫而停止：$versionRoot"
         }
 
-        New-Item -ItemType Directory -Path $stagingRoot | Out-Null
-        foreach ($entry in $verifiedRelease.CopyEntries) {
-            $sourcePath = Resolve-SafeSourceFile $source $entry.path
-            $destinationPath = Join-Path $stagingRoot ([string]$entry.path).Replace('/', '\')
-            if (-not (Test-IsUnderRoot $destinationPath $stagingRoot)) {
-                throw '更新檔案解析後超出暫存目錄。'
+        if ($existingVersionState -eq 'Missing') {
+            New-Item -ItemType Directory -Path $stagingRoot | Out-Null
+            foreach ($entry in $verifiedRelease.CopyEntries) {
+                $sourcePath = Resolve-SafeSourceFile $source $entry.path
+                $destinationPath = Join-Path $stagingRoot ([string]$entry.path).Replace('/', '\')
+                if (-not (Test-IsUnderRoot $destinationPath $stagingRoot)) {
+                    throw '更新檔案解析後超出暫存目錄。'
+                }
+                New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destinationPath)) -Force | Out-Null
+                [IO.File]::Copy($sourcePath, $destinationPath, $false)
+                if ((Get-Sha256Hex $destinationPath) -ne ([string]$entry.sha256).ToLowerInvariant()) {
+                    throw "暫存檔案複製後雜湊不符：$($entry.path)"
+                }
             }
-            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destinationPath)) -Force | Out-Null
-            [IO.File]::Copy($sourcePath, $destinationPath, $false)
-            if ((Get-Sha256Hex $destinationPath) -ne ([string]$entry.sha256).ToLowerInvariant()) {
-                throw "暫存檔案複製後雜湊不符：$($entry.path)"
+            $installedMetadataSource = Resolve-SafeSourceFile $source 'installed-version.v1.json'
+            $installedMetadataDestination = Join-Path $stagingRoot 'installed-version.v1.json'
+            [IO.File]::Copy($installedMetadataSource, $installedMetadataDestination, $false)
+            if ((Get-Sha256Hex $installedMetadataDestination) -ne
+                (Get-Sha256Hex $installedMetadataSource)) {
+                throw '初次安裝版本 metadata 複製後雜湊不符。'
             }
+            Move-Item -LiteralPath $stagingRoot -Destination $versionRoot
+            $versionProvisioned = $true
         }
-        $installedMetadataSource = Resolve-SafeSourceFile $source 'installed-version.v1.json'
-        $installedMetadataDestination = Join-Path $stagingRoot 'installed-version.v1.json'
-        [IO.File]::Copy($installedMetadataSource, $installedMetadataDestination, $false)
-        if ((Get-Sha256Hex $installedMetadataDestination) -ne
-            (Get-Sha256Hex $installedMetadataSource)) {
-            throw '初次安裝版本 metadata 複製後雜湊不符。'
-        }
-        Move-Item -LiteralPath $stagingRoot -Destination $versionRoot
-        $versionProvisioned = $true
 
         $serviceExecutable = Join-Path $versionRoot $manifest.serviceEntryPoint.Replace('/', '\')
         $sourceStableLauncher = Join-Path $versionRoot $manifest.updaterEntryPoint.Replace('/', '\')
@@ -1861,8 +2046,10 @@ try {
             $serviceCreated = $true
         } else {
             if ($existing.Status -ne 'Stopped') {
-                Stop-Service -Name $serviceName -Force
-                $existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+                Stop-Service -Name $serviceName -Force -NoWait
+                $existing.WaitForStatus(
+                    'Stopped',
+                    [TimeSpan]::FromSeconds($serviceStopTimeoutSeconds))
             }
             Invoke-Sc config $serviceName `
                 'binPath=' $binaryPath `
@@ -1992,8 +2179,10 @@ try {
     try {
         $current = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($null -ne $current -and $current.Status -ne 'Stopped') {
-            Stop-Service -Name $serviceName -Force
-            $current.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            Stop-Service -Name $serviceName -Force -NoWait
+            $current.WaitForStatus(
+                'Stopped',
+                [TimeSpan]::FromSeconds($serviceStopTimeoutSeconds))
         }
     } catch { $rollbackErrors.Add($_.Exception.Message) }
 
@@ -2077,8 +2266,23 @@ try {
         Stop-ExactProductGui $targetGuiExecutable
     } catch { $rollbackErrors.Add($_.Exception.Message) }
 
+    $failedVersionQuarantine = $null
+    if ($versionProvisioned -and (Test-Path -LiteralPath $versionRoot -PathType Container)) {
+        try {
+            # Free the canonical version path before recursive cleanup.  If Windows still has a
+            # file open, a retained quarantine cannot make the next signed retry overwrite data.
+            $failedVersionQuarantine = Move-ProvisionedVersionToQuarantine `
+                -VersionRoot $versionRoot `
+                -VersionsRoot $versionsRoot `
+                -Version $manifest.version
+        } catch { $rollbackErrors.Add($_.Exception.Message) }
+    }
     $temporaryPaths = @($stagingRoot)
-    if ($versionProvisioned) { $temporaryPaths += $versionRoot }
+    if (-not [string]::IsNullOrWhiteSpace($failedVersionQuarantine)) {
+        $temporaryPaths += $failedVersionQuarantine
+    } elseif ($versionProvisioned) {
+        $temporaryPaths += $versionRoot
+    }
     foreach ($temporary in $temporaryPaths) {
         if (-not [string]::IsNullOrWhiteSpace($temporary) -and
             (Test-Path -LiteralPath $temporary) -and (Test-IsUnderRoot $temporary $install)) {
@@ -2134,6 +2338,33 @@ try {
             $installationFailure.Exception)
     }
     throw $installationFailure
+}
+
+if ($installationApplied -and
+    -not [string]::IsNullOrWhiteSpace($retryQuarantineRoot) -and
+    (Test-Path -LiteralPath $retryQuarantineRoot -PathType Container)) {
+    try {
+        $normalizedRetryQuarantine = [IO.Path]::GetFullPath($retryQuarantineRoot).TrimEnd('\', '/')
+        $normalizedVersionsRoot = [IO.Path]::GetFullPath($versionsRoot).TrimEnd('\', '/')
+        if (-not (Test-IsUnderRoot $normalizedRetryQuarantine $normalizedVersionsRoot) -or
+            -not [string]::Equals(
+                [IO.Path]::GetDirectoryName($normalizedRetryQuarantine),
+                $normalizedVersionsRoot,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not [IO.Path]::GetFileName($retryQuarantineRoot).StartsWith(
+                '.failed-install-',
+                [StringComparison]::Ordinal)) {
+            throw '拒絕清除 versions 根目錄外的舊失敗安裝隔離目錄。'
+        }
+        Assert-NoExistingReparsePoints $retryQuarantineRoot '舊失敗安裝隔離目錄'
+        if (@(Get-ChildItem -LiteralPath $retryQuarantineRoot -Recurse -Force -ErrorAction Stop |
+            Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) {
+            throw '舊失敗安裝隔離目錄含有 reparse point。'
+        }
+        Remove-Item -LiteralPath $retryQuarantineRoot -Recurse -Force
+    } catch {
+        Write-Warning "新版本已啟用，但舊失敗安裝隔離目錄無法清除：$($_.Exception.Message)"
+    }
 }
 
 if ($installationApplied) {

@@ -56,8 +56,13 @@ public sealed class InstallerUpgradeTransactionTests
 
         Assert.Contains("QueryServiceConfig2W", source, StringComparison.Ordinal);
         Assert.Contains("ChangeServiceConfig2W", source, StringComparison.Ordinal);
+        Assert.Contains("ServiceStart = 0x0010", source, StringComparison.Ordinal);
         Assert.Contains("ServiceConfigFailureActions = 2", source, StringComparison.Ordinal);
         Assert.Contains("ServiceConfigFailureActionsFlag = 4", source, StringComparison.Ordinal);
+        Assert.Contains("GetRequiredRestoreAccess(snapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("Math.Max(managedActions.Length, 1)", source, StringComparison.Ordinal);
+        Assert.Contains("snapshot.RebootMessage ?? string.Empty", source, StringComparison.Ordinal);
+        Assert.Contains("snapshot.Command ?? string.Empty", source, StringComparison.Ordinal);
         Assert.Contains("FailureConfiguration = Get-ServiceFailureConfigurationSnapshot", source, StringComparison.Ordinal);
         Assert.Contains("DisplayName = [string]$Definition.DisplayName", source, StringComparison.Ordinal);
         Assert.Contains("Description = if ($null -eq $Definition.Description)", source, StringComparison.Ordinal);
@@ -93,6 +98,73 @@ public sealed class InstallerUpgradeTransactionTests
             Environment.NewLine +
             "Initialize-ServiceFailureConfigurationInterop\n" +
             "if ($null -eq ('Muhun.Mcsv.Installer.ServiceFailureConfiguration' -as [type])) { exit 2 }\n";
+        RunPowerShellFileProbe(probe);
+    }
+
+    [Fact]
+    public void ServiceFailureInteropRequestsRestartAccessAndRejectsInvalidSnapshotsBeforeMutation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var source = File.ReadAllText(InstallerPath);
+        var interopFunction = Regex.Match(
+            source,
+            @"(?ms)^function Initialize-ServiceFailureConfigurationInterop \{.*?^\}\r?\n(?=\r?\nfunction Get-ServiceFailureConfigurationSnapshot)",
+            RegexOptions.CultureInvariant);
+        Assert.True(interopFunction.Success, "Could not extract the Service failure interop function.");
+        var probe = interopFunction.Value +
+            Environment.NewLine +
+            "Initialize-ServiceFailureConfigurationInterop\n" +
+            """
+            $type = [Muhun.Mcsv.Installer.ServiceFailureConfiguration]
+            $flags = [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Static
+            $method = $type.GetMethod('GetRequiredRestoreAccess', $flags)
+            if ($null -eq $method) { throw 'required access helper missing' }
+
+            function Get-RequiredAccess([object]$Snapshot) {
+                return [uint32]$method.Invoke($null, [object[]]@($Snapshot))
+            }
+
+            $nullActions = [Muhun.Mcsv.Installer.ServiceFailureConfigurationSnapshot]::new()
+            $nullActions.Actions = $null
+            if ((Get-RequiredAccess $nullActions) -ne 0x0002) {
+                throw 'a null action list requested excessive access'
+            }
+
+            $emptyActions = [Muhun.Mcsv.Installer.ServiceFailureConfigurationSnapshot]::new()
+            $emptyActions.Actions = [Muhun.Mcsv.Installer.ServiceFailureAction[]]@()
+            if ((Get-RequiredAccess $emptyActions) -ne 0x0002) {
+                throw 'an empty action list requested excessive access'
+            }
+
+            $restart = [Muhun.Mcsv.Installer.ServiceFailureConfigurationSnapshot]::new()
+            $restart.Actions = [Muhun.Mcsv.Installer.ServiceFailureAction[]]@(
+                [Muhun.Mcsv.Installer.ServiceFailureAction]@{ Type = 1; DelayMilliseconds = 5000 })
+            if ((Get-RequiredAccess $restart) -ne 0x0012) {
+                throw 'a restart action did not request SERVICE_CHANGE_CONFIG and SERVICE_START'
+            }
+
+            foreach ($invalidActions in @(
+                [Muhun.Mcsv.Installer.ServiceFailureAction[]]@($null),
+                [Muhun.Mcsv.Installer.ServiceFailureAction[]]@(
+                    [Muhun.Mcsv.Installer.ServiceFailureAction]@{ Type = 99; DelayMilliseconds = 0 })
+            )) {
+                $invalid = [Muhun.Mcsv.Installer.ServiceFailureConfigurationSnapshot]::new()
+                $invalid.Actions = $invalidActions
+                try {
+                    [void](Get-RequiredAccess $invalid)
+                    throw 'invalid action snapshot was accepted'
+                } catch [Reflection.TargetInvocationException] {
+                    if ($null -eq $_.Exception.InnerException -or
+                        $_.Exception.InnerException -isnot [InvalidOperationException]) {
+                        throw
+                    }
+                }
+            }
+            """;
         RunPowerShellFileProbe(probe);
     }
 
