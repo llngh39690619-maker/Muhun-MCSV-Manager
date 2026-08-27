@@ -46,8 +46,13 @@ public sealed class ProductDesiredServerRecoveryTests
         var startedAt = DateTime.UtcNow;
         await recovery.StartAsync(CancellationToken.None);
         Assert.True(DateTime.UtcNow - startedAt < TimeSpan.FromSeconds(1));
-        await WaitUntilAsync(() => recreated.Factory.Processes.Count == 1);
+        await WaitUntilAsync(async () => (await audit.ReadRecentAsync(10)).Any(entry =>
+            entry.ServerId == registration.Id &&
+            entry.ActionCode == "server.restore" &&
+            entry.OutcomeCode == "succeeded" &&
+            entry.ReasonCode == "desired_restore_succeeded"));
 
+        Assert.Single(recreated.Factory.Processes);
         Assert.Equal(ProductServerState.Running, recreated.Runtime.GetStatus(registration.Id).Server.State);
         Assert.Equal(25565, recreated.Runtime.GetStatus(registration.Id).Server.Port);
         Assert.Equal(25565, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
