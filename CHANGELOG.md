@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.5 — 安裝交易與不可變 Provider 修正版
+
+- 正式修正版使用新的 1.0.5 產品與 first-party Provider 版本身分，避免把內容不同的簽章 `.mcsvp` 重新發布成既有 1.0.4 版本而觸發不可變 digest 衝突；1.0.4 歷史資產與紀錄維持不變。
+- 安裝升級可對逾時停止的舊 Service 做有界等待，並在已存在同版部分建置目錄時驗證、隔離後安全重試，不以未完成內容冒充可啟用版本。
+- 安裝失敗回復會保留原 Service 設定、failure actions、active pointer 與 stable launcher，並改善受鎖定版本／launcher 的延後清理及錯誤彙整。
+- 完整承接 1.0.4 的啟動 Port、BuildTools cache、線上模組包結果數、遠端入口與視窗尺寸修正。
+
 ## 1.0.4 — 啟動 Port、BuildTools 與桌面操作修正
 
 - 正式 Windows Service 的所有啟動路徑統一在真正啟動前配置 Port：從 `25565` 起選擇最低可用 TCP Listener Port、忽略 UDP-only 占用，並以 session-bound reservation 避免同時啟動重複選號；停止後可立即回收 `25565`。

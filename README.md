@@ -1,10 +1,10 @@
 # Muhun MCSV Manager
 
-Muhun MCSV Manager 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器管理工具。目前公開的來源快照版本為 **1.0.4**。
+Muhun MCSV Manager 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器管理工具。目前公開的來源快照版本為 **1.0.5**。
 
 產品採用「Windows Service 唯一寫入者」架構：Minecraft 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。
 
-> **發行狀態：** 本 repository 目前提供原始碼與技術文件。若 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 尚未出現完整的 1.0.4 發行資產，表示公開安裝包尚未發布；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
+> **發行狀態：** 本 repository 目前提供原始碼與技術文件。若 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 尚未出現完整的 1.0.5 發行資產，表示公開安裝包尚未發布；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
 
 ## English summary
 
@@ -146,8 +146,8 @@ Muhun MCSV Manager 是獨立開發的專案，不隸屬於、未獲 Microsoft、
 
 ## 文件
 
-- [1.0.3 使用說明](docs/使用說明-1.0.3.md)
-- [1.0.3 測試報告](docs/測試報告-1.0.3.md)
+- [1.0.5 使用說明](docs/使用說明-1.0.5.md)
+- [1.0.5 測試報告](docs/測試報告-1.0.5.md)
 - [正式產品架構](docs/正式產品-架構-1.0.md)
 - [線上模組包目錄](docs/正式產品-線上模組包目錄.md)
 - [第三最終階段驗收矩陣](docs/正式產品-第三階段-Roadmap.md)
