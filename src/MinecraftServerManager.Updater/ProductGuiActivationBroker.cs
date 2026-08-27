@@ -421,13 +421,13 @@ internal static class ProductGuiActivationBroker
             ?? throw new InvalidOperationException("Active GUI process could not be started.");
         try
         {
-            await WaitForGuiAcknowledgementAsync(process, cancellationToken).ConfigureAwait(false);
-            await WaitForExplicitGuiReadyAsync(
+            await WaitForActivatedGuiReadinessAsync(
                     readyPipe,
                     process,
                     expectedVersion,
                     nonce,
                     RequestTimeout,
+                    token => WaitForGuiAcknowledgementAsync(process, token),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -438,6 +438,85 @@ internal static class ProductGuiActivationBroker
             await TerminateUnreadyGuiAsync(process).ConfigureAwait(false);
             process.Dispose();
             throw;
+        }
+    }
+
+    internal static async Task WaitForActivatedGuiReadinessAsync(
+        NamedPipeServerStream readyPipe,
+        Process process,
+        string expectedVersion,
+        string nonce,
+        TimeSpan timeout,
+        Func<CancellationToken, Task> waitForInteractiveReadiness,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(waitForInteractiveReadiness);
+        using var readinessCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Begin accepting the explicit initialized-ready ACK before waiting for InputIdle or the
+        // stability window. A fast GUI can connect, write, and close its client pipe while Windows
+        // is still reporting input-idle; delaying this accept until afterwards loses that ACK.
+        var explicitReadiness = WaitForExplicitGuiReadyAsync(
+            readyPipe,
+            process,
+            expectedVersion,
+            nonce,
+            timeout,
+            readinessCancellation.Token);
+        Task interactiveReadiness;
+        try
+        {
+            interactiveReadiness = waitForInteractiveReadiness(readinessCancellation.Token)
+                ?? throw new InvalidOperationException(
+                    "GUI interactive-readiness verifier returned no task.");
+        }
+        catch
+        {
+            readinessCancellation.Cancel();
+            try
+            {
+                await explicitReadiness.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Observe the already-started pipe task before preserving the synchronous error.
+            }
+
+            throw;
+        }
+
+        Exception? failure = null;
+        try
+        {
+            var first = await Task.WhenAny(explicitReadiness, interactiveReadiness)
+                .ConfigureAwait(false);
+            await first.ConfigureAwait(false);
+            var remaining = ReferenceEquals(first, explicitReadiness)
+                ? interactiveReadiness
+                : explicitReadiness;
+            await remaining.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            readinessCancellation.Cancel();
+        }
+
+        try
+        {
+            // Always observe both tasks. This also gives the losing operation a bounded chance to
+            // finish cancellation, preventing an unobserved pipe or InputIdle task after rollback.
+            await Task.WhenAll(explicitReadiness, interactiveReadiness).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        if (failure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 

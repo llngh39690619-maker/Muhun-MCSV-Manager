@@ -248,6 +248,111 @@ public sealed class ProductWindowsActivationHealthControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task ActivationReadiness_AcceptsAckBeforeInteractiveStabilityCompletes()
+    {
+        const string version = "1.0.0";
+        var nonce = new string('A', 64);
+        var pipeName = ProductGuiActivationAcknowledgement.PipePrefix + Guid.NewGuid().ToString("N");
+        await using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.In,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous |
+            PipeOptions.WriteThrough |
+            PipeOptions.CurrentUserOnly |
+            PipeOptions.FirstPipeInstance);
+        using var process = Process.GetCurrentProcess();
+        var interactiveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishInteractiveStability = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var readiness = ProductGuiActivationBroker.WaitForActivatedGuiReadinessAsync(
+            server,
+            process,
+            version,
+            nonce,
+            TimeSpan.FromSeconds(5),
+            async cancellationToken =>
+            {
+                interactiveStarted.SetResult();
+                await finishInteractiveStability.Task.WaitAsync(cancellationToken);
+            },
+            CancellationToken.None);
+
+        await interactiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await ProductGuiActivationAcknowledgement.SendReadyAsync(
+                new ProductGuiActivationAcknowledgementRequest(pipeName, nonce, version),
+                version,
+                serviceReady: true,
+                negotiatedApiVersion: ProductApiProtocol.CurrentVersion,
+                CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(server.IsConnected);
+        Assert.False(readiness.IsCompleted);
+        finishInteractiveStability.SetResult();
+        await readiness.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ActivationReadiness_ExplicitFailureCancelsAndObservesInteractiveVerifier()
+    {
+        const string version = "1.0.0";
+        var expectedNonce = new string('A', 64);
+        var pipeName = ProductGuiActivationAcknowledgement.PipePrefix + Guid.NewGuid().ToString("N");
+        await using var server = new NamedPipeServerStream(
+            pipeName,
+            PipeDirection.In,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous |
+            PipeOptions.WriteThrough |
+            PipeOptions.CurrentUserOnly |
+            PipeOptions.FirstPipeInstance);
+        using var process = Process.GetCurrentProcess();
+        var interactiveCancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var readiness = ProductGuiActivationBroker.WaitForActivatedGuiReadinessAsync(
+            server,
+            process,
+            version,
+            expectedNonce,
+            TimeSpan.FromSeconds(5),
+            async cancellationToken =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                finally
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        interactiveCancelled.SetResult();
+                    }
+                }
+            },
+            CancellationToken.None);
+
+        await ProductGuiActivationAcknowledgement.SendReadyAsync(
+            new ProductGuiActivationAcknowledgementRequest(
+                pipeName,
+                new string('B', 64),
+                version),
+            version,
+            serviceReady: true,
+            negotiatedApiVersion: ProductApiProtocol.CurrentVersion,
+            CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => readiness.WaitAsync(TimeSpan.FromSeconds(5)));
+        await interactiveCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task GuiHelperCannotAckBeforeServiceReadyOrWithWrongNonce()
     {
         const string version = "1.0.0";
