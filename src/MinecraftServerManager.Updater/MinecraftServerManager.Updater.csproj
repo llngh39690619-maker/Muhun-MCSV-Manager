@@ -8,10 +8,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Muhun MCSV Updater</AssemblyName>
     <RootNamespace>MinecraftServerManager.Updater</RootNamespace>
-    <Version>1.0.5</Version>
-    <AssemblyVersion>1.0.5.0</AssemblyVersion>
-    <FileVersion>1.0.5.0</FileVersion>
-    <InformationalVersion>1.0.5</InformationalVersion>
+    <Version>1.0.6</Version>
+    <AssemblyVersion>1.0.6.0</AssemblyVersion>
+    <FileVersion>1.0.6.0</FileVersion>
+    <InformationalVersion>1.0.6</InformationalVersion>
     <Description>Signed A/B product updater and rollback worker for Muhun MCSV Manager.</Description>
   </PropertyGroup>
 

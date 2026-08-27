@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6 — GUI 啟用握手與不可變 Provider 修正版
+
+- 正式修正版使用新的 1.0.6 產品與 first-party Provider 版本身分，避免將 GUI readiness race 修正後的不同簽章內容重新發布為既有 1.0.5 digest；1.0.4 與 1.0.5 歷史資產維持不變。
+- GUI 啟用健康檢查會並行接收 readiness acknowledgement 與互動穩定性驗證，避免 GUI 很快回報 ready 時，broker 尚未開始接收而誤判逾時；失敗及取消路徑會有界取消並觀察背景驗證工作。
+- 完整承接 1.0.5 的安裝交易修正，以及 1.0.4 的啟動 Port、BuildTools cache、線上模組包、遠端入口與視窗尺寸修正。
+
 ## 1.0.5 — 安裝交易與不可變 Provider 修正版
 
 - 正式修正版使用新的 1.0.5 產品與 first-party Provider 版本身分，避免把內容不同的簽章 `.mcsvp` 重新發布成既有 1.0.4 版本而觸發不可變 digest 衝突；1.0.4 歷史資產與紀錄維持不變。
