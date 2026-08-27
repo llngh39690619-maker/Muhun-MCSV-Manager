@@ -56,16 +56,13 @@ public sealed class ProductDomainNotificationBridge(
         Unsubscribe();
         _queue.Writer.TryComplete();
         if (_worker is null) return;
-        try
-        {
-            await _worker.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            _abort.Cancel();
-            await _worker.ConfigureAwait(false);
-            throw;
-        }
+        await ProductHostedServiceShutdown.DrainWorkerAsync(
+                _worker,
+                _abort,
+                cancellationToken,
+                logger,
+                nameof(ProductDomainNotificationBridge))
+            .ConfigureAwait(false);
     }
 
     public void Dispose()

@@ -185,16 +185,13 @@ public sealed class ProductServerNotificationBridge(
             return;
         }
 
-        try
-        {
-            await _worker.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            _abort.Cancel();
-            await _worker.ConfigureAwait(false);
-            throw;
-        }
+        await ProductHostedServiceShutdown.DrainWorkerAsync(
+                _worker,
+                _abort,
+                cancellationToken,
+                logger,
+                nameof(ProductServerNotificationBridge))
+            .ConfigureAwait(false);
     }
 
     public void Dispose()
@@ -237,44 +234,50 @@ public sealed class ProductServerNotificationBridge(
 
     private async Task ProcessAsync()
     {
-        await foreach (var notification in _queue.Reader.ReadAllAsync(_abort.Token).ConfigureAwait(false))
+        try
         {
-            Interlocked.Decrement(ref _pending);
-            var stored = false;
-            for (var attempt = 0; attempt < 3 && !stored; attempt++)
+            await foreach (var notification in _queue.Reader.ReadAllAsync(_abort.Token).ConfigureAwait(false))
             {
-                try
+                Interlocked.Decrement(ref _pending);
+                var stored = false;
+                for (var attempt = 0; attempt < 3 && !stored; attempt++)
                 {
-                    await sink.StoreAsync(notification, _abort.Token).ConfigureAwait(false);
-                    stored = true;
-                }
-                catch (OperationCanceledException) when (_abort.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception error) when (error is not OutOfMemoryException)
-                {
-                    if (attempt == 2)
+                    try
                     {
-                        logger.LogError(
-                            "Failed to persist a bounded server notification after retries. Error: {ErrorType}",
-                            error.GetType().Name);
+                        await sink.StoreAsync(notification, _abort.Token).ConfigureAwait(false);
+                        stored = true;
                     }
-                    else
+                    catch (OperationCanceledException) when (_abort.IsCancellationRequested)
                     {
-                        await Task.Delay(TimeSpan.FromMilliseconds(100 * (attempt + 1)), _abort.Token)
-                            .ConfigureAwait(false);
+                        return;
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        if (attempt == 2)
+                        {
+                            logger.LogError(
+                                "Failed to persist a bounded server notification after retries. Error: {ErrorType}",
+                                error.GetType().Name);
+                        }
+                        else
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(100 * (attempt + 1)), _abort.Token)
+                                .ConfigureAwait(false);
+                        }
                     }
                 }
-            }
 
-            var dropped = Interlocked.Exchange(ref _dropped, 0);
-            if (dropped > 0)
-            {
-                logger.LogWarning(
-                    "Dropped {Count} server notification events because the bounded queue was full.",
-                    dropped);
+                var dropped = Interlocked.Exchange(ref _dropped, 0);
+                if (dropped > 0)
+                {
+                    logger.LogWarning(
+                        "Dropped {Count} server notification events because the bounded queue was full.",
+                        dropped);
+                }
             }
+        }
+        catch (OperationCanceledException) when (_abort.IsCancellationRequested)
+        {
         }
     }
 }

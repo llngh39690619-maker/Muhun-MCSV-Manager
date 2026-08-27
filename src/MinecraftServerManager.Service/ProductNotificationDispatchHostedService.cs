@@ -11,6 +11,7 @@ public sealed class ProductNotificationDispatchHostedService(
 {
     public const int DispatchBatchSize = 20;
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+    internal static readonly TimeSpan FinalDispatchTimeout = TimeSpan.FromSeconds(5);
     private readonly CancellationTokenSource _loopCancellation = new();
     private Task? _loop;
 
@@ -25,20 +26,36 @@ public sealed class ProductNotificationDispatchHostedService(
         _loopCancellation.Cancel();
         if (_loop is not null)
         {
-            await _loop.ConfigureAwait(false);
+            await ProductHostedServiceShutdown.DrainWorkerAsync(
+                    _loop,
+                    _loopCancellation,
+                    cancellationToken,
+                    logger,
+                    nameof(ProductNotificationDispatchHostedService))
+                .ConfigureAwait(false);
         }
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Skipped the final notification dispatch pass because the Service shutdown deadline was exhausted.");
+            return;
+        }
+
+        using var finalDispatchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        finalDispatchCancellation.CancelAfter(FinalDispatchTimeout);
         try
         {
             await dispatcher.DispatchDueOnceAsync(
                     timeProvider.GetUtcNow(),
                     DispatchBatchSize,
-                    cancellationToken)
+                    finalDispatchCancellation.Token)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (finalDispatchCancellation.IsCancellationRequested)
         {
-            throw;
+            logger.LogWarning(
+                "The final notification dispatch pass was abandoned at its bounded shutdown deadline.");
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {

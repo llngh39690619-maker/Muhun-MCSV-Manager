@@ -16,6 +16,10 @@ namespace MinecraftServerManager.Service;
 public static class ProductServiceApplication
 {
     public const string ProductName = "Muhun MCSV Manager";
+    // Remote ingress teardown (up to ~20 s), Java graceful/forced stop (up to 40 s), IPC drain
+    // (10 s), and the bounded notification drains must all finish before WindowsServiceLifetime
+    // sees a cancelled host token. The former 30-second default overlapped Java's grace window.
+    public static readonly TimeSpan GracefulShutdownTimeout = TimeSpan.FromSeconds(90);
     public static string ProductVersion { get; } =
         typeof(ProductServiceApplication).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
@@ -34,6 +38,12 @@ public static class ProductServiceApplication
         builder.Host.UseWindowsService(options =>
         {
             options.ServiceName = ProductServiceOptions.WindowsServiceName;
+        });
+        builder.Services.Configure<HostOptions>(options =>
+        {
+            options.ShutdownTimeout = GracefulShutdownTimeout;
+            // Hosted-service registration order defines the fail-closed teardown sequence below.
+            options.ServicesStopConcurrently = false;
         });
 
         var serviceOptions = ReadOptions(builder.Configuration);

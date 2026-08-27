@@ -2,12 +2,35 @@ using System.IO.Pipes;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Data;
 using MinecraftServerManager.Service;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace MinecraftServerManager.Service.Tests;
 
 public sealed class ProductServiceFoundationTests
 {
+    [Fact]
+    public async Task HostShutdownDeadline_CoversOrderedBoundedWindowsServiceTeardown()
+    {
+        var layout = ProductServerRegistryTests.CreateLayout();
+        await using var application = ProductServiceApplication.Build(
+        [
+            $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:Port=39058",
+            $"--{ProductServiceOptions.SectionName}:IpcPipeName=muhun.mcsv.shutdown.{Guid.NewGuid():N}",
+        ]);
+
+        var hostOptions = application.Services
+            .GetRequiredService<IOptions<HostOptions>>()
+            .Value;
+
+        Assert.Equal(ProductServiceApplication.GracefulShutdownTimeout, hostOptions.ShutdownTimeout);
+        Assert.True(hostOptions.ShutdownTimeout >= TimeSpan.FromMinutes(1));
+        Assert.False(hostOptions.ServicesStopConcurrently);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(80)]
