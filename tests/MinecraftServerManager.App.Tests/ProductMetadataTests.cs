@@ -15,8 +15,8 @@ public sealed class ProductMetadataTests
         var versionInfo = FileVersionInfo.GetVersionInfo(assembly.Location);
 
         Assert.Equal("Muhun MCSV Manager", assembly.GetName().Name);
-        Assert.Equal("1.0.3.0", versionInfo.FileVersion);
-        Assert.Equal("1.0.3", versionInfo.ProductVersion);
+        Assert.Equal("1.0.4.0", versionInfo.FileVersion);
+        Assert.Equal("1.0.4", versionInfo.ProductVersion);
         Assert.Equal("Muhun MCSV Manager", versionInfo.ProductName);
         Assert.Equal("Muhun MCSV Manager", versionInfo.FileDescription);
         Assert.Equal("Copyright © Muhun 2026", versionInfo.LegalCopyright);
@@ -25,16 +25,16 @@ public sealed class ProductMetadataTests
             assembly.GetCustomAttribute<AssemblyTitleAttribute>()?.Title);
 
         var coreAssembly = typeof(MinecraftServerManager.Core.Models.ServerInstance).Assembly;
-        Assert.Equal("1.0.3.0", coreAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.0.4.0", coreAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.0.3",
+            "1.0.4",
             coreAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
 
         var remoteAssembly = typeof(MinecraftServerManager.Remote.RemoteControlOptions).Assembly;
-        Assert.Equal("1.0.3.0", remoteAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.0.4.0", remoteAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.0.3",
+            "1.0.4",
             remoteAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
     }
@@ -47,7 +47,7 @@ public sealed class ProductMetadataTests
         var identity = Assert.Single(document.Descendants(assembly + "assemblyIdentity"));
 
         Assert.Equal("Muhun.MCSV.Manager.app", (string?)identity.Attribute("name"));
-        Assert.Equal("1.0.3.0", (string?)identity.Attribute("version"));
+        Assert.Equal("1.0.4.0", (string?)identity.Attribute("version"));
     }
 
     [Fact]
@@ -57,10 +57,10 @@ public sealed class ProductMetadataTests
         var appProperties = appProject.Root!.Elements("PropertyGroup").Elements().ToArray();
 
         Assert.Equal("Muhun MCSV Manager", SingleProperty(appProperties, "AssemblyName"));
-        Assert.Equal("1.0.3", SingleProperty(appProperties, "Version"));
-        Assert.Equal("1.0.3.0", SingleProperty(appProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.3.0", SingleProperty(appProperties, "FileVersion"));
-        Assert.Equal("1.0.3", SingleProperty(appProperties, "InformationalVersion"));
+        Assert.Equal("1.0.4", SingleProperty(appProperties, "Version"));
+        Assert.Equal("1.0.4.0", SingleProperty(appProperties, "AssemblyVersion"));
+        Assert.Equal("1.0.4.0", SingleProperty(appProperties, "FileVersion"));
+        Assert.Equal("1.0.4", SingleProperty(appProperties, "InformationalVersion"));
         Assert.Equal("true", SingleProperty(appProperties, "UseWindowsForms"));
         var mailKit = Assert.Single(
             appProject.Descendants("PackageReference"),
@@ -69,17 +69,17 @@ public sealed class ProductMetadataTests
 
         var coreProject = XDocument.Load(GetCoreSourcePath("MinecraftServerManager.Core.csproj"));
         var coreProperties = coreProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.0.3", SingleProperty(coreProperties, "Version"));
-        Assert.Equal("1.0.3.0", SingleProperty(coreProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.3.0", SingleProperty(coreProperties, "FileVersion"));
-        Assert.Equal("1.0.3", SingleProperty(coreProperties, "InformationalVersion"));
+        Assert.Equal("1.0.4", SingleProperty(coreProperties, "Version"));
+        Assert.Equal("1.0.4.0", SingleProperty(coreProperties, "AssemblyVersion"));
+        Assert.Equal("1.0.4.0", SingleProperty(coreProperties, "FileVersion"));
+        Assert.Equal("1.0.4", SingleProperty(coreProperties, "InformationalVersion"));
 
         var remoteProject = XDocument.Load(GetRemoteSourcePath("MinecraftServerManager.Remote.csproj"));
         var remoteProperties = remoteProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.0.3", SingleProperty(remoteProperties, "Version"));
-        Assert.Equal("1.0.3.0", SingleProperty(remoteProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.3.0", SingleProperty(remoteProperties, "FileVersion"));
-        Assert.Equal("1.0.3", SingleProperty(remoteProperties, "InformationalVersion"));
+        Assert.Equal("1.0.4", SingleProperty(remoteProperties, "Version"));
+        Assert.Equal("1.0.4.0", SingleProperty(remoteProperties, "AssemblyVersion"));
+        Assert.Equal("1.0.4.0", SingleProperty(remoteProperties, "FileVersion"));
+        Assert.Equal("1.0.4", SingleProperty(remoteProperties, "InformationalVersion"));
     }
 
     [Fact]

@@ -231,15 +231,22 @@ public sealed class Preview5FeatureSurfaceContractTests
     }
 
     [Fact]
-    public void WebConsoleAndCloudflaredInstaller_HaveVisibleControlledEntryPoints()
+    public void RemoteManagement_UsesOneMainEntryAndKeepsTheLegacyConsoleReachable()
     {
         var mainWindow = LoadMainWindow();
-        Assert.Contains(
+        var remoteEntry = Assert.Single(
             mainWindow.Descendants(Presentation + "Button"),
             element => (string?)element.Attribute("Content")
-                       == "{DynamicResource L10n.main.webConsole}"
+                       == "{DynamicResource L10n.main.remoteManagement}"
                        && (string?)element.Attribute("Command")
-                       == "{Binding OpenRemoteWebConsoleCommand}");
+                       == "{Binding OpenRemoteManagementCommand}");
+        Assert.Equal(
+            "{DynamicResource L10n.main.remoteManagement.automation}",
+            (string?)remoteEntry.Attribute("AutomationProperties.Name"));
+        Assert.DoesNotContain(
+            mainWindow.Descendants(Presentation + "Button"),
+            element => (string?)element.Attribute("Command") is
+                "{Binding OpenRemoteAccessCommand}" or "{Binding OpenRemoteWebConsoleCommand}");
 
         var webConsole = LoadDialog("RemoteWebConsoleDialog.xaml");
         Assert.Contains(
@@ -271,6 +278,11 @@ public sealed class Preview5FeatureSurfaceContractTests
                        == "{DynamicResource L10n.remote.console.lifecycleHint}");
 
         var remoteSettings = LoadDialog("RemoteAccessDialog.xaml");
+        Assert.Contains(
+            remoteSettings.Descendants(Presentation + "Button"),
+            element => (string?)element.Attribute("Content")
+                       == "{DynamicResource L10n.main.webConsole}"
+                       && (string?)element.Attribute("Click") == "OnOpenWebConsoleClick");
         Assert.Contains(
             remoteSettings.Descendants(Presentation + "Button"),
             element => (string?)element.Attribute("Content")

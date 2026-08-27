@@ -156,6 +156,7 @@ public sealed class OnlineModpackDialogLifecycleTests
                 viewModel.SelectedCategory = Assert.Single(
                     viewModel.CategoryChoices,
                     item => item.Key == "magic");
+                viewModel.SelectedResultLimit = 60;
             };
             timer.Tick += (_, _) =>
             {
@@ -194,6 +195,7 @@ public sealed class OnlineModpackDialogLifecycleTests
             Assert.Equal("1.20.1", request.GameVersion);
             Assert.Equal("neoforge", request.Loader);
             Assert.Equal("magic", request.SourceCategory);
+            Assert.Equal(60, request.Limit);
         });
     }
 

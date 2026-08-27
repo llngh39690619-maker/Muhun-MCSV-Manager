@@ -31,6 +31,47 @@ public sealed class SafePathObjectIdentityLease : IDisposable
     }
 }
 
+/// <summary>
+/// Holds no-follow handles for a trusted directory boundary and every descendant directory in a
+/// resolved chain. On Windows the handles deny delete sharing, preventing the validated objects
+/// from being renamed or replaced until the lease is disposed.
+/// </summary>
+public sealed class SafePathDirectoryChainLease : IDisposable
+{
+    private List<SafeFileHandle>? _handles;
+
+    internal SafePathDirectoryChainLease(List<SafeFileHandle> handles)
+    {
+        _handles = handles;
+    }
+
+    public void Dispose()
+    {
+        var handles = Interlocked.Exchange(ref _handles, null);
+        if (handles is null)
+        {
+            return;
+        }
+
+        for (var index = handles.Count - 1; index >= 0; index--)
+        {
+            handles[index].Dispose();
+        }
+    }
+}
+
+public sealed class SafePathExclusiveFileLease : IDisposable
+{
+    private IDisposable? _handle;
+
+    internal SafePathExclusiveFileLease(IDisposable handle)
+    {
+        _handle = handle;
+    }
+
+    public void Dispose() => Interlocked.Exchange(ref _handle, null)?.Dispose();
+}
+
 /// <summary>Windows-safe instance naming and root-containment helpers.</summary>
 public static class SafePath
 {
@@ -179,6 +220,129 @@ public static class SafePath
                 throw new UnauthorizedAccessException(
                     $"Rejected path because it contains a reparse point: '{path}'.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Atomically validates and retains a no-follow handle chain from <paramref name="rootPath"/>
+    /// through <paramref name="candidatePath"/>. Every object must be a real directory rather
+    /// than a junction, symbolic link, mount point, or other reparse point.
+    /// </summary>
+    public static SafePathDirectoryChainLease AcquireNoReparseDirectoryChainLease(
+        string rootPath,
+        string candidatePath)
+        => AcquireNoReparseDirectoryChainLease(rootPath, candidatePath, OperatingSystem.IsWindows());
+
+    internal static SafePathDirectoryChainLease AcquireNoReparseDirectoryChainLease(
+        string rootPath,
+        string candidatePath,
+        bool isWindows)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
+        var candidate = EnsureWithinRoot(root, candidatePath, allowRoot: false);
+        if (!isWindows)
+        {
+            throw new PlatformNotSupportedException(
+                "Atomic no-follow directory-chain leases are supported only on Windows.");
+        }
+
+        var relativePath = Path.GetRelativePath(root, candidate);
+        var segments = relativePath.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        var handles = new List<SafeFileHandle>(segments.Length + 1);
+        try
+        {
+            OpenAndRetainDirectory(root, handles);
+            var current = root;
+            foreach (var segment in segments)
+            {
+                current = Path.Combine(current, segment);
+                OpenAndRetainDirectory(current, handles);
+            }
+
+            return new SafePathDirectoryChainLease(handles);
+        }
+        catch
+        {
+            for (var index = handles.Count - 1; index >= 0; index--)
+            {
+                handles[index].Dispose();
+            }
+
+            throw;
+        }
+
+        static void OpenAndRetainDirectory(string path, List<SafeFileHandle> destination)
+        {
+            var handle = OpenWindowsPathHandle(
+                path,
+                WindowsFileAccess.ReadAttributes,
+                FileShare.Read | FileShare.Write,
+                openReparsePoint: true);
+            try
+            {
+                var attributes = GetWindowsHandleAttributes(handle);
+                if (!attributes.HasFlag(FileAttributes.Directory) ||
+                    attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    throw new UnauthorizedAccessException(
+                        $"Rejected directory lease because the path is not a direct directory: '{path}'.");
+                }
+
+                destination.Add(handle);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates or opens one file without following a reparse point and retains an exclusive
+    /// cross-process handle. The parent directory must already be protected by the caller.
+    /// </summary>
+    public static SafePathExclusiveFileLease AcquireNoFollowExclusiveFileLease(string filePath)
+        => AcquireNoFollowExclusiveFileLease(filePath, OperatingSystem.IsWindows());
+
+    internal static SafePathExclusiveFileLease AcquireNoFollowExclusiveFileLease(
+        string filePath,
+        bool isWindows)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        var fullPath = Path.GetFullPath(filePath);
+        if (!isWindows)
+        {
+            throw new PlatformNotSupportedException(
+                "Atomic no-follow exclusive file leases are supported only on Windows.");
+        }
+
+        var handle = OpenWindowsPathHandle(
+            fullPath,
+            WindowsFileAccess.GenericRead
+                | WindowsFileAccess.GenericWrite
+                | WindowsFileAccess.ReadAttributes,
+            FileShare.None,
+            openReparsePoint: true,
+            creationDisposition: FileMode.OpenOrCreate);
+        try
+        {
+            var attributes = GetWindowsHandleAttributes(handle);
+            if (attributes.HasFlag(FileAttributes.Directory) ||
+                attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new UnauthorizedAccessException(
+                    $"Rejected exclusive file lease because the path is redirected: '{fullPath}'.");
+            }
+
+            return new SafePathExclusiveFileLease(handle);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
         }
     }
 
@@ -726,7 +890,8 @@ public static class SafePath
         string path,
         WindowsFileAccess access,
         FileShare share,
-        bool openReparsePoint = true)
+        bool openReparsePoint = true,
+        FileMode creationDisposition = FileMode.Open)
     {
         var flags = FileFlagsAndAttributes.BackupSemantics;
         if (openReparsePoint)
@@ -739,7 +904,7 @@ public static class SafePath
             access,
             share,
             IntPtr.Zero,
-            FileMode.Open,
+            creationDisposition,
             flags,
             IntPtr.Zero);
         if (handle.IsInvalid)
@@ -861,6 +1026,8 @@ public static class SafePath
     [Flags]
     private enum WindowsFileAccess : uint
     {
+        GenericRead = 0x80000000,
+        GenericWrite = 0x40000000,
         ReadAttributes = 0x00000080,
         WriteAttributes = 0x00000100,
         Delete = 0x00010000

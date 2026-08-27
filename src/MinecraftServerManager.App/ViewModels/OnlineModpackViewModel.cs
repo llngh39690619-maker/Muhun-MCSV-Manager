@@ -166,6 +166,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
     private bool _isInstallOperation;
     private bool _disposed;
     private OnlineModpackSortChoice _selectedSort;
+    private int _selectedResultLimit = 20;
     private OnlineModpackFilterChoice _selectedGameVersion;
     private OnlineModpackFilterChoice _selectedLoader;
     private OnlineModpackFilterChoice? _selectedCategory;
@@ -194,6 +195,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             new(OnlineModpackSort.RecentlyUpdated, L("online.sort.updated")),
             new(OnlineModpackSort.Newest, L("online.sort.newest"))
         ];
+        ResultLimitChoices = [20, 40, 60, 100];
         _selectedSort = SortChoices[0];
         GameVersionChoices =
         [
@@ -227,6 +229,8 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
     public IReadOnlyList<OnlineModpackProviderChoice> Providers { get; }
 
     public IReadOnlyList<OnlineModpackSortChoice> SortChoices { get; }
+
+    public IReadOnlyList<int> ResultLimitChoices { get; }
 
     public IReadOnlyList<OnlineModpackFilterChoice> GameVersionChoices { get; }
 
@@ -316,6 +320,26 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             }
         }
     }
+
+    public int SelectedResultLimit
+    {
+        get => _selectedResultLimit;
+        set
+        {
+            if (!ResultLimitChoices.Contains(value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(value));
+            }
+
+            if (SetProperty(ref _selectedResultLimit, value))
+            {
+                OnPropertyChanged(nameof(ResultLimitText));
+                MarkFiltersChanged();
+            }
+        }
+    }
+
+    public string ResultLimitText => L("online.maxResults", SelectedResultLimit);
 
     public OnlineModpackFilterChoice SelectedGameVersion
     {
@@ -972,7 +996,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             Loader: NullIfEmpty(SelectedLoader.Key),
             SourceCategory: NullIfEmpty(SelectedCategory?.Key),
             Offset: 0,
-            Limit: 20);
+            Limit: SelectedResultLimit);
         request.Validate();
         return request;
     }

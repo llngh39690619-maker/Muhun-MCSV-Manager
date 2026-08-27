@@ -8,6 +8,9 @@
         Width="{Binding WindowWidth, Mode=OneWay}" Height="{Binding WindowHeight, Mode=OneWay}" MinWidth="1120" MinHeight="700"
         WindowStartupLocation="CenterScreen"
         Style="{StaticResource AppWindowStyle}"
+        Loaded="OnWindowLoaded"
+        LocationChanged="OnWindowLocationChanged"
+        SizeChanged="OnWindowSizeChanged"
         StateChanged="OnWindowStateChanged"
         Closing="OnWindowClosing"
         Closed="OnWindowClosed">
@@ -182,12 +185,9 @@
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="{Binding RunningSummary}" Style="{StaticResource MutedText}" Margin="0,0,18,0" VerticalAlignment="Center" />
-                        <Button Content="{DynamicResource L10n.main.mobileRemote}" Command="{Binding OpenRemoteAccessCommand}" Margin="0,0,8,0"
-                                ToolTip="{DynamicResource L10n.main.mobileRemote.tooltip}"
-                                AutomationProperties.Name="{DynamicResource L10n.main.mobileRemote.automation}" />
-                        <Button Content="{DynamicResource L10n.main.webConsole}" Command="{Binding OpenRemoteWebConsoleCommand}" Margin="0,0,8,0"
-                                ToolTip="{DynamicResource L10n.main.webConsole.tooltip}"
-                                AutomationProperties.Name="{DynamicResource L10n.main.webConsole.automation}" />
+                        <Button Content="{DynamicResource L10n.main.remoteManagement}" Command="{Binding OpenRemoteManagementCommand}" Margin="0,0,8,0"
+                                ToolTip="{DynamicResource L10n.main.remoteManagement.tooltip}"
+                                AutomationProperties.Name="{DynamicResource L10n.main.remoteManagement.automation}" />
                         <Button Content="{DynamicResource L10n.main.openDataDirectory}" Command="{Binding OpenDataFolderCommand}" Margin="0,0,8,0" />
                         <Button Content="⚙" Command="{Binding OpenSettingsCommand}"
                                 Width="40" MinWidth="40" Padding="8" FontSize="17"

@@ -17,28 +17,182 @@ internal readonly record struct MainWindowLayoutSnapshot(
 
 public partial class MainWindow : Window
 {
+    internal const double DesignMinimumWindowWidth = 1120;
+    internal const double DesignMinimumWindowHeight = 700;
+    private static readonly TimeSpan DefaultWindowSizePersistenceDebounce =
+        TimeSpan.FromMilliseconds(500);
     private bool _allowClose;
     private bool _shutdownInProgress;
     private bool _trayIconDisposed;
     private bool _isClosed;
     private WindowState _restoreWindowState = WindowState.Normal;
     private readonly IMainWindowTrayIcon _trayIcon;
+    private readonly DispatcherTimer _windowSizePersistenceTimer;
     private readonly Dictionary<ListBox, ConsoleAutoScrollState> _consoleAutoScrollStates = [];
+    private Size? _lastNormalWindowSize;
+    private Size? _pendingNormalWindowSize;
+    private bool _windowSizeTrackingInitialized;
+    private bool _isApplyingWorkAreaConstraints;
 
     public MainWindow(MainWindowViewModel viewModel)
         : this(viewModel, DisabledMainWindowTrayIcon.Instance)
     {
     }
 
-    internal MainWindow(MainWindowViewModel viewModel, IMainWindowTrayIcon trayIcon)
+    internal MainWindow(
+        MainWindowViewModel viewModel,
+        IMainWindowTrayIcon trayIcon,
+        TimeSpan? windowSizePersistenceDebounce = null)
     {
         ArgumentNullException.ThrowIfNull(viewModel);
         ArgumentNullException.ThrowIfNull(trayIcon);
         _trayIcon = trayIcon;
         InitializeComponent();
+        var debounce = windowSizePersistenceDebounce ?? DefaultWindowSizePersistenceDebounce;
+        if (debounce <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(windowSizePersistenceDebounce));
+        }
+        _windowSizePersistenceTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = debounce,
+        };
+        _windowSizePersistenceTimer.Tick += OnWindowSizePersistenceTimerTick;
         DataContext = viewModel;
         _trayIcon.OpenRequested += OnTrayOpenRequested;
         _trayIcon.ExitRequested += OnTrayExitRequested;
+    }
+
+    private void OnWindowLoaded(object sender, RoutedEventArgs e)
+    {
+        var requestedWidth = DataContext is MainWindowViewModel viewModel
+            ? viewModel.WindowWidth
+            : ResolveCurrentWidth();
+        var requestedHeight = DataContext is MainWindowViewModel currentViewModel
+            ? currentViewModel.WindowHeight
+            : ResolveCurrentHeight();
+        var normalBounds = PreviewNormalLayout(requestedWidth, requestedHeight);
+        _windowSizeTrackingInitialized = true;
+        _lastNormalWindowSize = ResolvePersistableNormalSize(normalBounds);
+        if (_lastNormalWindowSize is { } clampedSize
+            && (Math.Abs(clampedSize.Width - requestedWidth) >= 0.5
+                || Math.Abs(clampedSize.Height - requestedHeight) >= 0.5))
+        {
+            _pendingNormalWindowSize = clampedSize;
+            _windowSizePersistenceTimer.Start();
+        }
+    }
+
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!_windowSizeTrackingInitialized
+            || _isClosed
+            || _shutdownInProgress
+            || _isApplyingWorkAreaConstraints
+            || WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        var workArea = ResolveCurrentWorkArea();
+        ApplyEffectiveMinimumWindowSize(workArea);
+        var currentWidth = ResolveCurrentWidth();
+        var currentHeight = ResolveCurrentHeight();
+        if (currentWidth > workArea.Width + 0.5 || currentHeight > workArea.Height + 0.5)
+        {
+            ApplyCurrentWorkAreaConstraints(workArea, currentWidth, currentHeight);
+            return;
+        }
+
+        var size = ResolvePersistableNormalSize(
+            new Rect(Left, Top, currentWidth, currentHeight),
+            workArea);
+        if (size is null)
+        {
+            return;
+        }
+
+        _lastNormalWindowSize = size;
+        _pendingNormalWindowSize = size;
+        _windowSizePersistenceTimer.Stop();
+        _windowSizePersistenceTimer.Start();
+    }
+
+    private void OnWindowLocationChanged(object? sender, EventArgs e)
+    {
+        if (!_windowSizeTrackingInitialized
+            || _isClosed
+            || _shutdownInProgress
+            || _isApplyingWorkAreaConstraints
+            || WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        var workArea = ResolveCurrentWorkArea();
+        ApplyEffectiveMinimumWindowSize(workArea);
+        var currentWidth = ResolveCurrentWidth();
+        var currentHeight = ResolveCurrentHeight();
+        if (currentWidth > workArea.Width + 0.5 || currentHeight > workArea.Height + 0.5)
+        {
+            ApplyCurrentWorkAreaConstraints(workArea, currentWidth, currentHeight);
+        }
+    }
+
+    private void ApplyCurrentWorkAreaConstraints(
+        Rect workArea,
+        double requestedWidth,
+        double requestedHeight)
+    {
+        _isApplyingWorkAreaConstraints = true;
+        try
+        {
+            var bounds = PreviewNormalLayout(requestedWidth, requestedHeight, workArea);
+            var size = ResolvePersistableNormalSize(bounds, workArea);
+            if (size is null)
+            {
+                return;
+            }
+
+            _lastNormalWindowSize = size;
+            _pendingNormalWindowSize = size;
+            _windowSizePersistenceTimer.Stop();
+            _windowSizePersistenceTimer.Start();
+        }
+        finally
+        {
+            _isApplyingWorkAreaConstraints = false;
+        }
+    }
+
+    private async void OnWindowSizePersistenceTimerTick(object? sender, EventArgs e)
+    {
+        _windowSizePersistenceTimer.Stop();
+        try
+        {
+            await FlushPendingWindowSizePersistenceAsync();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            // Keep the pending value for the authoritative close-time retry. A transient disk
+            // failure must not tear down the GUI merely because the user resized a window.
+            System.Diagnostics.Debug.WriteLine(error);
+        }
+    }
+
+    internal async Task FlushPendingWindowSizePersistenceAsync()
+    {
+        var pending = _pendingNormalWindowSize;
+        if (pending is null || DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        await viewModel.PersistNormalWindowSizeAsync(pending.Value.Width, pending.Value.Height);
+        if (_pendingNormalWindowSize == pending)
+        {
+            _pendingNormalWindowSize = null;
+        }
     }
 
     internal void PrepareForApplicationShutdown()
@@ -95,18 +249,23 @@ public partial class MainWindow : Window
     /// Height visually, so normalize it first. SetCurrentValue keeps the XAML bindings attached.
     /// </summary>
     internal Rect PreviewNormalLayout(double requestedWidth, double requestedHeight)
+        => PreviewNormalLayout(requestedWidth, requestedHeight, ResolveCurrentWorkArea());
+
+    internal Rect PreviewNormalLayout(
+        double requestedWidth,
+        double requestedHeight,
+        Rect workArea)
     {
-        var workArea = ResolveCurrentWorkArea();
-        var minimumWidth = Math.Min(Math.Max(1, MinWidth), Math.Max(1, workArea.Width));
-        var minimumHeight = Math.Min(Math.Max(1, MinHeight), Math.Max(1, workArea.Height));
-        var width = Math.Clamp(
-            double.IsFinite(requestedWidth) ? requestedWidth : ResolveCurrentWidth(),
-            minimumWidth,
-            Math.Max(minimumWidth, workArea.Width));
-        var height = Math.Clamp(
-            double.IsFinite(requestedHeight) ? requestedHeight : ResolveCurrentHeight(),
-            minimumHeight,
-            Math.Max(minimumHeight, workArea.Height));
+        workArea = NormalizeWorkArea(workArea);
+        ApplyEffectiveMinimumWindowSize(workArea);
+        var size = ClampNormalSizeToWorkArea(
+            requestedWidth,
+            requestedHeight,
+            workArea,
+            ResolveCurrentWidth(),
+            ResolveCurrentHeight());
+        var width = size.Width;
+        var height = size.Height;
 
         if (WindowState != WindowState.Normal)
         {
@@ -126,6 +285,40 @@ public partial class MainWindow : Window
         SetCurrentValue(LeftProperty, left);
         SetCurrentValue(TopProperty, top);
         return new Rect(left, top, width, height);
+    }
+
+    internal static Size ClampNormalSizeToWorkArea(
+        double requestedWidth,
+        double requestedHeight,
+        Rect workArea,
+        double fallbackWidth = DesignMinimumWindowWidth,
+        double fallbackHeight = DesignMinimumWindowHeight)
+    {
+        workArea = NormalizeWorkArea(workArea);
+        var maximumWidth = Math.Max(1d, workArea.Width);
+        var maximumHeight = Math.Max(1d, workArea.Height);
+        var minimumWidth = Math.Min(DesignMinimumWindowWidth, maximumWidth);
+        var minimumHeight = Math.Min(DesignMinimumWindowHeight, maximumHeight);
+        var candidateWidth = double.IsFinite(requestedWidth) && requestedWidth > 0
+            ? requestedWidth
+            : fallbackWidth;
+        var candidateHeight = double.IsFinite(requestedHeight) && requestedHeight > 0
+            ? requestedHeight
+            : fallbackHeight;
+        return new Size(
+            Math.Clamp(candidateWidth, minimumWidth, maximumWidth),
+            Math.Clamp(candidateHeight, minimumHeight, maximumHeight));
+    }
+
+    private void ApplyEffectiveMinimumWindowSize(Rect workArea)
+    {
+        workArea = NormalizeWorkArea(workArea);
+        SetCurrentValue(
+            MinWidthProperty,
+            Math.Min(DesignMinimumWindowWidth, Math.Max(1d, workArea.Width)));
+        SetCurrentValue(
+            MinHeightProperty,
+            Math.Min(DesignMinimumWindowHeight, Math.Max(1d, workArea.Height)));
     }
 
     internal void RestoreLayoutAfterSettingsPreview(MainWindowLayoutSnapshot snapshot)
@@ -149,6 +342,13 @@ public partial class MainWindow : Window
 
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
+        if (_windowSizeTrackingInitialized
+            && WindowState != WindowState.Normal
+            && IsUsableBounds(RestoreBounds))
+        {
+            _lastNormalWindowSize = ResolvePersistableNormalSize(RestoreBounds);
+        }
+
         if (WindowState != WindowState.Minimized)
         {
             _restoreWindowState = WindowState;
@@ -316,6 +516,17 @@ public partial class MainWindow : Window
         IsEnabled = false;
         try
         {
+            _windowSizePersistenceTimer.Stop();
+            if (WindowState == WindowState.Normal)
+            {
+                _pendingNormalWindowSize = ResolvePersistableNormalSize(
+                    new Rect(Left, Top, ResolveCurrentWidth(), ResolveCurrentHeight()));
+            }
+            else if (_lastNormalWindowSize is { } lastNormalWindowSize)
+            {
+                _pendingNormalWindowSize = lastNormalWindowSize;
+            }
+            await FlushPendingWindowSizePersistenceAsync();
             await viewModel.ShutdownAsync();
             _allowClose = true;
             DisposeTrayIcon();
@@ -337,6 +548,8 @@ public partial class MainWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _isClosed = true;
+        _windowSizePersistenceTimer.Stop();
+        _windowSizePersistenceTimer.Tick -= OnWindowSizePersistenceTimerTick;
         DisposeTrayIcon();
     }
 
@@ -400,6 +613,34 @@ public partial class MainWindow : Window
             : double.IsFinite(Height) && Height > 0
                 ? Height
                 : Math.Max(MinHeight, 700);
+
+    private Size? ResolvePersistableNormalSize(Rect normalBounds)
+        => ResolvePersistableNormalSize(normalBounds, ResolveCurrentWorkArea());
+
+    private static Size? ResolvePersistableNormalSize(Rect normalBounds, Rect workArea)
+    {
+        if (!IsUsableBounds(normalBounds))
+        {
+            return null;
+        }
+
+        var normalized = ClampNormalSizeToWorkArea(
+            normalBounds.Width,
+            normalBounds.Height,
+            workArea);
+        return new Size(
+            Math.Round(normalized.Width),
+            Math.Round(normalized.Height));
+    }
+
+    private static Rect NormalizeWorkArea(Rect workArea)
+        => IsUsableBounds(workArea)
+            ? workArea
+            : new Rect(
+                SystemParameters.WorkArea.Left,
+                SystemParameters.WorkArea.Top,
+                Math.Max(1d, SystemParameters.WorkArea.Width),
+                Math.Max(1d, SystemParameters.WorkArea.Height));
 
     private Rect ResolveCurrentWorkArea()
     {

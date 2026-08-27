@@ -146,6 +146,83 @@ public sealed class ProductServerRegistry(ProductDataLayout layout)
         }
     }
 
+    /// <summary>
+    /// Commits only the launch fields selected immediately before process start. Keeping this
+    /// update inside the registry gate prevents a concurrent settings write from being replaced
+    /// by an older full registration snapshot.
+    /// </summary>
+    internal async Task<ProductServerRegistration> UpdateLaunchConfigurationAsync(
+        Guid id,
+        int port,
+        CoreType expectedCoreType,
+        bool updateVelocityPortArgument,
+        CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+        {
+            throw new ArgumentException("Server id must not be empty.", nameof(id));
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureLoaded();
+            Dictionary<Guid, ProductServerRegistration> snapshot;
+            ProductServerRegistration updated;
+            lock (_servers)
+            {
+                if (!_servers.TryGetValue(id, out var stored))
+                {
+                    throw new KeyNotFoundException($"Server '{id}' is not registered.");
+                }
+
+                if (!Enum.TryParse<CoreType>(stored.CoreType, ignoreCase: true, out var storedCoreType) ||
+                    storedCoreType != expectedCoreType)
+                {
+                    throw new InvalidOperationException(
+                        "The server core type changed while its launch port was being prepared.");
+                }
+
+                var currentArguments = stored.ServerArguments.ToList();
+                if (updateVelocityPortArgument)
+                {
+                    if (storedCoreType != CoreType.Velocity)
+                    {
+                        throw new InvalidOperationException(
+                            "Velocity port arguments cannot be applied to a non-Velocity server.");
+                    }
+
+                    VelocityPortArgumentEditor.SetPort(currentArguments, port);
+                }
+
+                updated = stored with
+                {
+                    Port = port,
+                    ServerArguments = currentArguments.ToArray(),
+                };
+                ProductServerRegistrationValidator.ValidateAndThrow(updated, layout);
+                snapshot = _servers.ToDictionary(pair => pair.Key, pair => Clone(pair.Value));
+                snapshot[id] = Clone(updated);
+            }
+
+            await SaveAsync(snapshot.Values, cancellationToken).ConfigureAwait(false);
+            lock (_servers)
+            {
+                _servers.Clear();
+                foreach (var pair in snapshot)
+                {
+                    _servers.Add(pair.Key, pair.Value);
+                }
+            }
+
+            return Clone(updated);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<bool> RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
         if (id == Guid.Empty)

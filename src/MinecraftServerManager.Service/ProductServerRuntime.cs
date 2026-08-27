@@ -69,13 +69,11 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_processManager.TryGetSnapshot(registration.Id, out var snapshot) &&
-                snapshot.State != ServerState.Stopped)
-            {
-                throw new InvalidOperationException("A running server registration cannot be changed.");
-            }
-
-            await _registry.UpsertAsync(registration, cancellationToken).ConfigureAwait(false);
+            await _processManager.ExecuteWhileInactiveAsync(
+                    registration.Id,
+                    token => _registry.UpsertAsync(registration, token),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -94,24 +92,24 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_processManager.TryGetSnapshot(serverId, out var snapshot) &&
-                snapshot.State is ServerState.Starting or ServerState.Running or ServerState.Stopping)
-            {
-                throw new InvalidOperationException(
-                    "A running server registration cannot be changed.");
-            }
-
-            var current = GetRegistration(serverId);
-            var updated = current with
-            {
-                Name = settings.Name,
-                MinimumMemoryMb = settings.MinimumMemoryMb,
-                MaximumMemoryMb = settings.MaximumMemoryMb,
-                Port = settings.Port,
-                AutoRestart = settings.AutoRestart,
-            };
-            await _registry.UpsertAsync(updated, cancellationToken).ConfigureAwait(false);
-            return new ProductServerSettingsUpdateResult(updated, ToStatus(updated));
+            return await _processManager.ExecuteWhileInactiveAsync(
+                    serverId,
+                    async token =>
+                    {
+                        var current = GetRegistration(serverId);
+                        var updated = current with
+                        {
+                            Name = settings.Name,
+                            MinimumMemoryMb = settings.MinimumMemoryMb,
+                            MaximumMemoryMb = settings.MaximumMemoryMb,
+                            Port = settings.Port,
+                            AutoRestart = settings.AutoRestart,
+                        };
+                        await _registry.UpsertAsync(updated, token).ConfigureAwait(false);
+                        return new ProductServerSettingsUpdateResult(updated, ToStatus(updated));
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -126,23 +124,25 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_processManager.TryGetSnapshot(serverId, out var snapshot) &&
-                snapshot.State != ServerState.Stopped)
-            {
-                throw new InvalidOperationException("A running server cannot be removed.");
-            }
+            return await _processManager.ExecuteWhileInactiveAsync(
+                    serverId,
+                    async token =>
+                    {
+                        // Clear restart intent before deleting the registration. A crash between
+                        // these commits can leave a harmless stopped registration, never an
+                        // orphaned auto-start.
+                        await _desiredRunIntent.SetDesiredAsync(serverId, false, token)
+                            .ConfigureAwait(false);
+                        var removed = await _registry.RemoveAsync(serverId, token).ConfigureAwait(false);
+                        if (removed)
+                        {
+                            _journals.TryRemove(serverId, out _);
+                        }
 
-            // Clear restart intent before deleting the registration. A crash between these two
-            // commits can leave a harmless stopped registration, never an orphaned auto-start.
-            await _desiredRunIntent.SetDesiredAsync(serverId, false, cancellationToken)
+                        return removed;
+                    },
+                    cancellationToken)
                 .ConfigureAwait(false);
-            var removed = await _registry.RemoveAsync(serverId, cancellationToken).ConfigureAwait(false);
-            if (removed)
-            {
-                _journals.TryRemove(serverId, out _);
-            }
-
-            return removed;
         }
         finally
         {
@@ -287,7 +287,10 @@ public sealed class ProductServerRuntime : IAsyncDisposable
                 // Commit desired=true only after the Core process manager accepted the launch.
                 await _desiredRunIntent.SetDesiredAsync(serverId, true, cancellationToken)
                     .ConfigureAwait(false);
-                return new ProductServerMutationResult(serverId, true, ToStatus(registration));
+                return new ProductServerMutationResult(
+                    serverId,
+                    true,
+                    ToStatus(GetRegistration(serverId)));
             }
             catch
             {
@@ -365,7 +368,10 @@ public sealed class ProductServerRuntime : IAsyncDisposable
                 started = true;
                 await _desiredRunIntent.SetDesiredAsync(serverId, true, cancellationToken)
                     .ConfigureAwait(false);
-                return new ProductServerMutationResult(serverId, true, ToStatus(registration));
+                return new ProductServerMutationResult(
+                    serverId,
+                    true,
+                    ToStatus(GetRegistration(serverId)));
             }
             catch
             {
@@ -574,42 +580,58 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         SafePath.EnsureNoReparsePointsUnderRoot(_layout.Servers, serverDirectory);
         SafePath.EnsureNoReparsePointsUnderRoot(_layout.Runtimes, javaExecutable);
 
-        if (!Enum.TryParse<CoreType>(registration.CoreType, ignoreCase: true, out var coreType) ||
-            !Enum.IsDefined(coreType))
+        var instance = new ServerInstance();
+        ApplyRegistrationLaunchSnapshot(instance, registration, _layout);
+        return instance;
+    }
+
+    internal static void ApplyRegistrationLaunchSnapshot(
+        ServerInstance instance,
+        ProductServerRegistration registration,
+        ProductDataLayout layout)
+    {
+        ProductServerRegistrationValidator.ValidateAndThrow(registration, layout);
+        var serverDirectory = ProductServerRegistrationValidator.ResolveOwnedPath(
+            layout.Servers,
+            registration.ServerDirectory,
+            allowRoot: false);
+        var javaExecutable = ProductServerRegistrationValidator.ResolveOwnedPath(
+            layout.Runtimes,
+            registration.JavaRuntimePath,
+            allowRoot: false);
+        if (!Enum.TryParse<CoreType>(registration.CoreType, ignoreCase: true, out var coreType)
+            || !Enum.IsDefined(coreType))
         {
             throw new InvalidDataException("Stored core type is unsupported.");
         }
 
-        return new ServerInstance
-        {
-            Id = registration.Id,
-            Name = registration.Name,
-            DirectoryPath = serverDirectory,
-            JavaExecutablePath = javaExecutable,
-            LaunchKind = (ServerLaunchKind)registration.LaunchKind,
-            // Core launch models use an absolute JAR path. The public registry deliberately keeps
-            // only a root-confined relative path, so resolve it at this ownership boundary.
-            ServerJarPath = SafePath.EnsureWithinRoot(
-                serverDirectory,
-                registration.ServerJarPath,
-                allowRoot: false),
-            JavaArgumentFilePaths = registration.JavaArgumentFilePaths.ToList(),
-            CoreType = coreType,
-            MinecraftVersion = registration.MinecraftVersion,
-            MinimumMemoryMb = registration.MinimumMemoryMb,
-            MaximumMemoryMb = registration.MaximumMemoryMb,
-            JvmArguments = registration.JvmArguments.ToList(),
-            ServerArguments = registration.ServerArguments.ToList(),
-            StopCommand = registration.StopCommand,
-            Port = registration.Port,
-            AutoRestart = registration.AutoRestart,
-            ModpackProviderId = registration.ModpackProviderId,
-            ModpackSource = (ModpackSourceKind)registration.ModpackSource,
-            ModpackProjectId = registration.ModpackProjectId,
-            ModpackVersionId = registration.ModpackVersionId,
-            ModpackVersionName = registration.ModpackVersionName,
-            IsInstallerArtifact = registration.IsInstallerArtifact,
-        };
+        instance.Id = registration.Id;
+        instance.Name = registration.Name;
+        instance.DirectoryPath = serverDirectory;
+        instance.JavaExecutablePath = javaExecutable;
+        instance.LaunchKind = (ServerLaunchKind)registration.LaunchKind;
+        // Core launch models use an absolute JAR path. The public registry deliberately keeps
+        // only a root-confined relative path, so resolve it at this ownership boundary.
+        instance.ServerJarPath = SafePath.EnsureWithinRoot(
+            serverDirectory,
+            registration.ServerJarPath,
+            allowRoot: false);
+        instance.JavaArgumentFilePaths = registration.JavaArgumentFilePaths.ToList();
+        instance.CoreType = coreType;
+        instance.MinecraftVersion = registration.MinecraftVersion;
+        instance.MinimumMemoryMb = registration.MinimumMemoryMb;
+        instance.MaximumMemoryMb = registration.MaximumMemoryMb;
+        instance.JvmArguments = registration.JvmArguments.ToList();
+        instance.ServerArguments = registration.ServerArguments.ToList();
+        instance.StopCommand = registration.StopCommand;
+        instance.Port = registration.Port;
+        instance.AutoRestart = registration.AutoRestart;
+        instance.ModpackProviderId = registration.ModpackProviderId;
+        instance.ModpackSource = (ModpackSourceKind)registration.ModpackSource;
+        instance.ModpackProjectId = registration.ModpackProjectId;
+        instance.ModpackVersionId = registration.ModpackVersionId;
+        instance.ModpackVersionName = registration.ModpackVersionName;
+        instance.IsInstallerArtifact = registration.IsInstallerArtifact;
     }
 
     internal ServerInstance CreateCoreInstance(ProductServerRegistration registration)
@@ -681,17 +703,23 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var registration = GetRegistration(serverId);
-            if (_processManager.TryGetSnapshot(serverId, out var snapshot) &&
-                (requireExplicitStoppedState
-                    ? snapshot.State != ServerState.Stopped
-                    : snapshot.State is ServerState.Starting or ServerState.Running or ServerState.Stopping))
-            {
-                throw new InvalidOperationException(
-                    "This maintenance operation requires the server to be completely stopped.");
-            }
+            return await _processManager.ExecuteWhileInactiveAsync(
+                    serverId,
+                    async token =>
+                    {
+                        var registration = GetRegistration(serverId);
+                        if (requireExplicitStoppedState &&
+                            _processManager.TryGetSnapshot(serverId, out var snapshot) &&
+                            snapshot.State != ServerState.Stopped)
+                        {
+                            throw new InvalidOperationException(
+                                "This maintenance operation requires the server to be completely stopped.");
+                        }
 
-            return await operation(registration, cancellationToken).ConfigureAwait(false);
+                        return await operation(registration, token).ConfigureAwait(false);
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {

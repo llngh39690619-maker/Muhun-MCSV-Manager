@@ -131,18 +131,40 @@ public static class ProductServiceApplication
                 provider.GetRequiredService<INotificationSecretResolver>(),
                 provider.GetRequiredService<INotificationMessageRenderer>()));
         builder.Services.AddSingleton<ProductServerRestartBlocker>();
+        builder.Services.AddSingleton<ServerPropertiesPortService>();
+        builder.Services.AddSingleton<ProductServerPortCoordinator>();
+        builder.Services.AddSingleton<ProductServerDirectoryLeaseProvider>();
         builder.Services.AddSingleton(provider =>
         {
             var registry = provider.GetRequiredService<ProductServerRegistry>();
             var restartBlocker = provider.GetRequiredService<ProductServerRestartBlocker>();
-            return new ServerProcessManager(new ServerProcessManagerOptions
+            var portCoordinator = provider.GetRequiredService<ProductServerPortCoordinator>();
+            var directoryLeaseProvider = provider.GetRequiredService<ProductServerDirectoryLeaseProvider>();
+            var manager = new ServerProcessManager(new ServerProcessManagerOptions
             {
                 MaximumRetainedConsoleLines = ProductServerRuntime.CoreRetainedConsoleLinesPerServer,
                 ShouldAutoRestartAsync = (serverId, _) => Task.FromResult(
                     registry.TryGet(serverId, out var server) &&
                     server.AutoRestart &&
                     !restartBlocker.IsBlocked(serverId)),
+                AcquireDirectoryLease = directoryLeaseProvider.Acquire,
+                RefreshAutoRestartSnapshotAsync = (snapshot, cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!registry.TryGet(snapshot.Id, out var latest))
+                    {
+                        throw new InvalidOperationException(
+                            "Automatic restart was cancelled because the server registration no longer exists.");
+                    }
+
+                    ProductServerRuntime.ApplyRegistrationLaunchSnapshot(snapshot, latest, layout);
+                    return Task.CompletedTask;
+                },
+                PrepareStartAsync = portCoordinator.PrepareStartAsync,
+                PreparedStartAborted = portCoordinator.PreparedStartAborted,
             });
+            manager.StateChanged += portCoordinator.ObserveStateChanged;
+            return manager;
         });
         builder.Services.AddSingleton<ProductServerRuntime>();
         builder.Services.AddSingleton<ProductServerImportService>();

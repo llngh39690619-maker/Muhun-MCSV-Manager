@@ -512,6 +512,7 @@ public sealed class InstallerScriptContractTests
         Assert.DoesNotContain("-p:AssemblyName=", formalBuild, StringComparison.Ordinal);
         Assert.Contains("-p:TreatWarningsAsErrors=true", formalBuild, StringComparison.Ordinal);
         Assert.Contains("-p:Deterministic=true", formalBuild, StringComparison.Ordinal);
+        Assert.Contains("-p:IncludeSourceRevisionInInformationalVersion=false", formalBuild, StringComparison.Ordinal);
         Assert.Contains("New-MuhunMcsvRelease.ps1", formalBuild, StringComparison.Ordinal);
         Assert.Contains("Muhun MCSV Manager", formalBuild, StringComparison.Ordinal);
         Assert.DoesNotContain("ExecutionPolicy Bypass", formalBuild, StringComparison.OrdinalIgnoreCase);

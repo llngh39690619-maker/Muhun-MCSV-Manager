@@ -344,11 +344,12 @@ public sealed class SpigotBuildToolsRunner
         _commandBuilder = commandBuilder ?? new SpigotBuildToolsCommandBuilder();
         _trustedBuildTools = trustedBuildTools
             ?? throw new ArgumentNullException(nameof(trustedBuildTools));
-        _managedGitProvider = managedGitProvider
-            ?? throw new ArgumentNullException(nameof(managedGitProvider));
-        _workspace = workspace ?? new SpigotBuildToolsManagedGitWorkspace();
         ArgumentException.ThrowIfNullOrWhiteSpace(localWorkspaceRoot);
         _localWorkspaceRoot = Path.GetFullPath(localWorkspaceRoot);
+        _managedGitProvider = managedGitProvider
+            ?? throw new ArgumentNullException(nameof(managedGitProvider));
+        _workspace = workspace ?? new SpigotBuildToolsManagedGitWorkspace(
+            cacheRoot: Path.Combine(_localWorkspaceRoot, "source-cache-v1"));
     }
 
     public SpigotBuildToolsPreflightResult CheckPreflight()

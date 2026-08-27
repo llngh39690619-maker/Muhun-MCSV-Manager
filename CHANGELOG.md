@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 — 啟動 Port、BuildTools 與桌面操作修正
+
+- 正式 Windows Service 的所有啟動路徑統一在真正啟動前配置 Port：從 `25565` 起選擇最低可用 TCP Listener Port、忽略 UDP-only 占用，並以 session-bound reservation 避免同時啟動重複選號；停止後可立即回收 `25565`。
+- Port、`server.properties`／Velocity `--port` 與 registry 會更新為相同的選定值；手動啟動、重新啟動、自動重啟與 desired-run 復原共用相同流程。啟動失敗、取消與終止會釋放 reservation，路徑在 Core directory lease 內重新驗證且拒絕 junction／reparse。BungeeCord／Waterfall 在安全的原子 YAML 編輯器完成前明確 fail closed，不會誤寫 `server.properties`。
+- Spigot BuildTools 加入持久、受鎖定的官方 Git bare mirror source cache；後續建置缺少 commit 時先從固定官方 remote 安全 fetch，只有驗證或更新失敗才隔離重建。每次 operation 仍使用 `--no-hardlinks` 獨立 clone，拒絕 hooks、alternates、reparse 與非官方 origin；Maven 工作目錄維持單次作業隔離。
+- 線上模組包結果數可選 `20／40／60／100`，切換來源、版本、Loader、分類、排序或結果數會取消舊要求並立即重新載入。CurseForge 依官方每頁限制分頁，結果去重且硬性限制在使用者選擇的數量內。
+- 主工具列將「手機遠端」與「Web 控制台」合併為單一「遠端管理」入口；遠端設定內仍可直接開啟 Web 控制台，舊命令別名保留相容性。
+- 一般視窗拖曳尺寸會延遲合併後保存，程式關閉前完成最後寫入；最小化／最大化不覆蓋正常尺寸，重新開啟依保存值及目前螢幕工作區安全夾限。修正多螢幕尺寸預先被主螢幕截斷及重疊保存失敗覆蓋新值的競態。
+
 ## 1.0.3 — Service 管理與可靠性正式修正
 
 - Service IPC API 1.5 提供受控的伺服器資料夾開啟與永久刪除；真實路徑與刪除能力只允許本機 ACL Named Pipe 使用，不會暴露給 Web／REST，也不再由 GUI 越權直接操作 Service 資料。

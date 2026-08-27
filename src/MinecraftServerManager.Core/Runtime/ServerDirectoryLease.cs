@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using MinecraftServerManager.Core.Services;
+
 namespace MinecraftServerManager.Core.Runtime;
 
 /// <summary>
@@ -7,22 +10,46 @@ namespace MinecraftServerManager.Core.Runtime;
 /// </summary>
 public sealed class ServerDirectoryLease : IDisposable, IAsyncDisposable
 {
-    private FileStream? _stream;
+    public const string LockFileName = ".minecraft-server-manager.lock";
+    private IDisposable? _lease;
 
-    private ServerDirectoryLease(FileStream stream)
+    private ServerDirectoryLease(IDisposable lease)
     {
-        _stream = stream;
+        _lease = lease;
     }
 
     public static ServerDirectoryLease Acquire(string serverDirectoryPath)
         => new(ServerDirectoryLock.Acquire(serverDirectoryPath));
 
+    public static ServerDirectoryLease AcquireNoFollow(string serverDirectoryPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverDirectoryPath);
+        var serverRoot = Path.GetFullPath(serverDirectoryPath);
+        if (!Directory.Exists(serverRoot))
+        {
+            throw new DirectoryNotFoundException(
+                $"無法啟動 Server，因為找不到資料夾：{serverRoot}");
+        }
+
+        var lockFilePath = Path.Combine(serverRoot, LockFileName);
+        try
+        {
+            return new ServerDirectoryLease(
+                SafePath.AcquireNoFollowExclusiveFileLease(lockFilePath));
+        }
+        catch (Exception error) when (
+            error is IOException or UnauthorizedAccessException or Win32Exception)
+        {
+            throw new ServerDirectoryLockException(serverRoot, lockFilePath, error);
+        }
+    }
+
     public void Dispose()
-        => Interlocked.Exchange(ref _stream, null)?.Dispose();
+        => Interlocked.Exchange(ref _lease, null)?.Dispose();
 
     public ValueTask DisposeAsync()
     {
-        var stream = Interlocked.Exchange(ref _stream, null);
-        return stream is null ? ValueTask.CompletedTask : stream.DisposeAsync();
+        Dispose();
+        return ValueTask.CompletedTask;
     }
 }

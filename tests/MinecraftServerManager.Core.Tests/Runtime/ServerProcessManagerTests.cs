@@ -250,6 +250,39 @@ public sealed class ServerProcessManagerTests
     }
 
     [Fact]
+    public async Task AutoRestart_InvokesLockedPrepareStartHookForEveryProcessLaunch()
+    {
+        var factory = new FakeServerProcessFactory();
+        var preparationCount = 0;
+        await using var manager = new ServerProcessManager(
+            new ServerProcessManagerOptions
+            {
+                ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                GracefulStopTimeout = TimeSpan.FromSeconds(1),
+                ForcedKillWaitTimeout = TimeSpan.FromSeconds(1),
+                AutoRestartDelay = TimeSpan.FromMilliseconds(5),
+                PrepareStartAsync = (snapshot, _) =>
+                {
+                    var attempt = Interlocked.Increment(ref preparationCount);
+                    snapshot.ServerArguments = [$"--prepared-attempt={attempt}"];
+                    return Task.CompletedTask;
+                },
+            },
+            factory);
+        var instance = CreateInstance("prepare-every-launch");
+        instance.AutoRestart = true;
+
+        await manager.StartAsync(instance);
+        factory.Processes[0].Complete(1);
+        await EventuallyAsync(() => factory.Processes.Count == 2);
+
+        Assert.Equal(2, Volatile.Read(ref preparationCount));
+        Assert.Contains("--prepared-attempt=1", factory.Processes[0].StartInfo!.ArgumentList);
+        Assert.Contains("--prepared-attempt=2", factory.Processes[1].StartInfo!.ArgumentList);
+        await manager.StopAsync(instance.Id);
+    }
+
+    [Fact]
     public async Task AutoRestart_DelayProviderReceivesExactExitedSession()
     {
         var factory = new FakeServerProcessFactory();
@@ -583,6 +616,76 @@ public sealed class ServerProcessManagerTests
         Assert.Equal(1, secondPrepareCount);
         Assert.Single(secondFactory.Processes);
         await secondManager.StopAsync(second.Id);
+    }
+
+    [Fact]
+    public async Task CustomDirectoryLease_IsRetainedForCompleteProcessSession()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var factory = new FakeServerProcessFactory();
+        TrackingDisposable? lease = null;
+        await using var manager = new ServerProcessManager(
+            new ServerProcessManagerOptions
+            {
+                ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                GracefulStopTimeout = TimeSpan.FromSeconds(1),
+                ForcedKillWaitTimeout = TimeSpan.FromSeconds(1),
+                AcquireDirectoryLease = _ => lease = new TrackingDisposable(),
+            },
+            factory);
+        var instance = CreateInstance("custom-directory-lease", temporaryDirectory.Path);
+
+        await manager.StartAsync(instance);
+
+        Assert.NotNull(lease);
+        Assert.False(lease.IsDisposed);
+        await manager.StopAsync(instance.Id);
+        Assert.True(lease.IsDisposed);
+    }
+
+    [Fact]
+    public async Task ExecuteWhileInactive_SerializesAgainstStartSessionCommit()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var factory = new FakeServerProcessFactory();
+        var preparationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePreparation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var manager = new ServerProcessManager(
+            new ServerProcessManagerOptions
+            {
+                ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                GracefulStopTimeout = TimeSpan.FromSeconds(1),
+                ForcedKillWaitTimeout = TimeSpan.FromSeconds(1),
+                PrepareStartAsync = async (_, cancellationToken) =>
+                {
+                    preparationEntered.TrySetResult();
+                    await releasePreparation.Task.WaitAsync(cancellationToken);
+                },
+            },
+            factory);
+        var instance = CreateInstance("inactive-mutation-gate", temporaryDirectory.Path);
+        var start = manager.StartAsync(instance);
+        await preparationEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var mutationCalls = 0;
+        var mutation = manager.ExecuteWhileInactiveAsync(
+            instance.Id,
+            _ =>
+            {
+                Interlocked.Increment(ref mutationCalls);
+                return Task.CompletedTask;
+            });
+
+        await Task.Delay(30);
+        Assert.False(mutation.IsCompleted);
+        Assert.Equal(0, Volatile.Read(ref mutationCalls));
+        releasePreparation.TrySetResult();
+        await start;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => mutation);
+        Assert.Equal(0, Volatile.Read(ref mutationCalls));
+        await manager.StopAsync(instance.Id);
     }
 
     [Fact]
@@ -1452,5 +1555,14 @@ public sealed class ServerProcessManagerTests
         {
             await Task.Delay(5, timeout.Token);
         }
+    }
+
+    private sealed class TrackingDisposable : IDisposable
+    {
+        private int _disposed;
+
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
     }
 }

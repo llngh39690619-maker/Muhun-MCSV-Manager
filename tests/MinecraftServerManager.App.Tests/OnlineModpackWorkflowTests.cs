@@ -17,6 +17,97 @@ namespace MinecraftServerManager.App.Tests;
 public sealed class OnlineModpackWorkflowTests
 {
     [Fact]
+    public async Task BrowseCurseForge_DeduplicatesModIdsAndAdvancesAcrossBoundedPages()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var searchIndexes = new List<int>();
+        using var apiClient = new HttpClient(new CurseHttpHandler(request =>
+        {
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/v1/games" => JsonResponse(CurseGamesJson),
+                "/v1/categories" => JsonResponse(CurseCategoriesJson),
+                "/v1/mods/search" => CreateCurseSearchResponse(
+                    RecordSearchIndex(request.RequestUri, searchIndexes),
+                    ReadQueryInteger(request.RequestUri, "pageSize"),
+                    ReadQueryInteger(request.RequestUri, "index") == 0
+                        ? Enumerable.Range(1, 50)
+                        : Enumerable.Range(26, 50),
+                    totalCount: 100),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            };
+        }));
+        using var downloadClient = new HttpClient(new CurseHttpHandler(_ =>
+            throw new Xunit.Sdk.XunitException("Catalogue browse must not call the CDN.")));
+        var provider = new CurseForgeModpackProvider(
+            apiClient,
+            downloadClient,
+            "MuhunMCSVManager.Tests/1.0");
+        using var workflow = new OnlineModpackWorkflow(
+            new ApplicationPaths(directory.Path),
+            modrinthCatalog: null,
+            modrinthInstaller: null,
+            modrinthLoaderBootstrapper: null,
+            modrinthJavaRuntimeResolver: null,
+            curseForge: provider);
+        using var apiKey = CreateSecureString("transient-curse-key");
+
+        var results = await workflow.BrowseAsync(
+            new OnlineModpackBrowseRequest(OnlineModpackProvider.CurseForge, Limit: 100),
+            apiKey,
+            CancellationToken.None);
+
+        Assert.Equal([0, 50], searchIndexes);
+        Assert.Equal(75, results.Count);
+        Assert.Equal(75, results.Select(result => result.ProjectId).Distinct().Count());
+        Assert.Equal("1", results[0].ProjectId);
+        Assert.Equal("75", results[^1].ProjectId);
+    }
+
+    [Fact]
+    public async Task BrowseCurseForge_OversizedProviderPageIsHardCappedAtRequestedLimit()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var searchCalls = 0;
+        using var apiClient = new HttpClient(new CurseHttpHandler(request =>
+            request.RequestUri!.AbsolutePath switch
+            {
+                "/v1/games" => JsonResponse(CurseGamesJson),
+                "/v1/categories" => JsonResponse(CurseCategoriesJson),
+                "/v1/mods/search" => CreateCurseSearchResponse(
+                    ReadQueryInteger(request.RequestUri, "index"),
+                    ReadQueryInteger(request.RequestUri, "pageSize"),
+                    Enumerable.Range(1, 80),
+                    totalCount: 1000,
+                    onCreate: () => searchCalls++),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            }));
+        using var downloadClient = new HttpClient(new CurseHttpHandler(_ =>
+            throw new Xunit.Sdk.XunitException("Catalogue browse must not call the CDN.")));
+        var provider = new CurseForgeModpackProvider(
+            apiClient,
+            downloadClient,
+            "MuhunMCSVManager.Tests/1.0");
+        using var workflow = new OnlineModpackWorkflow(
+            new ApplicationPaths(directory.Path),
+            modrinthCatalog: null,
+            modrinthInstaller: null,
+            modrinthLoaderBootstrapper: null,
+            modrinthJavaRuntimeResolver: null,
+            curseForge: provider);
+        using var apiKey = CreateSecureString("transient-curse-key");
+
+        var results = await workflow.BrowseAsync(
+            new OnlineModpackBrowseRequest(OnlineModpackProvider.CurseForge, Limit: 60),
+            apiKey,
+            CancellationToken.None);
+
+        Assert.Equal(60, results.Count);
+        Assert.Equal(60, results.Select(result => result.ProjectId).Distinct().Count());
+        Assert.Equal(1, searchCalls);
+    }
+
+    [Fact]
     public void ModrinthDownloadProgress_MapsActualAdaptiveConcurrencyToSecondLine()
     {
         var mapped = OnlineModpackWorkflow.MapModrinthPackProgress(new ModrinthModpackInstallProgress(
@@ -405,6 +496,79 @@ public sealed class OnlineModpackWorkflowTests
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
+
+    private static HttpResponseMessage CreateCurseSearchResponse(
+        int index,
+        int pageSize,
+        IEnumerable<int> modIds,
+        int totalCount,
+        Action? onCreate = null)
+    {
+        onCreate?.Invoke();
+        var projects = modIds.Select(static modId => new
+        {
+            id = modId,
+            gameId = 432,
+            classId = 4471,
+            slug = $"fixture-{modId}",
+            name = $"Fixture {modId}",
+            summary = "Fixture",
+            authors = new[] { new { name = "Tests" } },
+            links = new { },
+            logo = (object?)null,
+            screenshots = Array.Empty<object>(),
+            downloadCount = modId,
+            dateModified = "2026-08-16T00:00:00Z",
+            isAvailable = true,
+            allowModDistribution = true,
+        }).ToArray();
+        return JsonResponse(JsonSerializer.Serialize(new
+        {
+            data = projects,
+            pagination = new
+            {
+                index,
+                pageSize,
+                resultCount = projects.Length,
+                totalCount,
+            },
+        }));
+    }
+
+    private static int RecordSearchIndex(Uri uri, ICollection<int> indexes)
+    {
+        var index = ReadQueryInteger(uri, "index");
+        indexes.Add(index);
+        return index;
+    }
+
+    private static int ReadQueryInteger(Uri uri, string name)
+    {
+        foreach (var segment in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = segment.Split('=', 2);
+            if (pair.Length == 2
+                && Uri.UnescapeDataString(pair[0]).Equals(name, StringComparison.Ordinal))
+            {
+                return int.Parse(Uri.UnescapeDataString(pair[1]), System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+
+        throw new Xunit.Sdk.XunitException($"Missing query parameter: {name}");
+    }
+
+    private const string CurseGamesJson = """
+        {
+          "data": [{ "id": 432, "name": "Minecraft", "slug": "minecraft" }],
+          "pagination": { "index": 0, "pageSize": 50, "resultCount": 1, "totalCount": 1 }
+        }
+        """;
+
+    private const string CurseCategoriesJson = """
+        {
+          "data": [{ "id": 4471, "name": "Modpacks", "slug": "modpacks", "isClass": true }]
+        }
+        """;
 
     private static string CurseProjectJson()
         => """

@@ -154,7 +154,7 @@
                 <Border Grid.Column="1" Background="{DynamicResource AccentDarkBrush}"
                         BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1"
                         CornerRadius="12" Padding="12,5" VerticalAlignment="Top">
-                    <TextBlock Text="{DynamicResource L10n.online.maxResults}" FontSize="11" />
+                    <TextBlock Text="{Binding ResultLimitText, Mode=OneWay}" FontSize="11" />
                 </Border>
             </Grid>
 
@@ -173,6 +173,7 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="170" />
                             <ColumnDefinition Width="170" />
+                            <ColumnDefinition Width="120" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0" Margin="0,0,18,0">
                             <TextBlock Text="{DynamicResource L10n.online.source}" Style="{StaticResource DialogLabel}" />
@@ -222,6 +223,13 @@
                                       DisplayMemberPath="DisplayName"
                                       IsEnabled="{Binding IsInputEnabled}"
                                       AutomationProperties.Name="{DynamicResource L10n.online.gameVersion}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="4" Margin="12,0,0,0">
+                            <TextBlock Text="{DynamicResource L10n.online.resultLimit}" Style="{StaticResource DialogLabel}" />
+                            <ComboBox ItemsSource="{Binding ResultLimitChoices}"
+                                      SelectedItem="{Binding SelectedResultLimit, Mode=TwoWay}"
+                                      IsEnabled="{Binding CanChangeProvider}"
+                                      AutomationProperties.Name="{DynamicResource L10n.online.resultLimit}" />
                         </StackPanel>
                     </Grid>
 

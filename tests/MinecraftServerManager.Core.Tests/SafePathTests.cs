@@ -4,6 +4,35 @@ namespace MinecraftServerManager.Core.Tests;
 
 public sealed class SafePathTests
 {
+    [Fact]
+    public void NoFollowDirectoryLeaseFailsClosedOnUnsupportedPlatform()
+    {
+        using var directory = new TemporaryDirectory();
+        using var outside = new TemporaryDirectory();
+        var child = Path.Combine(directory.Path, "server-link");
+        ReparsePointTestHelper.CreateDirectoryLink(child, outside.Path);
+        try
+        {
+            Assert.Throws<PlatformNotSupportedException>(() =>
+                SafePath.AcquireNoReparseDirectoryChainLease(directory.Path, child, isWindows: false));
+        }
+        finally
+        {
+            Directory.Delete(child);
+        }
+    }
+
+    [Fact]
+    public void NoFollowFileLeaseFailsClosedWithoutCreatingFileOnUnsupportedPlatform()
+    {
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "server.lock");
+
+        Assert.Throws<PlatformNotSupportedException>(() =>
+            SafePath.AcquireNoFollowExclusiveFileLease(file, isWindows: false));
+        Assert.False(File.Exists(file));
+    }
+
     [Theory]
     [InlineData("Paper: 1.21?", "Paper_ 1.21_")]
     [InlineData("CON", "_CON")]

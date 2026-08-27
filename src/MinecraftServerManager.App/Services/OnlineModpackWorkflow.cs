@@ -177,21 +177,78 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
                 .ConfigureAwait(false)).Projects.Select(MapModrinthProject).ToArray(),
             OnlineModpackProvider.CurseForge => await WithApiKeyAsync(
                 transientApiKey,
-                async key => (await _curseForge.SearchAsync(
-                        key,
-                        new CurseForgeModpackSearchRequest(
-                            Query: request.Query.Trim(),
-                            GameVersion: TrimOrNull(request.GameVersion),
-                            ModLoader: MapCurseForgeLoader(request.Loader),
-                            Index: request.Offset,
-                            PageSize: request.Limit,
-                            SortField: MapCurseForgeSort(request.Sort),
-                            SortDescending: true,
-                            CategoryId: ParseCurseForgeCategory(request.SourceCategory)),
-                        cancellationToken)
-                    .ConfigureAwait(false)).Projects.Select(MapCurseForgeProject).ToArray()),
+                key => BrowseCurseForgeAsync(key, request, cancellationToken)),
             _ => throw new ArgumentOutOfRangeException(nameof(request))
         };
+    }
+
+    private async Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseCurseForgeAsync(
+        string apiKey,
+        OnlineModpackBrowseRequest request,
+        CancellationToken cancellationToken)
+    {
+        const int providerPageLimit = 50;
+        var results = new List<OnlineModpackSearchResult>(request.Limit);
+        var seenModIds = new HashSet<int>();
+        var index = request.Offset;
+        var scanEndExclusive = checked(request.Offset + request.Limit);
+        while (results.Count < request.Limit && index < scanEndExclusive)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Bound network work by the requested catalogue window rather than by the count of
+            // unique results. A provider that repeats rows can therefore never keep paging
+            // indefinitely in an attempt to fill the UI limit.
+            var pageSize = Math.Min(providerPageLimit, scanEndExclusive - index);
+            var page = await _curseForge.SearchAsync(
+                    apiKey,
+                    new CurseForgeModpackSearchRequest(
+                        Query: request.Query.Trim(),
+                        GameVersion: TrimOrNull(request.GameVersion),
+                        ModLoader: MapCurseForgeLoader(request.Loader),
+                        Index: index,
+                        PageSize: pageSize,
+                        SortField: MapCurseForgeSort(request.Sort),
+                        SortDescending: true,
+                        CategoryId: ParseCurseForgeCategory(request.SourceCategory)),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            var received = page.Projects.Count;
+            if (received == 0)
+            {
+                break;
+            }
+
+            foreach (var project in page.Projects)
+            {
+                if (seenModIds.Add(project.ModId))
+                {
+                    results.Add(MapCurseForgeProject(project));
+                    if (results.Count == request.Limit)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var nextIndexLong = (long)index + received;
+            if (nextIndexLong <= index)
+            {
+                break;
+            }
+
+            var nextIndex = (int)Math.Min(nextIndexLong, scanEndExclusive);
+            if (received < pageSize
+                || nextIndex >= scanEndExclusive
+                || nextIndex >= Math.Max(0, page.Pagination.TotalCount))
+            {
+                break;
+            }
+
+            index = nextIndex;
+        }
+
+        return results.Take(request.Limit).ToArray();
     }
 
     private async Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseFtbAsync(

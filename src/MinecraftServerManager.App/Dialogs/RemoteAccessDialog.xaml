@@ -18,11 +18,21 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0" Margin="0,0,0,16">
-                <TextBlock Text="{DynamicResource L10n.remote.heading}" FontSize="24" FontWeight="SemiBold" />
-                <TextBlock Margin="0,7,0,0" Style="{StaticResource MutedText}" TextWrapping="Wrap"
-                           Text="{DynamicResource L10n.remote.description}" />
-            </StackPanel>
+            <Grid Grid.Row="0" Margin="0,0,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="{DynamicResource L10n.remote.heading}" FontSize="24" FontWeight="SemiBold" />
+                    <TextBlock Margin="0,7,0,0" Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                               Text="{DynamicResource L10n.remote.description}" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="{DynamicResource L10n.main.webConsole}"
+                        Click="OnOpenWebConsoleClick" Margin="14,0,0,0" VerticalAlignment="Center"
+                        ToolTip="{DynamicResource L10n.main.webConsole.tooltip}"
+                        AutomationProperties.Name="{DynamicResource L10n.main.webConsole.automation}" />
+            </Grid>
 
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="0,0,8,0">

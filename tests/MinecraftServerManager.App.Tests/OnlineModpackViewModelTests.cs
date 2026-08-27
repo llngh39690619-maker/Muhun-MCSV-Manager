@@ -185,6 +185,27 @@ public sealed class OnlineModpackViewModelTests
     }
 
     [Fact]
+    public void ResultLimit_DefaultsToTwentyAndFlowsIntoEveryBrowseRequest()
+    {
+        var viewModel = new OnlineModpackViewModel(new FakeWorkflow());
+        var observedRequests = new List<OnlineModpackBrowseRequest>();
+        viewModel.BrowseCriteriaChanged += (_, _) =>
+            observedRequests.Add(viewModel.BuildCurrentBrowseRequest());
+
+        Assert.Equal([20, 40, 60, 100], viewModel.ResultLimitChoices);
+        Assert.Equal(20, viewModel.SelectedResultLimit);
+        Assert.Equal(20, viewModel.BuildCurrentBrowseRequest().Limit);
+
+        viewModel.SelectedResultLimit = 100;
+
+        var request = Assert.Single(observedRequests);
+        Assert.Equal(100, request.Limit);
+        Assert.Equal(100, viewModel.BuildCurrentBrowseRequest().Limit);
+        Assert.Throws<ArgumentOutOfRangeException>(() => viewModel.SelectedResultLimit = 30);
+        Assert.Equal(100, viewModel.SelectedResultLimit);
+    }
+
+    [Fact]
     public async Task RefreshCurrentCatalogAsync_PreservesTheLastExplicitBrowseMode()
     {
         var workflow = new FakeWorkflow();

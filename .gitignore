@@ -517,5 +517,6 @@ secrets*.json
 !/docs/正式產品-線上模組包目錄.md
 !/docs/正式產品-簽章與安全發布.md
 !/docs/使用說明-1.0.3.md
+!/docs/使用說明-1.0.4.md
 !/docs/測試報告-1.0.3.md
 !/docs/iOS-遠端控制下一階段規格.md

@@ -238,6 +238,7 @@ function Get-PublishArguments {
         '-p:DebugSymbols=false',
         '-p:ContinuousIntegrationBuild=true',
         '-p:Deterministic=true',
+        '-p:IncludeSourceRevisionInInformationalVersion=false',
         '-p:TreatWarningsAsErrors=true',
         "-p:Version=$Version",
         "-p:AssemblyVersion=$numericVersion",
@@ -393,6 +394,7 @@ try {
         '--nologo',
         '-p:ContinuousIntegrationBuild=true',
         '-p:Deterministic=true',
+        '-p:IncludeSourceRevisionInInformationalVersion=false',
         '-p:TreatWarningsAsErrors=true'
     )
 
@@ -424,6 +426,7 @@ try {
             '--nologo',
             '--logger', "trx;LogFileName=$($testProject.BaseName).trx",
             '--results-directory', $testResultsRoot,
+            '-p:IncludeSourceRevisionInInformationalVersion=false',
             '-p:TreatWarningsAsErrors=true'
         )
     }

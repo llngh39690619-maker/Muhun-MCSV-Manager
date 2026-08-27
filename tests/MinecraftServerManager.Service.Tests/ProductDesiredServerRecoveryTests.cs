@@ -1,5 +1,6 @@
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Core.Runtime;
+using MinecraftServerManager.Core.Services;
 using MinecraftServerManager.Data;
 using MinecraftServerManager.Service;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,6 +24,12 @@ public sealed class ProductDesiredServerRecoveryTests
         Assert.Contains("stop", Assert.Single(first.Factory.Processes).Commands);
         await first.Runtime.DisposeAsync();
 
+        var propertiesPath = Path.Combine(
+            layout.Servers,
+            registration.ServerDirectory,
+            "server.properties");
+        await File.WriteAllTextAsync(propertiesPath, "server-port=29999\n");
+
         var recreated = await CreateRuntimeAsync(layout, [registration]);
         var database = new ProductDatabase(Path.Combine(layout.Data, "recovery-audit.db"));
         await database.InitializeAsync();
@@ -42,6 +49,8 @@ public sealed class ProductDesiredServerRecoveryTests
         await WaitUntilAsync(() => recreated.Factory.Processes.Count == 1);
 
         Assert.Equal(ProductServerState.Running, recreated.Runtime.GetStatus(registration.Id).Server.State);
+        Assert.Equal(25565, recreated.Runtime.GetStatus(registration.Id).Server.Port);
+        Assert.Equal(25565, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
         Assert.True(recreated.Intent.IsDesired(registration.Id));
         var entries = await audit.ReadRecentAsync(10);
         Assert.Contains(entries, entry =>
@@ -164,20 +173,38 @@ public sealed class ProductDesiredServerRecoveryTests
 
         var factory = new ProductServerTestProcessFactory();
         var intent = new ProductDesiredRunIntentStore(layout);
-        var runtime = new ProductServerRuntime(registry, layout, CreateManager(factory), intent);
+        var coordinator = new ProductServerPortCoordinator(
+            registry,
+            layout,
+            new ServerPropertiesPortService(),
+            () => new PortOccupancySnapshot(new HashSet<int>(), new HashSet<int>()));
+        var manager = CreateManager(factory, coordinator);
+        var runtime = new ProductServerRuntime(registry, layout, manager, intent);
         return new RuntimeFixture(runtime, factory, intent);
     }
 
-    private static ServerProcessManager CreateManager(ProductServerTestProcessFactory factory)
-        => new(
+    private static ServerProcessManager CreateManager(
+        ProductServerTestProcessFactory factory,
+        ProductServerPortCoordinator? coordinator = null)
+    {
+        var manager = new ServerProcessManager(
             new ServerProcessManagerOptions
             {
                 ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
                 GracefulStopTimeout = TimeSpan.FromMilliseconds(100),
                 ForcedKillWaitTimeout = TimeSpan.FromMilliseconds(100),
                 MonitorDrainTimeout = TimeSpan.FromMilliseconds(100),
+                PrepareStartAsync = coordinator is null ? null : coordinator.PrepareStartAsync,
+                PreparedStartAborted = coordinator is null ? null : coordinator.PreparedStartAborted,
             },
             factory);
+        if (coordinator is not null)
+        {
+            manager.StateChanged += coordinator.ObserveStateChanged;
+        }
+
+        return manager;
+    }
 
     private static void EnsureLaunchFiles(
         ProductDataLayout layout,

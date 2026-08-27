@@ -28,7 +28,7 @@ public sealed class ServerDirectoryLockException : InvalidOperationException
 
 internal static class ServerDirectoryLock
 {
-    internal const string FileName = ".minecraft-server-manager.lock";
+    internal const string FileName = ServerDirectoryLease.LockFileName;
 
     internal static FileStream Acquire(string serverDirectoryPath)
     {

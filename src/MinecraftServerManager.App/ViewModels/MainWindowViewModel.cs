@@ -45,7 +45,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         TimeSpan.FromMilliseconds(100));
     private readonly ApplicationPaths _paths;
-    private readonly JsonSettingsStore<ManagerSettings> _settingsStore;
+    private readonly IJsonSettingsStore<ManagerSettings> _settingsStore;
     private readonly AppearanceThemeService _appearanceThemeService;
     private readonly IServerRemovalConfirmationService _serverRemovalConfirmationService;
     private readonly IServerDeletionConfirmationService _serverDeletionConfirmationService;
@@ -87,6 +87,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     // folder/JAR imports so two records can never claim the same directory or port.
     private readonly SemaphoreSlim _serverRegistryGate = new(1, 1);
     private readonly SemaphoreSlim _settingsSaveGate = new(1, 1);
+    private readonly SemaphoreSlim _normalWindowSizePersistenceGate = new(1, 1);
     private readonly ConcurrentDictionary<Guid, int> _pendingLaunchPorts = new();
     private readonly ConcurrentDictionary<Guid, Guid> _pendingLaunchPortSessions = new();
     private readonly ConcurrentDictionary<Guid, ServerPropertiesDocumentFormatToken> _serverPropertiesFormats = new();
@@ -254,14 +255,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IProductServiceClient? productServiceClient = null,
         string? productServiceImportsRoot = null,
         ICurseForgeUpdateCredentialPrompt? curseForgeUpdateCredentialPrompt = null,
-        IModpackUpdateSelectionService? modpackUpdateSelectionService = null)
+        IModpackUpdateSelectionService? modpackUpdateSelectionService = null,
+        IJsonSettingsStore<ManagerSettings>? settingsStore = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(serverRemovalConfirmationService);
         ArgumentNullException.ThrowIfNull(onlineModpackWorkflow);
 
         _paths = paths;
-        _settingsStore = new JsonSettingsStore<ManagerSettings>(_paths.SettingsFile);
+        _settingsStore = settingsStore ?? new JsonSettingsStore<ManagerSettings>(_paths.SettingsFile);
         _appearanceThemeService = new AppearanceThemeService(_paths);
         _serverRemovalConfirmationService = serverRemovalConfirmationService;
         _serverDeletionConfirmationService = serverDeletionConfirmationService
@@ -371,11 +373,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             parameter => parameter is ServerInstanceViewModel server
                          && Servers.Contains(server)
                          && (server.CanAccessLocalFiles || server.IsServiceManaged));
-        OpenRemoteAccessCommand = new RelayCommand(
+        OpenRemoteManagementCommand = new RelayCommand(
             OpenRemoteAccess,
             () => _productServiceController is not null
                 ? IsProductServiceConnected
                 : _remoteAccessCoordinator is not null);
+        // Keep the legacy diagnostic/smoke entry point as an alias while the visible toolbar now
+        // exposes one cohesive Remote management surface.
+        OpenRemoteAccessCommand = OpenRemoteManagementCommand;
         OpenRemoteWebConsoleCommand = new RelayCommand(
             OpenRemoteWebConsole,
             () => _productServiceController is not null
@@ -489,6 +494,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand OpenSettingsCommand { get; }
     public RelayCommand OpenAppearanceSettingsCommand { get; }
     public RelayCommand OpenServerAppearanceCommand { get; }
+    public RelayCommand OpenRemoteManagementCommand { get; }
     public RelayCommand OpenRemoteAccessCommand { get; }
     public RelayCommand OpenRemoteWebConsoleCommand { get; }
     public AsyncRelayCommand OpenSelectedFolderCommand { get; }
@@ -755,14 +761,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _previewWindowWidth
         ?? _settings.UserInterface?.WindowWidth
         ?? ManagerUiSettings.DefaultWindowWidth,
-        1120,
-        Math.Max(1120, SystemParameters.WorkArea.Width));
+        ManagerUiSettings.MinimumPersistedWindowWidth,
+        ManagerUiSettings.MaximumPersistedWindowWidth);
     public double WindowHeight => Math.Clamp(
         _previewWindowHeight
         ?? _settings.UserInterface?.WindowHeight
         ?? ManagerUiSettings.DefaultWindowHeight,
-        700,
-        Math.Max(700, SystemParameters.WorkArea.Height));
+        ManagerUiSettings.MinimumPersistedWindowHeight,
+        ManagerUiSettings.MaximumPersistedWindowHeight);
     public string ServerCountText => L("main.vm.serverCount", Servers.Count);
     public string RunningSummary => L(
         "main.vm.runningSummary",
@@ -773,6 +779,112 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     internal Task LastPlayerRegistryReload => _lastPlayerRegistryReload;
     internal Task LastAutomaticMemoryRecommendation => _lastAutomaticMemoryRecommendation;
     internal Task LastAddonScan => _lastAddonScan;
+
+    internal async Task PersistNormalWindowSizeAsync(double width, double height)
+    {
+        var normalizedWidth = Math.Round(Math.Clamp(
+            width,
+            ManagerUiSettings.MinimumPersistedWindowWidth,
+            ManagerUiSettings.MaximumPersistedWindowWidth));
+        var normalizedHeight = Math.Round(Math.Clamp(
+            height,
+            ManagerUiSettings.MinimumPersistedWindowHeight,
+            ManagerUiSettings.MaximumPersistedWindowHeight));
+        await _normalWindowSizePersistenceGate.WaitAsync();
+        try
+        {
+            // Lock order is always normal-window gate -> settings-save gate. No other settings
+            // writer acquires the normal-window gate, so this cannot invert with a regular save.
+            await _settingsSaveGate.WaitAsync();
+            try
+            {
+                if (_previewWindowWidth is not null || _previewWindowHeight is not null)
+                {
+                    return;
+                }
+
+                // Keep mutation, detached snapshot creation, file write and rollback in this one
+                // critical section. A delayed resize can therefore never serialize an unrelated
+                // settings transaction before that transaction has committed or rolled back.
+                var userInterface = _settings.UserInterface ??= new ManagerUiSettings();
+                if (Math.Abs(userInterface.WindowWidth - normalizedWidth) < 0.5
+                    && Math.Abs(userInterface.WindowHeight - normalizedHeight) < 0.5)
+                {
+                    return;
+                }
+
+                var previousWidth = userInterface.WindowWidth;
+                var previousHeight = userInterface.WindowHeight;
+                userInterface.WindowWidth = normalizedWidth;
+                userInterface.WindowHeight = normalizedHeight;
+                try
+                {
+                    await SaveSettingsLockedAsync();
+                }
+                catch
+                {
+                    if (ReferenceEquals(_settings.UserInterface, userInterface))
+                    {
+                        userInterface.WindowWidth = previousWidth;
+                        userInterface.WindowHeight = previousHeight;
+                    }
+                    throw;
+                }
+            }
+            finally
+            {
+                _settingsSaveGate.Release();
+            }
+        }
+        finally
+        {
+            _normalWindowSizePersistenceGate.Release();
+        }
+    }
+
+    internal async Task PersistGeneralSettingsValuesAsync(
+        ManagerUiSettings userInterface,
+        NewServerDefaultsSettings defaults,
+        ApplicationAppearanceSettings appearance)
+    {
+        ArgumentNullException.ThrowIfNull(userInterface);
+        ArgumentNullException.ThrowIfNull(defaults);
+        ArgumentNullException.ThrowIfNull(appearance);
+        var nextUserInterface = userInterface.Copy();
+        var nextDefaults = defaults.Copy();
+        var nextAppearance = appearance.Copy();
+
+        await _settingsSaveGate.WaitAsync();
+        try
+        {
+            var previousAppearance = _settings.Appearance;
+            var previousUserInterface = _settings.UserInterface;
+            var previousDefaults = _settings.NewServerDefaults;
+            _settings.Appearance = nextAppearance;
+            _settings.UserInterface = nextUserInterface;
+            _settings.NewServerDefaults = nextDefaults;
+            _settings.SchemaVersion = Math.Max(
+                _settings.SchemaVersion,
+                ManagerSettings.CurrentSchemaVersion);
+            try
+            {
+                await SaveSettingsLockedAsync();
+            }
+            catch
+            {
+                // Roll back before releasing the gate. A queued resize writer must never observe
+                // and persist a settings-dialog transaction that did not commit.
+                _settings.Appearance = previousAppearance;
+                _settings.UserInterface = previousUserInterface;
+                _settings.NewServerDefaults = previousDefaults;
+                throw;
+            }
+        }
+        finally
+        {
+            _settingsSaveGate.Release();
+        }
+    }
 
     public async Task InitializeAsync(bool allowInteractiveAutoImport = true)
     {
@@ -976,7 +1088,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             NotifyCheckedServerCommandsCanExecuteChanged();
             NotifyCreateOrImportCommandsCanExecuteChanged();
             UpdateSelectedModpackCommand.NotifyCanExecuteChanged();
-            OpenRemoteAccessCommand.NotifyCanExecuteChanged();
+            OpenRemoteManagementCommand.NotifyCanExecuteChanged();
             OpenRemoteWebConsoleCommand.NotifyCanExecuteChanged();
             RemoveServerCommand.NotifyCanExecuteChanged();
             DeleteServerCommand.NotifyCanExecuteChanged();
@@ -1556,12 +1668,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
         // Keep settings persistence alive until every retryable, user-supplied workflow has
         // disposed. If one fails, a second Shutdown attempt must still be able to save settings.
-        _settingsStore.Dispose();
+        if (_settingsStore is IDisposable disposableSettingsStore)
+        {
+            disposableSettingsStore.Dispose();
+        }
         _javaHttpClient.Dispose();
         _modrinthHttpClient.Dispose();
         _portAssignmentGate.Dispose();
         _serverRegistryGate.Dispose();
         _settingsSaveGate.Dispose();
+        _normalWindowSizePersistenceGate.Dispose();
         foreach (var gate in _backupGates.Values)
         {
             gate.Dispose();
@@ -1877,7 +1993,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 _settings.SchemaVersion,
                 ManagerSettings.CurrentSchemaVersion);
             _settings.Instances = CloneServerInstances(updated);
-            await _settingsStore.SaveAsync(_settings, cancellationToken).ConfigureAwait(false);
+            await _settingsStore.SaveAsync(
+                    PrepareSettingsForPersistence(),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -2573,7 +2692,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 .ToList();
             try
             {
-                await _settingsStore.SaveAsync(_settings, cancellationToken);
+                await _settingsStore.SaveAsync(
+                    PrepareSettingsForPersistence(),
+                    cancellationToken);
             }
             catch
             {
@@ -3746,22 +3867,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _settings.NewServerDefaults.Copy(),
             async (userInterface, defaults, appearance) =>
             {
-                var previousAppearance = _settings.Appearance;
-                var previousUserInterface = _settings.UserInterface;
-                var previousDefaults = _settings.NewServerDefaults;
                 try
                 {
                     var normalizedAppearance = _appearanceThemeService.Apply(
                         application.Resources,
                         appearance);
                     ApplyFontResources(application.Resources, userInterface.FontSize);
-                    _settings.Appearance = normalizedAppearance.Copy();
-                    _settings.UserInterface = userInterface.Copy();
-                    _settings.NewServerDefaults = defaults.Copy();
-                    _settings.SchemaVersion = Math.Max(
-                        _settings.SchemaVersion,
-                        ManagerSettings.CurrentSchemaVersion);
-                    await SaveSettingsAsync();
+                    await PersistGeneralSettingsValuesAsync(
+                        userInterface,
+                        defaults,
+                        normalizedAppearance);
                     _previewWindowWidth = null;
                     _previewWindowHeight = null;
                     OnPropertyChanged(nameof(WindowWidth));
@@ -3770,11 +3885,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
                 catch
                 {
-                    _settings.Appearance = previousAppearance;
-                    _settings.UserInterface = previousUserInterface;
-                    _settings.NewServerDefaults = previousDefaults;
-                    _appearanceThemeService.Apply(application.Resources, previousAppearance);
-                    ApplyFontResources(application.Resources, previousUserInterface.FontSize);
+                    _appearanceThemeService.Apply(application.Resources, _settings.Appearance);
+                    ApplyFontResources(application.Resources, _settings.UserInterface.FontSize);
                     PreviewGeneralSettings(
                         application,
                         new GeneralSettingsPreview(
@@ -3956,7 +4068,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         // in-process coordinator (or its WPF backend/security store) on this path.
         if (_productServiceController is not null)
         {
-            OpenRemoteAccessCommand.NotifyCanExecuteChanged();
+            OpenRemoteManagementCommand.NotifyCanExecuteChanged();
             OpenRemoteWebConsoleCommand.NotifyCanExecuteChanged();
             if (!IsProductServiceConnected)
             {
@@ -4003,7 +4115,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             coordinator.StateChanged -= OnRemoteAccessStateChanged;
             coordinator.StateChanged += OnRemoteAccessStateChanged;
             UpdateRemoteAccessRecoverySettings(_settings.RemoteControl);
-            OpenRemoteAccessCommand.NotifyCanExecuteChanged();
+            OpenRemoteManagementCommand.NotifyCanExecuteChanged();
             OpenRemoteWebConsoleCommand.NotifyCanExecuteChanged();
             if (!IsRemoteAccessConfigurationComplete(_settings.RemoteControl))
             {
@@ -4072,6 +4184,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 Owner = application.MainWindow
             };
+            dialog.OpenWebConsoleRequested += OnRemoteWebConsoleRequested;
             dialog.Closed += OnRemoteAccessDialogClosed;
             _remoteAccessDialog = dialog;
             dialog.Show();
@@ -4080,6 +4193,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             if (dialog is not null)
             {
+                dialog.OpenWebConsoleRequested -= OnRemoteWebConsoleRequested;
                 dialog.Closed -= OnRemoteAccessDialogClosed;
                 if (ReferenceEquals(_remoteAccessDialog, dialog))
                 {
@@ -4285,30 +4399,45 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private void OnRemoteAccessDialogClosed(object? sender, EventArgs e)
     {
+        if (sender is RemoteAccessDialog dialog)
+        {
+            dialog.OpenWebConsoleRequested -= OnRemoteWebConsoleRequested;
+        }
         if (ReferenceEquals(_remoteAccessDialog, sender))
         {
             _remoteAccessDialog = null;
         }
     }
 
+    private void OnRemoteWebConsoleRequested(object? sender, EventArgs e)
+        => OpenRemoteWebConsole();
+
     private async Task PersistRemoteAccessSettingsAsync(RemoteControlSettings settings)
     {
         _applicationShutdownCancellation.Token.ThrowIfCancellationRequested();
-        var previous = _settings.RemoteControl;
-        _settings.RemoteControl = settings.Copy();
-        _settings.SchemaVersion = Math.Max(
-            _settings.SchemaVersion,
-            ManagerSettings.CurrentSchemaVersion);
+        await _settingsSaveGate.WaitAsync(_applicationShutdownCancellation.Token);
         try
         {
-            await SaveSettingsAsync();
-            UpdateRemoteAccessRecoverySettings(settings);
-            SetStatus("main.vm.remote.settingsSaved");
+            var previous = _settings.RemoteControl;
+            _settings.RemoteControl = settings.Copy();
+            _settings.SchemaVersion = Math.Max(
+                _settings.SchemaVersion,
+                ManagerSettings.CurrentSchemaVersion);
+            try
+            {
+                await SaveSettingsLockedAsync(_applicationShutdownCancellation.Token);
+                UpdateRemoteAccessRecoverySettings(settings);
+                SetStatus("main.vm.remote.settingsSaved");
+            }
+            catch
+            {
+                _settings.RemoteControl = previous;
+                throw;
+            }
         }
-        catch
+        finally
         {
-            _settings.RemoteControl = previous;
-            throw;
+            _settingsSaveGate.Release();
         }
     }
 
@@ -4937,7 +5066,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
             // Serialize the snapshot and UI mutation with background commits. The next writer
             // always observes the exact collection represented by the previous atomic file.
-            await _settingsStore.SaveAsync(nextSettings);
+            await _settingsStore.SaveAsync(CloneManagerSettings(nextSettings));
             _settings = nextSettings;
 
             var wasSelected = ReferenceEquals(SelectedServer, server);
@@ -6722,7 +6851,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 _settings.SchemaVersion = Math.Max(
                     _settings.SchemaVersion,
                     ManagerSettings.CurrentSchemaVersion);
-                await _settingsStore.SaveAsync(_settings, cancellationToken);
+                await _settingsStore.SaveAsync(
+                    PrepareSettingsForPersistence(),
+                    cancellationToken);
                 rolledBack++;
                 continue;
             }
@@ -6741,7 +6872,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 _settings.SchemaVersion = Math.Max(
                     _settings.SchemaVersion,
                     ManagerSettings.CurrentSchemaVersion);
-                await _settingsStore.SaveAsync(_settings, cancellationToken);
+                await _settingsStore.SaveAsync(
+                    PrepareSettingsForPersistence(),
+                    cancellationToken);
             }
             catch (Exception saveError) when (saveError is not OutOfMemoryException)
             {
@@ -8063,24 +8196,34 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         return candidate;
     }
 
-    private async Task SaveSettingsAsync()
+    private async Task SaveSettingsAsync(CancellationToken cancellationToken = default)
     {
-        await _settingsSaveGate.WaitAsync();
+        await _settingsSaveGate.WaitAsync(cancellationToken);
         try
         {
-            _settings.SchemaVersion = Math.Max(
-                _settings.SchemaVersion,
-                ManagerSettings.CurrentSchemaVersion);
-            if (_productServiceController is null)
-            {
-                _settings.Instances = Servers.Select(server => server.Model).ToList();
-            }
-            await _settingsStore.SaveAsync(PrepareSettingsForPersistence());
+            await SaveSettingsLockedAsync(cancellationToken);
         }
         finally
         {
             _settingsSaveGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Saves while the caller owns <see cref="_settingsSaveGate"/>. Every writer receives a
+    /// detached object graph because JsonSettingsStore serializes after its first asynchronous
+    /// wait; passing the live graph would allow an unrelated UI mutation to change the file.
+    /// </summary>
+    private async Task SaveSettingsLockedAsync(CancellationToken cancellationToken = default)
+    {
+        _settings.SchemaVersion = Math.Max(
+            _settings.SchemaVersion,
+            ManagerSettings.CurrentSchemaVersion);
+        if (_productServiceController is null)
+        {
+            _settings.Instances = Servers.Select(server => server.Model).ToList();
+        }
+        await _settingsStore.SaveAsync(PrepareSettingsForPersistence(), cancellationToken);
     }
 
     private ManagerSettings PrepareSettingsForPersistence()
@@ -8090,7 +8233,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _settings.Instances = CloneServerInstances(_readOnlyLegacyInstances ?? []);
         }
 
-        return _settings;
+        // JsonSettingsStore serializes asynchronously. Hand it an immutable-by-convention deep
+        // snapshot so a concurrent UI edit cannot change the object graph while the stream is
+        // being written.
+        return CloneManagerSettings(_settings);
+    }
+
+    private static ManagerSettings CloneManagerSettings(ManagerSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(settings);
+        return JsonSerializer.Deserialize<ManagerSettings>(payload)
+               ?? throw new InvalidDataException(L("main.vm.error.settingsSnapshotCloneFailed"));
     }
 
     private static List<ServerInstance> CloneServerInstances(
@@ -8120,10 +8274,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ? ThemePresetCatalog.DefaultId
             : ThemePresetCatalog.GetOrDefault(settings.ThemePresetId).Id;
         settings.WindowWidth = double.IsFinite(settings.WindowWidth)
-            ? Math.Clamp(settings.WindowWidth, 1120, 7680)
+            ? Math.Clamp(
+                settings.WindowWidth,
+                ManagerUiSettings.MinimumPersistedWindowWidth,
+                ManagerUiSettings.MaximumPersistedWindowWidth)
             : ManagerUiSettings.DefaultWindowWidth;
         settings.WindowHeight = double.IsFinite(settings.WindowHeight)
-            ? Math.Clamp(settings.WindowHeight, 700, 4320)
+            ? Math.Clamp(
+                settings.WindowHeight,
+                ManagerUiSettings.MinimumPersistedWindowHeight,
+                ManagerUiSettings.MaximumPersistedWindowHeight)
             : ManagerUiSettings.DefaultWindowHeight;
         settings.FontSize = double.IsFinite(settings.FontSize)
             ? Math.Clamp(settings.FontSize, 11, 20)

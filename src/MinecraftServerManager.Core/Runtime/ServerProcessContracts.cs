@@ -39,6 +39,13 @@ public sealed record ServerProcessManagerOptions
     public Func<Guid, CancellationToken, Task<bool>>? ShouldAutoRestartAsync { get; init; }
 
     /// <summary>
+    /// Optional directory-session lease provider. The returned lease is acquired while the
+    /// per-instance gate is held and retained for the complete process session. Service hosts can
+    /// use this to compose their ownership-boundary handles with the normal cross-process lock.
+    /// </summary>
+    public Func<string, IDisposable>? AcquireDirectoryLease { get; init; }
+
+    /// <summary>
     /// Optional asynchronous hook invoked for every launch after the manager has acquired the
     /// server directory's exclusive execution lock, but before resolving the launch definition
     /// or starting the process. The supplied instance is a private snapshot; changes made by the
@@ -62,6 +69,14 @@ public sealed record ServerProcessManagerOptions
     /// filesystem preparation that must be protected by the exclusive directory lock.
     /// </summary>
     public Func<ServerInstance, CancellationToken, Task>? PrepareAutoRestartAsync { get; init; }
+
+    /// <summary>
+    /// Optional automatic-restart snapshot refresher. Unlike the legacy preparation hook, this
+    /// runs while the per-instance mutation gate is held and before the directory lease is
+    /// acquired. It may refresh every launch-defining value (including the directory), but must
+    /// preserve the instance ID and must not access files in the server directory.
+    /// </summary>
+    public Func<ServerInstance, CancellationToken, Task>? RefreshAutoRestartSnapshotAsync { get; init; }
 
     public string StopCommand { get; init; } = "stop";
 

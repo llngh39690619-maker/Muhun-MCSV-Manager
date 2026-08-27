@@ -20,6 +20,11 @@ public partial class RemoteAccessDialog : Window
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
+    internal event EventHandler? OpenWebConsoleRequested;
+
+    private void OnOpenWebConsoleClick(object sender, RoutedEventArgs e)
+        => OpenWebConsoleRequested?.Invoke(this, EventArgs.Empty);
+
     private void OnCloseRequested(object? sender, EventArgs e) => Close();
 
     private void OnWindowDeactivated(object? sender, EventArgs e)

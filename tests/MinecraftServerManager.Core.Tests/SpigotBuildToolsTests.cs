@@ -809,12 +809,18 @@ public sealed class SpigotBuildToolsTests
             TestArtifact(Encoding.UTF8.GetBytes("tool")),
             new string('f', 64));
         var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
-        var workspace = new SpigotBuildToolsManagedGitWorkspace(gitProcess);
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot);
 
         await workspace.PrepareAsync(plan, operation, managedGit);
 
         var prepared = gitProcess.Commands.ToArray();
-        Assert.Equal(4, prepared.Count(command => command.Arguments[0] == "clone"));
+        Assert.Equal(8, prepared.Count(command => command.Arguments[0] == "clone"));
+        Assert.Equal(4, prepared.Count(command =>
+            command.Arguments[0] == "clone"
+            && command.Arguments.Contains("--mirror")));
         foreach (var repositoryName in new[] { "BuildData", "Bukkit", "CraftBukkit", "Spigot" })
         {
             var repositoryPath = Path.Combine(operation, repositoryName);
@@ -869,6 +875,7 @@ public sealed class SpigotBuildToolsTests
                 Path.Combine(operation, "home", ".gitconfig"),
                 command.Environment["GIT_CONFIG_GLOBAL"]);
             Assert.Equal("0", command.Environment["GIT_TERMINAL_PROMPT"]);
+            Assert.Equal("1", command.Environment["GIT_NO_REPLACE_OBJECTS"]);
             Assert.False(command.Environment.ContainsKey("GIT_CONFIG_COUNT"));
             Assert.False(command.Environment.ContainsKey("BASH_ENV"));
         });
@@ -888,6 +895,472 @@ public sealed class SpigotBuildToolsTests
             command.Arguments.Contains("rev-parse")));
         Assert.Equal(4, postBuildCommands.Count(command =>
             command.Arguments.Contains("get-url")));
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_WarmCacheEliminatesAllFourRemoteMirrorClones()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot);
+
+        var firstOperation = Path.Combine(directory.Path, "operation-1");
+        Directory.CreateDirectory(firstOperation);
+        await workspace.PrepareAsync(plan, firstOperation, managedGit);
+        var coldRemoteClones = gitProcess.Commands.Count(IsRemoteMirrorClone);
+        Assert.Equal(4, coldRemoteClones);
+        Assert.Equal(
+            4,
+            Directory.EnumerateDirectories(
+                    Path.Combine(cacheRoot, "mirrors"),
+                    "*.git",
+                    SearchOption.TopDirectoryOnly)
+                .Count());
+
+        var commandCountAfterColdRun = gitProcess.Commands.Count;
+        var secondOperation = Path.Combine(directory.Path, "operation-2");
+        Directory.CreateDirectory(secondOperation);
+        await workspace.PrepareAsync(plan, secondOperation, managedGit);
+        var warmCommands = gitProcess.Commands.Skip(commandCountAfterColdRun).ToArray();
+
+        Assert.Equal(0, warmCommands.Count(IsRemoteMirrorClone));
+        Assert.Equal(4, warmCommands.Count(command =>
+            command.Arguments[0] == "clone"
+            && command.Arguments.Contains("--no-hardlinks")));
+        Assert.Equal(coldRemoteClones, gitProcess.Commands.Count(IsRemoteMirrorClone));
+
+        static bool IsRemoteMirrorClone(GitCommandSnapshot command)
+            => command.Arguments[0] == "clone"
+                && command.Arguments.Contains("--mirror")
+                && command.Arguments.Any(argument =>
+                    argument.StartsWith(
+                        "https://hub.spigotmc.org/",
+                        StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_IncomingMirrorsAreValidatedThenAtomicallyPromoted()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot);
+        var operation = Path.Combine(directory.Path, "operation");
+        Directory.CreateDirectory(operation);
+
+        await workspace.PrepareAsync(plan, operation, managedGit);
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(
+            Path.Combine(cacheRoot, "incoming"),
+            "*",
+            SearchOption.TopDirectoryOnly));
+        Assert.Equal(
+            4,
+            Directory.EnumerateDirectories(
+                    Path.Combine(cacheRoot, "mirrors"),
+                    "*.git",
+                    SearchOption.TopDirectoryOnly)
+                .Count());
+        Assert.Equal(
+            4,
+            gitProcess.Commands.Count(command => command.Arguments.Contains("fsck")));
+        Assert.Equal(
+            4,
+            gitProcess.Commands.Count(command =>
+                command.Arguments.Contains("fsck")
+                && command.Arguments.Any(argument => argument.Contains(
+                    $"{Path.DirectorySeparatorChar}incoming{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase))));
+        Assert.DoesNotContain(gitProcess.Commands, command =>
+            command.Arguments.Contains("fsck")
+            && command.Arguments.Any(argument => argument.Contains(
+                $"{Path.DirectorySeparatorChar}mirrors{Path.DirectorySeparatorChar}",
+                StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_CorruptPromotedMirrorIsDiscardedAndRebuilt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot);
+        var firstOperation = Path.Combine(directory.Path, "operation-1");
+        Directory.CreateDirectory(firstOperation);
+        await workspace.PrepareAsync(plan, firstOperation, managedGit);
+
+        var mirror = Assert.Single(Directory.EnumerateDirectories(
+            Path.Combine(cacheRoot, "mirrors"),
+            "BuildData-*.git",
+            SearchOption.TopDirectoryOnly));
+        File.Delete(Path.Combine(mirror, "HEAD"));
+        var remoteCloneCount = gitProcess.Commands.Count(command =>
+            command.Arguments[0] == "clone"
+            && command.Arguments.Contains("--mirror"));
+
+        var secondOperation = Path.Combine(directory.Path, "operation-2");
+        Directory.CreateDirectory(secondOperation);
+        await workspace.PrepareAsync(plan, secondOperation, managedGit);
+
+        Assert.Equal(
+            remoteCloneCount + 1,
+            gitProcess.Commands.Count(command =>
+                command.Arguments[0] == "clone"
+                && command.Arguments.Contains("--mirror")));
+        Assert.True(File.Exists(Path.Combine(mirror, "HEAD")));
+        Assert.Empty(Directory.EnumerateDirectories(
+            Path.Combine(cacheRoot, "incoming"),
+            "*",
+            SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_MissingPlannedCommitFetchesFixedOriginBeforeRebuild()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(gitProcess, cacheRoot);
+        var firstOperation = Path.Combine(directory.Path, "operation-1");
+        Directory.CreateDirectory(firstOperation);
+        await workspace.PrepareAsync(plan, firstOperation, managedGit);
+        var remoteCloneCount = gitProcess.Commands.Count(command =>
+            command.Arguments.Contains("--mirror"));
+
+        gitProcess.MissingCommitRepository = "BuildData";
+        var secondOperation = Path.Combine(directory.Path, "operation-2");
+        Directory.CreateDirectory(secondOperation);
+        await workspace.PrepareAsync(plan, secondOperation, managedGit);
+
+        var fetch = Assert.Single(
+            gitProcess.Commands,
+            command => command.Arguments.Contains("fetch"));
+        Assert.Contains("core.hooksPath=NUL", fetch.Arguments);
+        Assert.Contains("--no-write-fetch-head", fetch.Arguments);
+        Assert.Contains("--no-auto-maintenance", fetch.Arguments);
+        Assert.Contains("+refs/*:refs/*", fetch.Arguments);
+        Assert.Equal(remoteCloneCount, gitProcess.Commands.Count(command =>
+            command.Arguments.Contains("--mirror")));
+    }
+
+    [Fact]
+    public async Task SourceCache_TrimSkipsMirrorHeldByActiveLease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(gitProcess, cacheRoot);
+        var operation = Path.Combine(directory.Path, "operation");
+        Directory.CreateDirectory(operation);
+        await workspace.PrepareAsync(plan, operation, managedGit);
+
+        var cache = new SpigotBuildToolsSourceCache(
+            cacheRoot,
+            new SpigotBuildToolsSourceCacheOptions
+            {
+                MaximumBytes = 1,
+                MaximumEntries = 4
+            });
+        Task<ModrinthLoaderBootstrapProcessResult> RunGitAsync(
+            IReadOnlyList<string> arguments,
+            IProgress<ModrinthLoaderBootstrapOutputLine>? output,
+            CancellationToken cancellationToken)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = managedGit.CommandGitExecutablePath
+            };
+            foreach (var argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            return gitProcess.RunAsync(startInfo, output, cancellationToken);
+        }
+
+        var buildDataRemote = new Uri(
+            "https://hub.spigotmc.org/stash/scm/spigot/builddata.git");
+        using var lease = await cache.AcquireAsync(
+            "BuildData",
+            buildDataRemote,
+            plan.SourceRefs["BuildData"],
+            RunGitAsync,
+            output: null,
+            CancellationToken.None);
+
+        await cache.TrimAsync(CancellationToken.None);
+
+        Assert.True(Directory.Exists(lease.MirrorPath));
+    }
+
+    [Fact]
+    public async Task SourceCache_TrimIsBestEffortButPreservesCancellation()
+    {
+        using var directory = new TemporaryDirectory();
+        var blockedRoot = Path.Combine(directory.Path, "blocked-cache");
+        await File.WriteAllTextAsync(blockedRoot, "not a directory");
+        var blockedCache = new SpigotBuildToolsSourceCache(blockedRoot);
+
+        await blockedCache.TrimAsync(CancellationToken.None);
+
+        var validCache = new SpigotBuildToolsSourceCache(
+            Path.Combine(directory.Path, "valid-cache"));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            validCache.TrimAsync(cancellation.Token));
+    }
+
+    [Fact]
+    public async Task SourceCache_TrimEvictsMirrorRootJunctionWithoutFollowingItsTarget()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var cache = new SpigotBuildToolsSourceCache(cacheRoot);
+        await cache.TrimAsync(CancellationToken.None);
+
+        var outside = Path.Combine(directory.Path, "outside-player-data");
+        Directory.CreateDirectory(outside);
+        var protectedFile = Path.Combine(outside, "level.dat");
+        await File.WriteAllTextAsync(protectedFile, "keep");
+        var redirectingMirror = Path.Combine(cacheRoot, "mirrors", "redirect.git");
+        ReparsePointTestHelper.CreateDirectoryLink(redirectingMirror, outside);
+        await File.WriteAllTextAsync(
+            Path.Combine(cacheRoot, "metadata", "redirect.access"),
+            DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+
+        await cache.TrimAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(redirectingMirror));
+        Assert.True(File.Exists(protectedFile));
+        Assert.Equal("keep", await File.ReadAllTextAsync(protectedFile));
+    }
+
+    [Fact]
+    public async Task SourceCache_IncomingCleanupFailurePreservesPrimaryCancellation()
+    {
+        using var directory = new TemporaryDirectory();
+        var cleanupCalls = 0;
+        var cache = new SpigotBuildToolsSourceCache(
+            Path.Combine(directory.Path, "source-cache"),
+            deleteTreeAsync: (_, _, _) =>
+            {
+                cleanupCalls++;
+                return Task.FromException(new IOException("simulated cleanup failure"));
+            });
+        var primary = new OperationCanceledException("primary cancellation");
+        Task<ModrinthLoaderBootstrapProcessResult> RunGitAsync(
+            IReadOnlyList<string> arguments,
+            IProgress<ModrinthLoaderBootstrapOutputLine>? output,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal("clone", arguments[0]);
+            Directory.CreateDirectory(arguments[^1]);
+            return Task.FromException<ModrinthLoaderBootstrapProcessResult>(primary);
+        }
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            cache.AcquireAsync(
+                "BuildData",
+                new Uri("https://hub.spigotmc.org/stash/scm/spigot/builddata.git"),
+                new string('a', 40),
+                RunGitAsync,
+                output: null,
+                CancellationToken.None));
+
+        Assert.Same(primary, exception);
+        Assert.Equal(1, cleanupCalls);
+    }
+
+    [Fact]
+    public void GitNoHardlinksCloneSurvivesMirrorDeletion()
+    {
+        if (!OperatingSystem.IsWindows() || !CanRunGit())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var source = Path.Combine(directory.Path, "source");
+        var mirror = Path.Combine(directory.Path, "mirror.git");
+        var operation = Path.Combine(directory.Path, "operation");
+        Directory.CreateDirectory(source);
+        RunRealGit(directory.Path, "init", "--quiet", source);
+        RunRealGit(source, "config", "user.email", "tests@example.invalid");
+        RunRealGit(source, "config", "user.name", "MCSV Tests");
+        File.WriteAllText(Path.Combine(source, "payload.txt"), "independent\n", Encoding.UTF8);
+        RunRealGit(source, "add", "payload.txt");
+        RunRealGit(source, "commit", "--quiet", "-m", "fixture");
+        var commit = RunRealGit(source, "rev-parse", "HEAD").Trim();
+        RunRealGit(directory.Path, "clone", "--mirror", "--no-progress", source, mirror);
+        RunRealGit(
+            directory.Path,
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "--no-progress",
+            mirror,
+            operation);
+
+        ClearReadOnlyAttributes(mirror);
+        Directory.Delete(mirror, recursive: true);
+
+        RunRealGit(operation, "cat-file", "-e", commit + "^{commit}");
+        RunRealGit(operation, "checkout", "--quiet", "--detach", commit);
+        Assert.Equal(
+            "independent\n",
+            File.ReadAllText(Path.Combine(operation, "payload.txt"), Encoding.UTF8));
+        ClearReadOnlyAttributes(directory.Path);
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_QuotaEvictsMirrorsWithoutAffectingOperationClones()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot,
+            new SpigotBuildToolsSourceCacheOptions
+            {
+                MaximumBytes = 1,
+                MaximumEntries = 4
+            });
+        var operation = Path.Combine(directory.Path, "operation");
+        Directory.CreateDirectory(operation);
+
+        await workspace.PrepareAsync(plan, operation, managedGit);
+
+        Assert.Empty(Directory.EnumerateDirectories(
+            Path.Combine(cacheRoot, "mirrors"),
+            "*.git",
+            SearchOption.TopDirectoryOnly));
+        Assert.All(
+            new[] { "BuildData", "Bukkit", "CraftBukkit", "Spigot" },
+            repository => Assert.True(
+                Directory.Exists(Path.Combine(operation, repository, ".git"))));
+    }
+
+    [Fact]
+    public async Task ManagedGitWorkspace_WaitingForCrossProcessCacheLockIsCancellable()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var cacheRoot = Path.Combine(directory.Path, "source-cache");
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            cacheRoot,
+            new SpigotBuildToolsSourceCacheOptions
+            {
+                LockRetryDelay = TimeSpan.FromMilliseconds(10)
+            });
+        var firstOperation = Path.Combine(directory.Path, "operation-1");
+        Directory.CreateDirectory(firstOperation);
+        await workspace.PrepareAsync(plan, firstOperation, managedGit);
+
+        var buildDataLock = Assert.Single(Directory.EnumerateFiles(
+            Path.Combine(cacheRoot, "locks"),
+            "BuildData-*.lock",
+            SearchOption.TopDirectoryOnly));
+        using var heldByAnotherProcess = new FileStream(
+            buildDataLock,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        var secondOperation = Path.Combine(directory.Path, "operation-2");
+        Directory.CreateDirectory(secondOperation);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            workspace.PrepareAsync(
+                plan,
+                secondOperation,
+                managedGit,
+                cancellationToken: cancellation.Token));
+        Assert.False(Directory.Exists(Path.Combine(secondOperation, "BuildData")));
     }
 
     [Theory]
@@ -910,7 +1383,9 @@ public sealed class SpigotBuildToolsTests
             TestArtifact(Encoding.UTF8.GetBytes("tool")),
             new string('f', 64));
         var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
-        var workspace = new SpigotBuildToolsManagedGitWorkspace(gitProcess);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            Path.Combine(directory.Path, "source-cache"));
         await workspace.PrepareAsync(plan, operation, managedGit);
         if (drift == "ref")
         {
@@ -944,6 +1419,39 @@ public sealed class SpigotBuildToolsTests
                 drift == "local-config" ? "actual=true" : "actual=false",
                 exception.Message);
         }
+    }
+
+    [Theory]
+    [InlineData("alternates")]
+    [InlineData("http-alternates")]
+    public async Task ManagedGitWorkspace_RejectsOperationObjectAlternates(string fileName)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var directory = new TemporaryDirectory();
+        var operation = Path.Combine(directory.Path, "operation");
+        Directory.CreateDirectory(operation);
+        var managedGit = CreateManagedGit(directory.Path);
+        var plan = TestPlan(
+            CoreType.Spigot,
+            TestArtifact(Encoding.UTF8.GetBytes("tool")),
+            new string('f', 64));
+        var gitProcess = new RecordingManagedGitWorkspaceRunner(plan);
+        var workspace = new SpigotBuildToolsManagedGitWorkspace(
+            gitProcess,
+            Path.Combine(directory.Path, "source-cache"));
+        await workspace.PrepareAsync(plan, operation, managedGit);
+        var info = Path.Combine(operation, "BuildData", ".git", "objects", "info");
+        Directory.CreateDirectory(info);
+        await File.WriteAllTextAsync(Path.Combine(info, fileName), "external");
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            workspace.VerifyAsync(plan, operation, managedGit));
+
+        Assert.Contains("alternates/http-alternates", exception.Message);
     }
 
     [Fact]
@@ -1423,6 +1931,68 @@ public sealed class SpigotBuildToolsTests
         }
     }
 
+    private static bool CanRunGit()
+    {
+        try
+        {
+            _ = RunRealGit(Environment.CurrentDirectory, "--version");
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static string RunRealGit(string workingDirectory, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        startInfo.Environment["GCM_INTERACTIVE"] = "Never";
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("無法啟動測試 Git。");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Git 測試命令失敗 ({process.ExitCode})：{standardError}");
+        }
+
+        return standardOutput;
+    }
+
+    private static void ClearReadOnlyAttributes(string root)
+    {
+        foreach (var path in Directory.EnumerateFileSystemEntries(
+                     root,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            var attributes = File.GetAttributes(path);
+            File.SetAttributes(
+                path,
+                attributes.HasFlag(FileAttributes.Directory)
+                    ? FileAttributes.Directory
+                    : FileAttributes.Normal);
+        }
+    }
+
     private sealed class RecordingSpigotBuildToolsWorkspace : ISpigotBuildToolsWorkspace
     {
         public int PrepareCalls { get; private set; }
@@ -1474,6 +2044,8 @@ public sealed class SpigotBuildToolsTests
 
         public string GlobalAutoCrlf { get; set; } = "input";
 
+        public string? MissingCommitRepository { get; set; }
+
         public Task<ModrinthLoaderBootstrapProcessResult> RunAsync(
             ProcessStartInfo startInfo,
             IProgress<ModrinthLoaderBootstrapOutputLine>? output = null,
@@ -1495,8 +2067,58 @@ public sealed class SpigotBuildToolsTests
 
             if (arguments[0] == "clone")
             {
-                var repositoryPath = arguments[^1];
-                Directory.CreateDirectory(Path.Combine(repositoryPath, ".git"));
+                var cloneDestination = arguments[^1];
+                if (arguments.Contains("--mirror"))
+                {
+                    Directory.CreateDirectory(Path.Combine(cloneDestination, "objects"));
+                    Directory.CreateDirectory(Path.Combine(cloneDestination, "refs"));
+                    File.WriteAllText(
+                        Path.Combine(cloneDestination, "HEAD"),
+                        "ref: refs/heads/master\n",
+                        Encoding.ASCII);
+                }
+                else
+                {
+                    Directory.CreateDirectory(Path.Combine(cloneDestination, ".git"));
+                }
+
+                return Success();
+            }
+
+            if (arguments.Contains("--is-bare-repository"))
+            {
+                return Success(["true"]);
+            }
+
+            var changeDirectoryIndex = Array.IndexOf(arguments, "-C");
+            var repositoryPath = changeDirectoryIndex >= 0
+                && changeDirectoryIndex + 1 < arguments.Length
+                    ? arguments[changeDirectoryIndex + 1]
+                    : string.Empty;
+            var repositoryFileName = Path.GetFileName(repositoryPath);
+            var repositoryName = Remotes.Keys.SingleOrDefault(name =>
+                    repositoryFileName.Equals(name, StringComparison.Ordinal)
+                    || repositoryFileName.StartsWith(name + "-", StringComparison.Ordinal))
+                ?? repositoryFileName;
+            if (arguments.Contains("fetch"))
+            {
+                if (repositoryName.Equals(MissingCommitRepository, StringComparison.Ordinal))
+                {
+                    MissingCommitRepository = null;
+                }
+
+                return Success();
+            }
+
+            if (arguments.Contains("cat-file"))
+            {
+                return repositoryName.Equals(MissingCommitRepository, StringComparison.Ordinal)
+                    ? Failure()
+                    : Success();
+            }
+
+            if (arguments.Contains("fsck"))
+            {
                 return Success();
             }
 
@@ -1505,7 +2127,6 @@ public sealed class SpigotBuildToolsTests
                 return Success([GlobalAutoCrlf]);
             }
 
-            var repositoryName = Path.GetFileName(arguments[1]);
             if (arguments.Contains("--get-all"))
             {
                 var value = repositoryName == "Spigot" ? SpigotAutoCrlf : "input";
@@ -1534,6 +2155,12 @@ public sealed class SpigotBuildToolsTests
                 0,
                 output ?? [],
                 []));
+
+        private static Task<ModrinthLoaderBootstrapProcessResult> Failure()
+            => Task.FromResult(new ModrinthLoaderBootstrapProcessResult(
+                1,
+                [],
+                ["missing commit"]));
     }
 
     private sealed record GitCommandSnapshot(

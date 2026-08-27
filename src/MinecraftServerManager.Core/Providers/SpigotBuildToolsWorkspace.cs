@@ -30,9 +30,7 @@ internal interface ISpigotBuildToolsWorkspace
 /// leaving checked-out source as LF. BuildTools may fetch/reset these repositories, so the same
 /// local/global configuration and ref invariants are checked again before its output is trusted.
 /// </summary>
-internal sealed class SpigotBuildToolsManagedGitWorkspace(
-    IModrinthLoaderBootstrapProcessRunner? processRunner = null)
-    : ISpigotBuildToolsWorkspace
+internal sealed class SpigotBuildToolsManagedGitWorkspace : ISpigotBuildToolsWorkspace
 {
     private static readonly RepositoryDefinition[] Repositories =
     [
@@ -50,8 +48,22 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
             new Uri("https://hub.spigotmc.org/stash/scm/spigot/spigot.git"))
     ];
 
-    private readonly IModrinthLoaderBootstrapProcessRunner _processRunner = processRunner
-        ?? new ModrinthLoaderBootstrapProcessRunner();
+    private readonly IModrinthLoaderBootstrapProcessRunner _processRunner;
+    private readonly string? _cacheRoot;
+    private readonly SpigotBuildToolsSourceCacheOptions _cacheOptions;
+
+    public SpigotBuildToolsManagedGitWorkspace(
+        IModrinthLoaderBootstrapProcessRunner? processRunner = null,
+        string? cacheRoot = null,
+        SpigotBuildToolsSourceCacheOptions? cacheOptions = null)
+    {
+        _processRunner = processRunner ?? new ModrinthLoaderBootstrapProcessRunner();
+        _cacheRoot = string.IsNullOrWhiteSpace(cacheRoot)
+            ? null
+            : Path.GetFullPath(cacheRoot);
+        _cacheOptions = cacheOptions ?? SpigotBuildToolsSourceCacheOptions.Default;
+        _cacheOptions.Validate();
+    }
 
     public async Task PrepareAsync(
         SpigotBuildPlan plan,
@@ -67,6 +79,16 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
         _ = SpigotBuildToolsGitEnvironment.EnsurePrivateGlobalConfig(
             operation,
             createIfMissing: true);
+        var cacheRoot = _cacheRoot ?? SafePath.CombineUnderRoot(
+            Directory.GetParent(operation)?.FullName ?? operation,
+            "source-cache-v1");
+        if (SafePath.IsWithinRoot(operation, cacheRoot))
+        {
+            throw new InvalidDataException(
+                "BuildTools source cache 不得位於單次 operation workspace 內。");
+        }
+
+        var sourceCache = new SpigotBuildToolsSourceCache(cacheRoot, _cacheOptions);
 
         foreach (var repository in Repositories)
         {
@@ -84,6 +106,27 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
             output?.Report(new ModrinthLoaderBootstrapOutputLine(
                 false,
                 $"正在準備 {repository.Name} 官方 source（core.autocrlf=input）…"));
+            Task<ModrinthLoaderBootstrapProcessResult> RunCachedGitAsync(
+                IReadOnlyList<string> arguments,
+                IProgress<ModrinthLoaderBootstrapOutputLine>? commandOutput,
+                CancellationToken commandCancellationToken)
+                => RunGitAsync(
+                    plan,
+                    repository,
+                    operation,
+                    managedGit,
+                    commandOutput,
+                    commandCancellationToken,
+                    arguments.ToArray());
+
+            using var mirror = await sourceCache.AcquireAsync(
+                    repository.Name,
+                    repository.Remote,
+                    expectedRef,
+                    RunCachedGitAsync,
+                    output,
+                    cancellationToken)
+                .ConfigureAwait(false);
             await RunGitAsync(
                     plan,
                     repository,
@@ -93,17 +136,36 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
                     cancellationToken,
                     "clone",
                     "--no-checkout",
+                    "--no-hardlinks",
                     "--no-progress",
                     "--config",
                     "core.autocrlf=input",
                     "--origin",
                     "origin",
                     "--",
-                    repository.Remote.AbsoluteUri,
+                    mirror.MirrorPath,
                     repositoryPath)
                 .ConfigureAwait(false);
 
             RequireRepositoryDirectory(operation, repositoryPath, plan, repository);
+
+            // The local mirror is only a transport optimization. BuildTools must continue to see
+            // the reviewed official remote, and its operation clone must not depend on cache
+            // objects after the cache lease is released or later evicted.
+            await RunGitAsync(
+                    plan,
+                    repository,
+                    operation,
+                    managedGit,
+                    output: null,
+                    cancellationToken,
+                    "-C",
+                    repositoryPath,
+                    "remote",
+                    "set-url",
+                    "origin",
+                    repository.Remote.AbsoluteUri)
+                .ConfigureAwait(false);
 
             // Clone --config writes this before clone could perform its initial checkout. Keep an
             // explicit canonical local value too, then prove it before our first checkout.
@@ -155,6 +217,8 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
                     cancellationToken)
                 .ConfigureAwait(false);
         }
+
+        await sourceCache.TrimAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task VerifyAsync(
@@ -333,8 +397,18 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
         var startInfo = BuildGitStartInfo(operation, managedGit, arguments);
         try
         {
-            return await _processRunner.RunAsync(startInfo, output, cancellationToken)
+            var result = await _processRunner.RunAsync(startInfo, output, cancellationToken)
                 .ConfigureAwait(false);
+            if (result.ExitCode != 0 || result.OutputTruncated)
+            {
+                throw WorkspaceFailure(
+                    plan,
+                    repository,
+                    $"受管理 MinGit 命令失敗：git {string.Join(' ', arguments)}；"
+                    + $"exit={result.ExitCode}；truncated={result.OutputTruncated}");
+            }
+
+            return result;
         }
         catch (OperationCanceledException)
         {
@@ -414,6 +488,7 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
                 createIfMissing: false);
         startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
         startInfo.Environment["GCM_INTERACTIVE"] = "Never";
+        startInfo.Environment["GIT_NO_REPLACE_OBJECTS"] = "1";
         startInfo.Environment["LC_ALL"] = "C";
         startInfo.Environment["LANG"] = "C";
         return startInfo;
@@ -494,6 +569,20 @@ internal sealed class SpigotBuildToolsManagedGitWorkspace(
             || gitAttributes.HasFlag(FileAttributes.ReparsePoint))
         {
             throw WorkspaceFailure(plan, repository, ".git 必須是非連結的一般資料夾。");
+        }
+
+        var objectsInfo = SafePath.CombineUnderRoot(gitDirectory, "objects", "info");
+        var prohibitedObjectSources = new[]
+        {
+            SafePath.CombineUnderRoot(objectsInfo, "alternates"),
+            SafePath.CombineUnderRoot(objectsInfo, "http-alternates")
+        };
+        if (prohibitedObjectSources.Any(path => File.Exists(path) || Directory.Exists(path)))
+        {
+            throw WorkspaceFailure(
+                plan,
+                repository,
+                "operation clone 不得依賴 mirror object alternates/http-alternates。");
         }
     }
 

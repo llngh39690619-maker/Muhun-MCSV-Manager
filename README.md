@@ -1,10 +1,10 @@
 # Muhun MCSV Manager
 
-Muhun MCSV Manager 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器管理工具。目前公開的來源快照版本為 **1.0.3**。
+Muhun MCSV Manager 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器管理工具。目前公開的來源快照版本為 **1.0.4**。
 
 產品採用「Windows Service 唯一寫入者」架構：Minecraft 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。
 
-> **發行狀態：** 本 repository 目前提供原始碼與技術文件。若 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 尚未出現完整的 1.0.3 發行資產，表示公開安裝包尚未發布；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
+> **發行狀態：** 本 repository 目前提供原始碼與技術文件。若 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 尚未出現完整的 1.0.4 發行資產，表示公開安裝包尚未發布；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
 
 ## English summary
 
@@ -17,7 +17,7 @@ The CurseForge integration is designed to use the official API, respect each aut
 - 建立、匯入、啟動、停止、重新啟動及批次管理多個 Minecraft Server。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
-- 啟動時從 `25565` 起選擇最低可用 TCP Port，並以保留機制避免同時啟動時發生競爭。
+- 啟動時從 `25565` 起選擇最低可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
 - Modrinth、FTB 與 CurseForge 模組包目錄，支援搜尋、排序、遊戲版本、Loader、分類、預覽圖及背景安裝。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
 - Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載與完整性驗證。

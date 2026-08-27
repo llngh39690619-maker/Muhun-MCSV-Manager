@@ -609,9 +609,20 @@ public sealed class GeneralSettingsViewModel : ObservableObject
 
     private void Validate()
     {
-        ValidationMessage = WindowWidth is < 1120 or > 7680
+        // A high-DPI/small-work-area resize may legitimately persist below the design minimum.
+        // Keep that monitor-derived baseline valid while retaining the existing 1120x700 lower
+        // bound for values manually entered in this settings dialog.
+        var widthIsPersistedMonitorSize = WindowWidth >= ManagerUiSettings.MinimumPersistedWindowWidth
+                                          && WindowWidth < 1120
+                                          && Math.Abs(WindowWidth - _baselineUi.WindowWidth) < 0.5;
+        var heightIsPersistedMonitorSize = WindowHeight >= ManagerUiSettings.MinimumPersistedWindowHeight
+                                           && WindowHeight < 700
+                                           && Math.Abs(WindowHeight - _baselineUi.WindowHeight) < 0.5;
+        ValidationMessage = WindowWidth > ManagerUiSettings.MaximumPersistedWindowWidth
+                            || WindowWidth < 1120 && !widthIsPersistedMonitorSize
             ? L("settings.validation.width")
-            : WindowHeight is < 700 or > 4320
+            : WindowHeight > ManagerUiSettings.MaximumPersistedWindowHeight
+              || WindowHeight < 700 && !heightIsPersistedMonitorSize
                 ? L("settings.validation.height")
                 : FontSize is < 11 or > 20
                     ? L("settings.validation.font")

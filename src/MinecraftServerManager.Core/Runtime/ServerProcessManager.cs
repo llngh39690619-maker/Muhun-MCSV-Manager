@@ -55,13 +55,12 @@ public sealed class ServerProcessManager : IAsyncDisposable
         var instanceSnapshot = SnapshotInstance(instance);
         ValidateInstanceStopCommand(instanceSnapshot.StopCommand);
         var snapshotInstanceId = instanceSnapshot.Id;
-        var lockedDirectoryPath = Path.GetFullPath(instanceSnapshot.DirectoryPath);
         var slot = _slots.GetOrAdd(
             instanceSnapshot.Id,
             id => new InstanceSlot(id, _options.MaximumRetainedConsoleLines));
 
         await slot.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        FileStream? unownedDirectoryLock = null;
+        IDisposable? unownedDirectoryLease = null;
         var preparationCompleted = false;
         var startCommitted = false;
         try
@@ -82,10 +81,26 @@ public sealed class ServerProcessManager : IAsyncDisposable
                 }
             }
 
+            if (restartGuard is not null && _options.RefreshAutoRestartSnapshotAsync is { } refresh)
+            {
+                await refresh(instanceSnapshot, cancellationToken).ConfigureAwait(false);
+                if (instanceSnapshot.Id != snapshotInstanceId)
+                {
+                    throw new InvalidOperationException(
+                        "RefreshAutoRestartSnapshotAsync cannot change the server instance ID.");
+                }
+
+                ValidateInstanceStopCommand(instanceSnapshot.StopCommand);
+            }
+
+            var lockedDirectoryPath = Path.GetFullPath(instanceSnapshot.DirectoryPath);
+
             // A port can be reassigned safely; a world directory cannot be shared safely. Hold
             // this OS-level file lock for the complete process session so another GUI/process,
             // or another instance ID in this manager, cannot start the same directory.
-            unownedDirectoryLock = ServerDirectoryLock.Acquire(instanceSnapshot.DirectoryPath);
+            unownedDirectoryLease = (_options.AcquireDirectoryLease ?? ServerDirectoryLock.Acquire)(
+                    instanceSnapshot.DirectoryPath)
+                ?? throw new InvalidOperationException("The directory lease provider returned null.");
 
             if (_options.PrepareStartAsync is { } prepareStart)
             {
@@ -137,8 +152,8 @@ public sealed class ServerProcessManager : IAsyncDisposable
                 ++slot.Generation,
                 instanceSnapshot,
                 process,
-                unownedDirectoryLock);
-            unownedDirectoryLock = null;
+                unownedDirectoryLease);
+            unownedDirectoryLease = null;
             try
             {
                 session.OutputHandler = (_, eventArgs) =>
@@ -204,9 +219,67 @@ public sealed class ServerProcessManager : IAsyncDisposable
                 NotifyPreparedStartAborted(snapshotInstanceId);
             }
 
-            unownedDirectoryLock?.Dispose();
+            unownedDirectoryLease?.Dispose();
             slot.Gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Executes a durable instance mutation under the same gate used by start, stop, and automatic
+    /// restart. The callback runs only while no process session exists, closing the check/write
+    /// race between Service settings changes and restart session commit.
+    /// </summary>
+    public async Task<TResult> ExecuteWhileInactiveAsync<TResult>(
+        Guid instanceId,
+        Func<CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotAcceptingOperations();
+        if (instanceId == Guid.Empty)
+        {
+            throw new ArgumentException("Server instance id must not be empty.", nameof(instanceId));
+        }
+
+        ArgumentNullException.ThrowIfNull(operation);
+        var slot = _slots.GetOrAdd(
+            instanceId,
+            id => new InstanceSlot(id, _options.MaximumRetainedConsoleLines));
+        await slot.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfNotAcceptingOperations();
+            lock (slot.Sync)
+            {
+                if (slot.CurrentSession is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Server instance '{instanceId}' has an active process session.");
+                }
+            }
+
+            return await operation(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            slot.Gate.Release();
+        }
+    }
+
+    public async Task ExecuteWhileInactiveAsync(
+        Guid instanceId,
+        Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        await ExecuteWhileInactiveAsync(
+                instanceId,
+                async token =>
+                {
+                    await operation(token).ConfigureAwait(false);
+                    return true;
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private void NotifyPreparedStartAborted(Guid instanceId)
@@ -1123,7 +1196,7 @@ public sealed class ServerProcessManager : IAsyncDisposable
             // cleanly. The lock file itself deliberately remains on disk.
             try
             {
-                session.DirectoryLock.Dispose();
+                session.DirectoryLease.Dispose();
             }
             finally
             {
@@ -1276,7 +1349,7 @@ public sealed class ServerProcessManager : IAsyncDisposable
         long generation,
         ServerInstance instance,
         IServerProcess process,
-        FileStream directoryLock)
+        IDisposable directoryLease)
     {
         private int _manualStopRequested;
 
@@ -1290,7 +1363,7 @@ public sealed class ServerProcessManager : IAsyncDisposable
 
         public ConsoleLineClassifier ConsoleClassifier { get; } = new();
 
-        public FileStream DirectoryLock { get; } = directoryLock;
+        public IDisposable DirectoryLease { get; } = directoryLease;
 
         public CancellationTokenSource SamplingCancellation { get; } = new();
 
