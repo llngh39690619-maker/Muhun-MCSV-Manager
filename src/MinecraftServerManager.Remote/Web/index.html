@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#111820">
+    <meta name="application-name" content="MCSV 遠端控制">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="MCSV">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'">
+    <title data-i18n="web.document.title">Muhun MCSV 遠端控制</title>
+    <link rel="manifest" href="/manifest.webmanifest?culture=zh-TW">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+    <link rel="icon" sizes="192x192" href="/icon-192.png">
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <a class="skip-link" href="#main-content" data-i18n="web.skip">跳到主要內容</a>
+
+    <header class="app-header">
+        <div class="brand" aria-label="Muhun MCSV Manager">
+            <span class="brand-mark" aria-hidden="true">M</span>
+            <span>
+                <strong data-i18n="web.brand">MCSV 遠端控制</strong>
+                <small id="host-subtitle">Muhun MCSV Manager</small>
+            </span>
+        </div>
+        <div class="header-actions">
+            <label class="visually-hidden" for="language-selector" data-i18n="web.language.select">介面語言</label>
+            <select id="language-selector" class="language-selector" aria-label="介面語言" data-i18n-aria-label="web.language.select">
+                <option value="zh-TW" data-i18n="language.zh-TW">繁體中文</option>
+                <option value="en-US" data-i18n="language.en-US">English (US)</option>
+            </select>
+            <span id="connection-status" class="status-pill is-connecting" role="status" aria-live="polite">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="connection-status-text" data-i18n="web.connection.connecting">連線中</span>
+            </span>
+            <button id="signout-button" class="icon-button" type="button" hidden aria-label="登出遠端控制" data-i18n="web.signOut" data-i18n-aria-label="web.auth.signOutTitle">登出</button>
+        </div>
+    </header>
+
+    <div id="alert-banner" class="alert-banner" role="alert" hidden>
+        <span id="alert-message"></span>
+        <button id="dismiss-alert-button" type="button" aria-label="關閉訊息" data-i18n="web.dismiss" data-i18n-aria-label="web.dismiss">關閉</button>
+    </div>
+
+    <main id="main-content" tabindex="-1">
+        <section id="loading-view" class="centered-view" aria-labelledby="loading-title">
+            <div class="spinner" aria-hidden="true"></div>
+            <h1 id="loading-title" data-i18n="web.loading.title">正在連接管理程式</h1>
+            <p data-i18n="web.loading.hint">請保持此頁面開啟。</p>
+        </section>
+
+        <section id="auth-view" class="centered-view" aria-labelledby="auth-title" hidden>
+            <div class="auth-stack">
+                <div class="auth-card">
+                    <span class="auth-lock" aria-hidden="true">◆</span>
+                    <h1 id="auth-title" data-i18n="web.auth.title">登入遠端控制</h1>
+                    <p data-i18n="web.auth.description">請使用電腦版 MCSV Manager 已新增的遠端帳號。手機端無法註冊或新增帳號。</p>
+                    <p id="credential-unavailable" class="credential-note" role="status" hidden data-i18n="web.auth.unavailable">
+                        尚未設定遠端帳號。請先在電腦版新增帳號；手機端不能註冊。
+                    </p>
+                    <form id="login-form" method="post" action="/api/v1/auth/login" novalidate>
+                        <label for="login-username" data-i18n="web.auth.username">帳號</label>
+                        <input id="login-username" name="username" type="text" inputmode="text"
+                               autocomplete="username" autocapitalize="none" spellcheck="false"
+                               pattern="[A-Za-z][A-Za-z0-9]{5,31}" minlength="6" maxlength="32"
+                               required aria-describedby="username-help login-error">
+                        <small id="username-help" data-i18n="web.auth.usernameHint">帳號為 6–32 位英文字母與數字，並以字母開頭。</small>
+                        <label for="login-pin" data-i18n="web.auth.pin">數字密碼</label>
+                        <input id="login-pin" name="pin" type="password" inputmode="numeric"
+                               autocomplete="current-password" pattern="[0-9]{4,12}"
+                               minlength="4" maxlength="12" required aria-describedby="login-help login-error">
+                        <small id="login-help" data-i18n="web.auth.pinHint">請輸入 4–12 位半形數字。</small>
+                        <label id="remember-device-option" class="remember-device-option" for="remember-device" hidden>
+                            <input id="remember-device" name="remember-device" type="checkbox" checked>
+                            <span>
+                                <strong data-i18n="web.auth.remember">在這台裝置保持登入</strong>
+                                <small data-i18n="web.auth.rememberHint">只保存可由電腦端撤銷的裝置授權，不保存數字密碼。</small>
+                            </span>
+                        </label>
+                        <p id="remember-device-unavailable" class="identity-note" role="status" hidden data-i18n="web.auth.rememberUnavailable">
+                            保持登入需要固定網址。Cloudflare 隨機網址每次重新連線可能改變，因此此模式不會保存裝置登入。
+                        </p>
+                        <p id="login-readiness" class="identity-note" role="status" data-i18n="web.auth.securityLoading">正在取得安全驗證資訊…</p>
+                        <p id="login-error" class="field-error" role="alert" hidden></p>
+                        <button id="login-button" class="primary-button full-width" type="submit" disabled data-i18n="web.auth.login">登入</button>
+                    </form>
+                    <p class="privacy-note" data-i18n="web.auth.privacy">此頁面不會要求 Minecraft 或 Google 密碼。請勿將遠端帳號密碼告訴他人。</p>
+                </div>
+
+                <aside id="install-help" class="install-card" aria-labelledby="install-title">
+                    <div>
+                        <p class="eyebrow">iPhone / iPad</p>
+                        <h2 id="install-title" data-i18n="web.install.title">安裝成 MCSV App</h2>
+                    </div>
+                    <p id="install-status" data-i18n="web.install.instructions">使用 Safari 開啟此頁，點「分享」→「加入主畫面」→ 開啟為 Web App。</p>
+                    <p class="install-warning" data-i18n="web.install.warning">若使用 Cloudflare 隨機網址，網址更換後舊主畫面 App 也會失效；長期使用需改用固定網址。</p>
+                </aside>
+            </div>
+        </section>
+
+        <section id="app-shell" hidden>
+            <section id="dashboard-view" class="page-view" aria-labelledby="dashboard-title">
+                <div class="page-heading">
+                    <div>
+                        <p class="eyebrow" data-i18n="web.dashboard.eyebrow">主機總覽</p>
+                        <h1 id="dashboard-title" data-i18n="web.dashboard.title">伺服器狀態</h1>
+                    </div>
+                    <button class="secondary-button compact-button" type="button" data-refresh data-i18n="common.refresh">重新整理</button>
+                </div>
+
+                <div class="metric-grid dashboard-metrics">
+                    <article class="metric-card">
+                        <span data-i18n="web.dashboard.running">執行中</span>
+                        <strong id="running-count">—</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span data-i18n="web.dashboard.allServers">全部伺服器</span>
+                        <strong id="server-count">—</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span data-i18n="web.dashboard.onlinePlayers">線上玩家</span>
+                        <strong id="online-player-count">—</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span data-i18n="web.dashboard.memory">使用記憶體</span>
+                        <strong id="total-memory">—</strong>
+                    </article>
+                </div>
+
+                <section id="product-update-card" class="section-card" aria-labelledby="product-update-title" hidden>
+                    <div class="section-heading">
+                        <div>
+                            <h2 id="product-update-title" data-i18n="web.update.title">MCSV 程式更新</h2>
+                            <p data-i18n="web.update.hint">僅限具有正式更新權限的帳號操作。</p>
+                        </div>
+                    </div>
+                    <div class="form-grid two-columns">
+                        <label>
+                            <span data-i18n="web.update.channel">更新通道</span>
+                            <select id="product-update-channel">
+                                <option value="stable" data-i18n="web.update.stable">穩定版</option>
+                                <option value="beta" data-i18n="web.update.beta">測試版</option>
+                            </select>
+                        </label>
+                        <div>
+                            <span class="field-label" data-i18n="web.update.status">更新狀態</span>
+                            <p id="product-update-status" data-i18n="web.update.unavailable">尚未取得更新狀態</p>
+                        </div>
+                    </div>
+                    <div class="action-row">
+                        <button id="product-update-check" class="secondary-button" type="button" data-i18n="web.update.check">檢查更新</button>
+                        <button id="product-update-download" class="secondary-button" type="button" data-i18n="web.update.download">下載並驗證</button>
+                        <button id="product-update-apply" class="primary-button" type="button" data-i18n="web.update.apply">排程套用</button>
+                    </div>
+                </section>
+
+                <section class="section-card" aria-labelledby="dashboard-servers-title">
+                    <div class="section-heading">
+                        <div>
+                            <h2 id="dashboard-servers-title" data-i18n="web.dashboard.servers">伺服器</h2>
+                            <p id="dashboard-updated-at" data-i18n="web.dashboard.noData">尚未取得資料</p>
+                        </div>
+                        <button id="show-all-servers-button" class="text-button" type="button" data-i18n="web.dashboard.showAll">查看全部</button>
+                    </div>
+                    <div id="dashboard-server-list" class="server-card-list"></div>
+                </section>
+            </section>
+
+            <section id="servers-view" class="page-view" aria-labelledby="servers-title" hidden>
+                <div class="page-heading">
+                    <div>
+                        <p class="eyebrow" data-i18n="web.servers.eyebrow">所有執行個體</p>
+                        <h1 id="servers-title" data-i18n="web.servers.title">伺服器</h1>
+                    </div>
+                    <button class="secondary-button compact-button" type="button" data-refresh data-i18n="common.refresh">重新整理</button>
+                </div>
+                <label class="search-field" for="server-search">
+                    <span class="visually-hidden" data-i18n="web.servers.search">搜尋伺服器</span>
+                    <input id="server-search" type="search" inputmode="search" placeholder="搜尋名稱、核心或版本" data-i18n-placeholder="web.servers.search" autocomplete="off">
+                </label>
+                <div id="all-server-list" class="server-card-list"></div>
+            </section>
+
+            <section id="server-view" class="page-view" aria-labelledby="server-name" hidden>
+                <button id="back-to-servers-button" class="back-button" type="button" data-i18n="web.servers.back">‹ 返回伺服器</button>
+                <div class="server-detail-heading">
+                    <div class="server-title-block">
+                        <p id="server-core" class="eyebrow">—</p>
+                        <div class="title-with-state">
+                            <h1 id="server-name">—</h1>
+                            <span id="server-state" class="server-state state-unknown" data-i18n="web.state.unknown">未知</span>
+                        </div>
+                    </div>
+                    <div id="server-action-bar" class="action-bar" aria-label="伺服器電源操作" data-i18n-aria-label="web.server.power">
+                        <button class="primary-button" type="button" data-server-action="start" data-i18n="common.start">啟動</button>
+                        <button class="secondary-button" type="button" data-server-action="stop" data-i18n="common.stop">停止</button>
+                        <button class="secondary-button" type="button" data-server-action="restart" data-i18n="common.restart">重新啟動</button>
+                    </div>
+                </div>
+
+                <div class="metric-grid server-metrics">
+                    <article class="metric-card"><span data-i18n="main.metric.cpu">CPU</span><strong id="server-cpu">—</strong></article>
+                    <article class="metric-card"><span data-i18n="main.metric.memory">記憶體</span><strong id="server-memory">—</strong></article>
+                    <article class="metric-card"><span data-i18n="web.dashboard.onlinePlayers">線上玩家</span><strong id="server-players">—</strong></article>
+                    <article class="metric-card"><span data-i18n="main.metric.uptime">執行時間</span><strong id="server-uptime">—</strong></article>
+                    <article class="metric-card"><span data-i18n="main.metric.port">連接埠</span><strong id="server-port">—</strong></article>
+                    <article class="metric-card"><span data-i18n="main.metric.java">Java</span><strong id="server-java">—</strong></article>
+                </div>
+
+                <div id="server-tabs" class="tab-list" role="tablist" aria-label="伺服器功能" data-i18n-aria-label="web.server.power">
+                    <button id="overview-tab" type="button" role="tab" aria-selected="true" aria-controls="overview-panel" data-server-tab="overview" data-i18n="web.server.overview">概況</button>
+                    <button id="console-tab" type="button" role="tab" aria-selected="false" aria-controls="console-panel" tabindex="-1" data-server-tab="console" data-i18n="web.server.console">控制台</button>
+                    <button id="players-tab" type="button" role="tab" aria-selected="false" aria-controls="players-panel" tabindex="-1" data-server-tab="players" data-i18n="web.server.players">玩家</button>
+                    <button id="environment-tab" type="button" role="tab" aria-selected="false" aria-controls="environment-panel" tabindex="-1" data-server-tab="environment" data-i18n="web.server.environment">模組／Java</button>
+                </div>
+
+                <section id="overview-panel" class="tab-panel" role="tabpanel" aria-labelledby="overview-tab">
+                    <p id="permission-notice" class="identity-note" role="status" hidden data-i18n="web.server.readOnly">
+                        此帳號在這個 Server 只有查看權限；未授權的控制功能已隱藏。
+                    </p>
+                    <article class="section-card">
+                        <div class="section-heading">
+                            <div>
+                                <h2 data-i18n="web.server.manualBackup">手動備份</h2>
+                                <p data-i18n="web.server.manualBackupHint">建立目前 Server 的 ZIP 備份。作業會在背景執行。</p>
+                            </div>
+                        </div>
+                        <button id="create-backup-button" class="primary-button full-width-mobile" type="button" data-i18n="web.server.createBackup">建立備份</button>
+                    </article>
+                    <article id="backup-catalog-card" class="section-card" hidden>
+                        <div class="section-heading backup-catalog-heading">
+                            <div>
+                                <h2 data-i18n="web.backup.listTitle">備份與安全還原</h2>
+                                <p data-i18n="web.backup.listHint">列出由 Windows Service 管理的 Server 備份；還原前 Server 必須完全停止。</p>
+                            </div>
+                            <button id="refresh-backups-button" class="secondary-button compact-button" type="button" data-i18n="web.backup.refresh">重新整理備份</button>
+                        </div>
+                        <p id="backup-list-status" class="backup-list-status" role="status" aria-live="polite" data-i18n="web.backup.loading">正在讀取備份…</p>
+                        <div id="backup-list" class="backup-list" role="list"></div>
+                    </article>
+                    <article class="section-card information-card">
+                        <h2 data-i18n="web.server.remoteHelp">遠端控制說明</h2>
+                        <p data-i18n="web.server.remoteHelpText">遠端頁面只會在你明確按下按鈕時啟動或停止 Server。開啟手機頁面不會改變 Server 狀態。</p>
+                    </article>
+                </section>
+
+                <section id="console-panel" class="tab-panel" role="tabpanel" aria-labelledby="console-tab" hidden>
+                    <div id="console-stream-tabs" class="subtab-list" role="tablist" aria-label="控制台訊息類型" data-i18n-aria-label="web.console.messages">
+                        <button id="ordinary-console-tab" type="button" role="tab" aria-selected="true" aria-controls="console-stream-panel" data-console-stream="ordinary" data-i18n="web.console.ordinary">一般資訊</button>
+                        <button id="diagnostic-console-tab" type="button" role="tab" aria-selected="false" aria-controls="console-stream-panel" tabindex="-1" data-console-stream="diagnostic" data-i18n="web.console.diagnostics">錯誤／警告</button>
+                    </div>
+                    <div id="console-stream-panel" role="tabpanel" aria-labelledby="ordinary-console-tab">
+                        <div class="console-toolbar">
+                            <span id="console-summary" data-i18n="web.console.notRead">尚未讀取</span>
+                            <button id="refresh-console-button" class="text-button" type="button" data-i18n="web.console.reload">重新載入</button>
+                        </div>
+                        <div id="console-log" class="console-log" role="log" aria-label="Server 控制台輸出" data-i18n-aria-label="web.console.output" aria-live="off" tabindex="0"></div>
+                        <p id="console-more-hint" class="stream-hint" hidden></p>
+                        <form id="command-form" class="command-form" novalidate>
+                            <label class="visually-hidden" for="command-input" data-i18n="web.console.command">輸入單行 Server 命令</label>
+                            <input id="command-input" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
+                                   maxlength="512" placeholder="輸入單行 Server 命令" data-i18n-placeholder="web.console.commandPlaceholder">
+                            <button id="send-command-button" class="primary-button" type="submit" data-i18n="common.send">傳送</button>
+                        </form>
+                        <p id="command-error" class="field-error" role="alert" hidden></p>
+                    </div>
+                </section>
+
+                <section id="players-panel" class="tab-panel" role="tabpanel" aria-labelledby="players-tab" hidden>
+                    <div class="section-heading players-heading">
+                        <div>
+                            <h2 data-i18n="web.players.list">玩家清單</h2>
+                            <p id="players-summary" data-i18n="web.console.notRead">尚未讀取</p>
+                        </div>
+                        <button id="refresh-players-button" class="text-button" type="button" data-i18n="common.refresh">重新整理</button>
+                    </div>
+                    <div id="player-list" class="player-list"></div>
+
+                    <form id="player-action-form" class="section-card player-action-form" novalidate>
+                        <h2 data-i18n="web.players.action">玩家操作</h2>
+                        <p data-i18n="web.players.actionHint">請輸入或從上方選取玩家，再選擇明確的管理動作。</p>
+                        <label for="player-name-input" data-i18n="web.players.name">玩家名稱</label>
+                        <input id="player-name-input" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"
+                               minlength="1" maxlength="16" required placeholder="Minecraft 玩家名稱" data-i18n-placeholder="web.players.namePlaceholder">
+                        <label for="player-action-select" data-i18n="web.players.actionLabel">動作</label>
+                        <select id="player-action-select">
+                            <option value="kick" data-i18n="web.player.kick">踢出玩家</option>
+                            <option value="ban" data-i18n="web.player.ban">封禁玩家</option>
+                            <option value="pardon" data-i18n="web.player.pardon">解除封禁</option>
+                            <option value="op" data-i18n="web.player.op">授予 OP</option>
+                            <option value="deop" data-i18n="web.player.deop">移除 OP</option>
+                            <option value="whitelistAdd" data-i18n="web.player.whitelistAdd">加入白名單</option>
+                            <option value="whitelistRemove" data-i18n="web.player.whitelistRemove">移除白名單</option>
+                            <option value="whitelistOn" data-i18n="web.player.whitelistOn">開啟白名單</option>
+                            <option value="whitelistOff" data-i18n="web.player.whitelistOff">關閉白名單</option>
+                        </select>
+                        <label for="player-reason-input" data-i18n="web.players.reason">原因（選填）</label>
+                        <input id="player-reason-input" type="text" autocomplete="off" maxlength="120" placeholder="只適用於踢出或封禁" data-i18n-placeholder="web.players.reasonPlaceholder">
+                        <p id="player-action-error" class="field-error" role="alert" hidden></p>
+                        <button id="submit-player-action-button" class="primary-button" type="submit" data-i18n="web.players.submit">確認玩家操作</button>
+                    </form>
+                </section>
+
+                <section id="environment-panel" class="tab-panel" role="tabpanel" aria-labelledby="environment-tab" hidden>
+                    <div class="section-heading environment-heading">
+                        <div>
+                            <h2 data-i18n="web.environment.title">Server 執行環境</h2>
+                            <p data-i18n="web.environment.hint">由 Windows Service 提供唯讀資訊；此頁面不會收到本機路徑或秘密資料。</p>
+                        </div>
+                        <button id="refresh-environment-button" class="text-button" type="button" data-i18n="web.environment.refresh">重新整理環境資訊</button>
+                    </div>
+                    <p id="environment-status" class="environment-status" role="status" aria-live="polite" data-i18n="web.environment.loading">正在讀取模組、插件與 Java 資訊…</p>
+
+                    <div class="environment-grid">
+                        <article class="section-card environment-java-card">
+                            <h2 data-i18n="web.environment.java">Java Runtime</h2>
+                            <dl class="environment-details">
+                                <div><dt data-i18n="web.environment.javaStatus">狀態</dt><dd id="environment-java-status">—</dd></div>
+                                <div><dt data-i18n="web.environment.javaMajor">主要版本</dt><dd id="environment-java-major">—</dd></div>
+                                <div><dt data-i18n="web.environment.javaVersion">版本</dt><dd id="environment-java-version">—</dd></div>
+                                <div><dt data-i18n="web.environment.javaKind">Runtime 類型</dt><dd id="environment-java-kind">—</dd></div>
+                                <div><dt data-i18n="web.environment.javaVendor">發行者</dt><dd id="environment-java-vendor">—</dd></div>
+                                <div><dt data-i18n="web.environment.javaArchitecture">架構</dt><dd id="environment-java-architecture">—</dd></div>
+                            </dl>
+                        </article>
+
+                        <article class="section-card environment-addon-card">
+                            <div class="section-heading">
+                                <div>
+                                    <h2 data-i18n="web.environment.addons">模組與插件</h2>
+                                    <p id="environment-addon-summary">—</p>
+                                </div>
+                            </div>
+                            <div id="environment-addon-list" class="environment-addon-list" role="list"></div>
+                            <p id="environment-addon-hint" class="stream-hint" hidden></p>
+                        </article>
+                    </div>
+                </section>
+            </section>
+        </section>
+    </main>
+
+    <nav id="bottom-navigation" class="bottom-navigation" aria-label="主要導覽" data-i18n-aria-label="web.nav.primary" hidden>
+        <button type="button" data-route="dashboard" aria-current="page">
+            <span aria-hidden="true">◫</span>
+            <span data-i18n="web.nav.dashboard">總覽</span>
+        </button>
+        <button type="button" data-route="servers">
+            <span aria-hidden="true">▤</span>
+            <span data-i18n="web.nav.servers">伺服器</span>
+        </button>
+    </nav>
+
+    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+        <form method="dialog">
+            <h2 id="confirm-title" data-i18n="web.confirm.title">確認操作</h2>
+            <p id="confirm-message"></p>
+            <div class="dialog-actions">
+                <button id="confirm-cancel-button" class="secondary-button" value="cancel" data-i18n="common.cancel">取消</button>
+                <button id="confirm-accept-button" class="danger-button" value="confirm" data-i18n="common.confirm">確認</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+
+    <noscript>
+        <div class="noscript-message" data-i18n="web.noScript">此遠端控制頁面需要 JavaScript。請啟用 JavaScript 後重新整理。</div>
+    </noscript>
+    <script src="/app.js" defer></script>
+</body>
+</html>

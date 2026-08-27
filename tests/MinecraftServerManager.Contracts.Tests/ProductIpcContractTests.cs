@@ -1,0 +1,263 @@
+using MinecraftServerManager.Contracts;
+using MinecraftServerManager.Contracts.Plugins;
+
+namespace MinecraftServerManager.Contracts.Tests;
+
+public sealed class ProductIpcContractTests
+{
+    [Fact]
+    public void NotificationPreferences_RequireCanonicalSupportedCulture()
+    {
+        var valid = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.NotificationPreferencesSetMethod,
+            NotificationPreferences = ProductNotificationPreferences.Default with
+            {
+                CultureName = "en-US",
+            },
+        };
+        var nonCanonical = valid with
+        {
+            NotificationPreferences = valid.NotificationPreferences! with
+            {
+                CultureName = "en-GB",
+            },
+        };
+
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+        Assert.Equal(
+            "protocol.notification_preferences_invalid",
+            ProductIpcRequestValidator.Validate(nonCanonical)?.Code);
+    }
+
+    [Fact]
+    public void ValidHandshakeRequest_IsAccepted()
+    {
+        var request = ValidRequest();
+
+        Assert.Null(ProductIpcRequestValidator.Validate(request));
+    }
+
+    [Fact]
+    public void UnsupportedMethod_FailsClosed()
+    {
+        var request = ValidRequest() with { Method = "server.destroy" };
+
+        Assert.Equal("protocol.method_unsupported", ProductIpcRequestValidator.Validate(request)?.Code);
+    }
+
+    [Fact]
+    public void RuntimeMethod_RequiresItsServerIdentity()
+    {
+        var request = ValidRequest() with { Method = ProductIpcProtocol.ServerStartMethod };
+
+        Assert.Equal("protocol.server_id_required", ProductIpcRequestValidator.Validate(request)?.Code);
+    }
+
+    [Fact]
+    public void PlayerListMethod_RequiresItsServerIdentityAndIsARegisteredProtocolMethod()
+    {
+        var missing = ValidRequest() with { Method = ProductIpcProtocol.ServerPlayersMethod };
+        var valid = missing with { ServerId = Guid.NewGuid() };
+
+        Assert.Equal("protocol.server_id_required", ProductIpcRequestValidator.Validate(missing)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+    }
+
+    [Fact]
+    public void BoundedAdministrationMethod_IsRegisteredAndRequiresServerIdentity()
+    {
+        var missing = ValidRequest() with { Method = ProductIpcProtocol.ServerAdministrationMethod };
+        var valid = missing with { ServerId = Guid.NewGuid() };
+
+        Assert.Equal("protocol.server_id_required", ProductIpcRequestValidator.Validate(missing)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+    }
+
+    [Fact]
+    public void RuntimeContracts_AdvanceMinorApiWithoutDroppingVersionOneClients()
+    {
+        Assert.Equal(new ProductApiVersion(1, 0), ProductApiProtocol.MinimumSupportedVersion);
+        Assert.Equal(new ProductApiVersion(1, 5), ProductApiProtocol.CurrentVersion);
+        Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void DefaultApiVersion_FailsClosed()
+    {
+        var request = ValidRequest() with { ClientMinimumApiVersion = default };
+
+        Assert.Equal("protocol.version_range_invalid", ProductIpcRequestValidator.Validate(request)?.Code);
+    }
+
+    [Fact]
+    public void ImportCommitRequiresCapabilityIdAndExactSha256()
+    {
+        var missingId = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerImportCommitMethod,
+            ManifestSha256 = new string('A', 64),
+        };
+        var invalidHash = missingId with
+        {
+            ImportId = Guid.NewGuid(),
+            ManifestSha256 = "not-a-sha256",
+        };
+
+        Assert.Equal("protocol.import_id_required", ProductIpcRequestValidator.Validate(missingId)?.Code);
+        Assert.Equal(
+            "protocol.import_manifest_hash_invalid",
+            ProductIpcRequestValidator.Validate(invalidHash)?.Code);
+    }
+
+    [Fact]
+    public void ServiceAdministrationMethods_RequireServerAndOpaqueBackupIdentity()
+    {
+        var missingRegistrationServer = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerRegistrationMethod,
+        };
+        var missingBackupServer = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerBackupListMethod,
+        };
+        var missingSettings = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerSettingsUpdateMethod,
+            ServerId = Guid.NewGuid(),
+        };
+        var invalidRestoreId = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerBackupRestoreMethod,
+            ServerId = Guid.NewGuid(),
+            BackupId = "../outside.zip",
+        };
+        var shortOpaqueRestoreId = invalidRestoreId with
+        {
+            BackupId = new string('a', 63),
+        };
+        var validRestore = invalidRestoreId with
+        {
+            BackupId = new string('a', 64),
+        };
+
+        Assert.Equal(
+            "protocol.server_id_required",
+            ProductIpcRequestValidator.Validate(missingRegistrationServer)?.Code);
+        Assert.Equal(
+            "protocol.server_id_required",
+            ProductIpcRequestValidator.Validate(missingBackupServer)?.Code);
+        Assert.Equal(
+            "protocol.backup_id_invalid",
+            ProductIpcRequestValidator.Validate(invalidRestoreId)?.Code);
+        Assert.Equal(
+            "protocol.backup_id_invalid",
+            ProductIpcRequestValidator.Validate(shortOpaqueRestoreId)?.Code);
+        Assert.Equal(
+            "protocol.server_settings_required",
+            ProductIpcRequestValidator.Validate(missingSettings)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(validRestore));
+    }
+
+    [Fact]
+    public void ModpackUpdateMethods_RequireDefinitionCapabilityAndExactManifestHash()
+    {
+        var missingDefinition = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerModpackUpdateBeginMethod,
+        };
+        var missingId = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerModpackUpdateStatusMethod,
+        };
+        var badCommitHash = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerModpackUpdateCommitMethod,
+            ModpackUpdateId = Guid.NewGuid(),
+            ManifestSha256 = "not-a-sha256",
+        };
+        var validCommit = badCommitHash with
+        {
+            ManifestSha256 = new string('A', 64),
+        };
+
+        Assert.Equal(
+            "protocol.modpack_update_begin_required",
+            ProductIpcRequestValidator.Validate(missingDefinition)?.Code);
+        Assert.Equal(
+            "protocol.modpack_update_id_required",
+            ProductIpcRequestValidator.Validate(missingId)?.Code);
+        Assert.Equal(
+            "protocol.modpack_update_manifest_hash_invalid",
+            ProductIpcRequestValidator.Validate(badCommitHash)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(validCommit));
+    }
+
+    [Fact]
+    public void ProviderMethods_RequireSafeIdentifiersAndMethodSpecificPayloads()
+    {
+        var missingId = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ProviderHealthMethod,
+        };
+        var missingEnabled = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ProviderSetEnabledMethod,
+            ProviderId = "muhun.catalog",
+        };
+        var traversal = ValidProviderInstall() with { InboxFileName = "..\\provider.mcsvp" };
+        var badInstall = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ProviderInstallMethod,
+            ProviderInstall = traversal,
+        };
+        var unrelatedSecret = ValidRequest() with
+        {
+            ProviderInstall = ValidProviderInstall(),
+        };
+
+        Assert.Equal("protocol.provider_id_required", ProductIpcRequestValidator.Validate(missingId)?.Code);
+        Assert.Equal(
+            "protocol.provider_enabled_required",
+            ProductIpcRequestValidator.Validate(missingEnabled)?.Code);
+        Assert.Equal("protocol.provider_install_invalid", ProductIpcRequestValidator.Validate(badInstall)?.Code);
+        Assert.Equal(
+            "protocol.provider_install_unexpected",
+            ProductIpcRequestValidator.Validate(unrelatedSecret)?.Code);
+    }
+
+    [Fact]
+    public void ProviderPublisherPin_RejectsPrivateKeysAtIpcBoundary()
+    {
+        var request = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ProviderPublisherPinMethod,
+            ProviderPublisherPin = new ProductPinProviderPublisherRequest(
+                "muhun.publisher",
+                "-----BEGIN PRIVATE KEY-----\nnot-a-public-key\n-----END PRIVATE KEY-----"),
+        };
+
+        Assert.Equal(
+            "protocol.provider_publisher_pin_invalid",
+            ProductIpcRequestValidator.Validate(request)?.Code);
+    }
+
+    private static ProductProviderInstallFromInboxRequest ValidProviderInstall() => new(
+        "provider.mcsvp",
+        new string('a', 64),
+        "muhun.provider",
+        "1.0.0",
+        "muhun.publisher",
+        new ProductProviderDetachedSignature(
+            "muhun.publisher",
+            "ECDSA-P256-SHA256",
+            Convert.ToBase64String([1, 2, 3, 4]),
+            1));
+
+    private static ProductIpcRequest ValidRequest() => new(
+        ProductIpcProtocol.CurrentSchemaVersion,
+        Guid.NewGuid(),
+        ProductIpcProtocol.HandshakeMethod,
+        ProductApiProtocol.MinimumSupportedVersion,
+        ProductApiProtocol.CurrentVersion);
+}

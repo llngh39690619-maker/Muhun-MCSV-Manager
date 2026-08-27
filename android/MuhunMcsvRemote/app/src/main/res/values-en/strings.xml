@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MCSV Remote</string>
+    <string name="setup_title">Connect to Muhun MCSV</string>
+    <string name="setup_description">Enter the fixed HTTPS address shown by the desktop app. This app only permits that origin and keeps sign-in state in secure cookies.</string>
+    <string name="setup_hint">https://your-device.example.ts.net</string>
+    <string name="server_address">Fixed HTTPS address</string>
+    <string name="connect">Connect securely</string>
+    <string name="invalid_origin">Enter a valid HTTPS address containing only a domain.</string>
+    <string name="save_failed">The address could not be saved securely. Try again.</string>
+    <string name="security_note">Secure mode permits only this HTTPS origin. It does not open external sites or expose Android features to the page. Sign-in cookies remain in this app’s private storage so approved devices can sign in automatically.</string>
+    <string name="change_server">Change server address</string>
+    <string name="change_server_title">Clear the current connection?</string>
+    <string name="change_server_message">This clears the saved MCSV address and sign-in cookies, then returns to connection setup.</string>
+    <string name="cancel">Cancel</string>
+    <string name="clear">Clear and change</string>
+    <string name="connection_title">Connection stopped</string>
+    <string name="connection_failed">The remote panel could not load. Check MCSV, Tailscale, and your network connection.</string>
+    <string name="tls_failed">HTTPS certificate validation failed. The connection was stopped.</string>
+    <string name="retry">Reconnect</string>
+    <string name="blocked_navigation">A link leaving the approved MCSV origin was blocked.</string>
+    <string name="security_blocked">Android Safe Browsing blocked this page.</string>
+    <string name="download_blocked">Secure mode does not allow file downloads from the remote panel.</string>
+    <string name="webview_restarted">The web component was reinitialized. Connect again.</string>
+</resources>

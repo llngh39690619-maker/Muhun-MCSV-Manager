@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj" />
+    <ProjectReference Include="..\..\src\MinecraftServerManager.ProviderHost\MinecraftServerManager.ProviderHost.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.ProviderHost.HostileProvider\MinecraftServerManager.ProviderHost.HostileProvider.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <AssemblyMetadata Include="HostileProviderOutput" Value="$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\MinecraftServerManager.ProviderHost.HostileProvider\bin\$(Configuration)\net10.0\win-x64'))" />
+  </ItemGroup>
+
+</Project>

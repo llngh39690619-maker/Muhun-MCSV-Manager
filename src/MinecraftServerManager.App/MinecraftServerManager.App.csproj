@@ -1,0 +1,45 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\MinecraftServerManager.Client\MinecraftServerManager.Client.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.Core\MinecraftServerManager.Core.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.Contracts\MinecraftServerManager.Contracts.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.Remote\MinecraftServerManager.Remote.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MailKit" Version="4.17.0" />
+    <PackageReference Include="SkiaSharp" Version="4.151.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Muhun MCSV Manager</AssemblyName>
+    <RootNamespace>MinecraftServerManager.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\MuhunMcsvManager.ico</ApplicationIcon>
+    <Version>1.0.3</Version>
+    <AssemblyVersion>1.0.3.0</AssemblyVersion>
+    <FileVersion>1.0.3.0</FileVersion>
+    <InformationalVersion>1.0.3</InformationalVersion>
+    <AssemblyTitle>Muhun MCSV Manager</AssemblyTitle>
+    <Authors>Muhun</Authors>
+    <Company>Muhun</Company>
+    <Product>Muhun MCSV Manager</Product>
+    <Copyright>Copyright © Muhun 2026</Copyright>
+    <Description>Portable multi-instance Minecraft server manager for Windows.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Keep the existing WPF Application/Window type names unambiguous. -->
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+</Project>

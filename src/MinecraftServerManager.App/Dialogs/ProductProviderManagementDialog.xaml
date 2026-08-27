@@ -1,0 +1,285 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.ProductProviderManagementDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.provider.window.title}" Width="1080" Height="780" MinWidth="820" MinHeight="600"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Background="{DynamicResource WindowBrush}" Foreground="{DynamicResource TextBrush}"
+        Loaded="OnLoaded" Closing="OnClosing">
+    <Window.Resources>
+        <Style x:Key="ProviderHealthTextStyle" TargetType="TextBlock">
+            <Setter Property="Text" Value="{DynamicResource L10n.provider.health.unknown}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Health}" Value="Disabled">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.disabled}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Health}" Value="Stopped">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.stopped}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Health}" Value="Starting">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.starting}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Health}" Value="Healthy">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.healthy}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Health}" Value="Degraded">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.degraded}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Health}" Value="Failed">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.health.failed}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="ProviderEnabledTextStyle" TargetType="TextBlock">
+            <Setter Property="Text" Value="{DynamicResource L10n.provider.state.disabled}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Enabled}" Value="True">
+                    <Setter Property="Text" Value="{DynamicResource L10n.provider.state.enabled}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+    <Grid Background="{DynamicResource WindowBrush}" Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="{DynamicResource L10n.provider.heading}" FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Text="{DynamicResource L10n.provider.description}"
+                           Margin="0,6,0,0" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+            </StackPanel>
+            <Button Grid.Column="1" Content="{DynamicResource L10n.common.refresh}" Command="{Binding RefreshCommand}"
+                    VerticalAlignment="Center" Margin="12,0,0,0" />
+        </Grid>
+
+        <ProgressBar Grid.Row="1" Height="3" IsIndeterminate="True" Margin="0,0,0,8"
+                     Foreground="{DynamicResource AccentBrush}"
+                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+
+        <TabControl Grid.Row="2" IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
+            <TabItem Header="{DynamicResource L10n.provider.installed}">
+                <Grid Margin="0,16,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="330" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="8">
+                        <ListBox ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}"
+                                 Style="{StaticResource ThemedListBoxStyle}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="10,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding Id}" Style="{StaticResource MutedText}"
+                                                       FontFamily="Cascadia Mono, Consolas" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource ProviderHealthTextStyle}" Margin="8,0,0,0"
+                                                   Foreground="{DynamicResource AccentBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+
+                    <Border Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="18">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <Grid>
+                                    <TextBlock Text="{Binding SelectedProvider.DisplayName}" FontSize="20" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.provider.select}" FontSize="20" FontWeight="SemiBold"
+                                               Visibility="{Binding SelectedProvider, Converter={StaticResource NullToVisibility}}" />
+                                </Grid>
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="150" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="{DynamicResource L10n.provider.id}" Style="{StaticResource MutedText}" />
+                                    <TextBlock Grid.Column="1" Text="{Binding SelectedProvider.Id}" FontFamily="Cascadia Mono, Consolas" />
+                                    <TextBlock Grid.Row="1" Text="{DynamicResource L10n.provider.version}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedProvider.Version}" Margin="0,7,0,0" />
+                                    <TextBlock Grid.Row="2" Text="{DynamicResource L10n.provider.publisher}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedProvider.PublisherId}" Margin="0,7,0,0" />
+                                    <TextBlock Grid.Row="3" Text="{DynamicResource L10n.provider.enabledHealth}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+                                    <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,7,0,0"
+                                                DataContext="{Binding SelectedProvider}">
+                                        <TextBlock Style="{StaticResource ProviderEnabledTextStyle}" />
+                                        <TextBlock Text=" · " />
+                                        <TextBlock Style="{StaticResource ProviderHealthTextStyle}" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Row="4" Text="{DynamicResource L10n.provider.capabilities}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+                                    <ItemsControl Grid.Row="4" Grid.Column="1" ItemsSource="{Binding SelectedProvider.Capabilities}" Margin="0,7,0,0">
+                                        <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{DynamicResource PanelRaisedBrush}" CornerRadius="10" Padding="8,4" Margin="0,0,6,6">
+                                                    <TextBlock Text="{Binding}" FontFamily="Cascadia Mono, Consolas" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Grid.Row="5" Text="{DynamicResource L10n.provider.lastError}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+                                    <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedProvider.LastError, TargetNullValue=—}"
+                                               TextWrapping="Wrap" Margin="0,7,0,0" Foreground="{DynamicResource WarningBrush}" />
+                                </Grid>
+                                <WrapPanel Margin="0,20,0,0">
+                                    <Button Content="{DynamicResource L10n.provider.enable}" Command="{Binding EnableCommand}" Style="{StaticResource PrimaryButton}" />
+                                    <Button Content="{DynamicResource L10n.provider.disable}" Command="{Binding DisableCommand}" Margin="8,0,0,0" />
+                                    <Button Content="{DynamicResource L10n.provider.healthCheck}" Command="{Binding HealthCommand}" Margin="8,0,0,0" />
+                                    <Button Content="{DynamicResource L10n.provider.uninstall}" Command="{Binding UninstallCommand}" Margin="8,0,0,0"
+                                            Style="{StaticResource DangerButton}" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="{DynamicResource L10n.provider.publishers}">
+                <Grid Margin="0,16,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="360" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="8">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Bottom" Content="{DynamicResource L10n.provider.publisher.removeSelected}"
+                                    Command="{Binding RemovePublisherCommand}" Style="{StaticResource DangerButton}"
+                                    Margin="8,10,8,8" />
+                            <ListBox ItemsSource="{Binding Publishers}" SelectedItem="{Binding SelectedPublisher}"
+                                     Style="{StaticResource ThemedListBoxStyle}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="10,8">
+                                            <TextBlock Text="{Binding PublisherId}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding PublicKeySha256}" Style="{StaticResource MutedText}"
+                                                       FontFamily="Cascadia Mono, Consolas" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </Border>
+                    <Border Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="18">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.provider.publisher.pinHeading}" FontSize="18" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.provider.publisher.pinHint}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,14" />
+                            <TextBlock Text="{DynamicResource L10n.provider.publisherId}" Style="{StaticResource MutedText}" />
+                            <TextBox Text="{Binding PublisherId, UpdateSourceTrigger=PropertyChanged}" MaxLength="96" Margin="0,5,0,10" />
+                            <TextBlock Text="{DynamicResource L10n.provider.publicKeyPem}" Style="{StaticResource MutedText}" />
+                            <TextBox Text="{Binding PublisherPublicKeyPem, UpdateSourceTrigger=PropertyChanged}" MaxLength="16384"
+                                     AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Height="210"
+                                     FontFamily="Cascadia Mono, Consolas" Margin="0,5,0,12" />
+                            <Button Content="{DynamicResource L10n.provider.publisher.pin}" Command="{Binding PinPublisherCommand}"
+                                    Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="{DynamicResource L10n.provider.install.tab}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="0,16,8,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="10" Padding="18">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.provider.install.inboxHeading}" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.inboxHint}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,14" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.fileName}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding InboxFileName, UpdateSourceTrigger=PropertyChanged}" MaxLength="180" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.sha256}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding ExpectedSha256, UpdateSourceTrigger=PropertyChanged}" MaxLength="64"
+                                         FontFamily="Cascadia Mono, Consolas" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.providerId}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding ExpectedProviderId, UpdateSourceTrigger=PropertyChanged}" MaxLength="96" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.version}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding ExpectedVersion, UpdateSourceTrigger=PropertyChanged}" MaxLength="96" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.publisherId}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding ExpectedPublisherId, UpdateSourceTrigger=PropertyChanged}" MaxLength="96" Margin="0,5,0,10" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="10" Padding="18">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.provider.install.signatureHeading}" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.signatureHint}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,14" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.algorithm}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding SignatureAlgorithm, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.signatureVersion}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding SignatureFormatVersion, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,10" />
+                                <TextBlock Text="{DynamicResource L10n.provider.install.signatureBase64}" Style="{StaticResource MutedText}" />
+                                <TextBox Text="{Binding SignatureBase64, UpdateSourceTrigger=PropertyChanged}" MaxLength="16384"
+                                         AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Height="180"
+                                         FontFamily="Cascadia Mono, Consolas" Margin="0,5,0,10" />
+                                <CheckBox Content="{DynamicResource L10n.provider.install.allowDowngrade}" IsChecked="{Binding AllowDowngrade}"
+                                          Margin="0,0,0,12" />
+                                <Button Content="{DynamicResource L10n.provider.install.verifyInstall}" Command="{Binding InstallCommand}"
+                                        Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <Grid Grid.Row="3" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,12,0">
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasError}" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Border>
+            <Button Grid.Column="1" Content="{DynamicResource L10n.common.close}" Click="OnCloseClicked" MinWidth="90" />
+        </Grid>
+    </Grid>
+</Window>

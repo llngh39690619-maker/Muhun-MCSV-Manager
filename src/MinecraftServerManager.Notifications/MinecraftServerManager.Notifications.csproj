@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.3</Version>
+    <AssemblyVersion>1.0.3.0</AssemblyVersion>
+    <FileVersion>1.0.3.0</FileVersion>
+    <InformationalVersion>1.0.3</InformationalVersion>
+    <Description>Durable notification dispatch and providers for Muhun MCSV Service.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MinecraftServerManager.Contracts\MinecraftServerManager.Contracts.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.Data\MinecraftServerManager.Data.csproj" />
+  </ItemGroup>
+
+</Project>

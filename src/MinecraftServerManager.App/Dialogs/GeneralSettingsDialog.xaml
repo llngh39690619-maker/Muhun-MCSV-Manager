@@ -1,0 +1,197 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.GeneralSettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.settings.window.title}" Width="780" Height="720" MinWidth="680" MinHeight="600"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}" Closing="OnWindowClosing" Loaded="OnLoaded">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel>
+            <TextBlock Text="{DynamicResource L10n.settings.heading}" FontSize="24" FontWeight="SemiBold" />
+            <TextBlock Text="{DynamicResource L10n.settings.description}"
+                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,14" />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="{DynamicResource L10n.settings.display}" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.settings.theme}" Margin="0,13,0,5" Style="{StaticResource MutedText}" />
+                        <ComboBox ItemsSource="{Binding Themes}" SelectedItem="{Binding SelectedTheme}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="2">
+                                        <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Description}" Style="{StaticResource MutedText}" FontSize="11" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
+                        <TextBlock Text="{DynamicResource L10n.settings.windowSize}" Margin="0,13,0,5"
+                                   Style="{StaticResource MutedText}" />
+                        <ComboBox ItemsSource="{Binding WindowSizeOptions}" SelectedItem="{Binding SelectedWindowSize}"
+                                  DisplayMemberPath="DisplayName" />
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.settings.width}" Style="{StaticResource MutedText}" Margin="0,0,0,4" />
+                                <TextBox Text="{Binding WindowWidth, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="{DynamicResource L10n.settings.height}" Style="{StaticResource MutedText}" Margin="0,0,0,4" />
+                                <TextBox Text="{Binding WindowHeight, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Margin="0,13,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="170" /><ColumnDefinition Width="*" /><ColumnDefinition Width="70" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.fontSize}" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="11" Maximum="20" TickFrequency="0.5" IsSnapToTickEnabled="True"
+                                    Value="{Binding FontSize}" Margin="8,0" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Text="{Binding FontSize, StringFormat={}{0:0.0} pt}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                        </Grid>
+
+                        <TextBlock Text="{DynamicResource L10n.settings.language}" Margin="0,13,0,5"
+                                   Style="{StaticResource MutedText}" />
+                        <ComboBox ItemsSource="{Binding Languages}"
+                                  SelectedItem="{Binding SelectedLanguage}"
+                                  DisplayMemberPath="DisplayName" />
+                        <TextBlock Text="{DynamicResource L10n.settings.languageHint}"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="{DynamicResource L10n.settings.newServerDefaults}" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.settings.newServerHint}"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,12" />
+                        <TextBlock Text="{DynamicResource L10n.settings.globalMemory}" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.settings.globalMemoryHint}"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+
+                        <Grid Margin="0,9,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding SystemMemoryDisplay}" Style="{StaticResource MutedText}" />
+                            <TextBlock Grid.Column="1" Text="{Binding DefaultAllocatedMemoryDisplay}" Style="{StaticResource MutedText}" />
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /><ColumnDefinition Width="95" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.minimumMemory}" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="512" Maximum="{Binding DefaultMemorySliderMaximumMb}" TickFrequency="256" IsSnapToTickEnabled="True"
+                                    Value="{Binding DefaultMinimumMemoryMb}" Margin="8,0" />
+                            <TextBlock Grid.Column="2" Text="{Binding DefaultMinimumMemoryMb, StringFormat={}{0:0} MB}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /><ColumnDefinition Width="95" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.maximumMemory}" VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="512" Maximum="{Binding DefaultMemorySliderMaximumMb}" TickFrequency="256" IsSnapToTickEnabled="True"
+                                    Value="{Binding DefaultMaximumMemoryMb}" Margin="8,0" />
+                            <TextBlock Grid.Column="2" Text="{Binding DefaultMaximumMemoryMb, StringFormat={}{0:0} MB}" HorizontalAlignment="Right" />
+                        </Grid>
+
+                        <CheckBox Content="{DynamicResource L10n.settings.separateDiagnostics}" IsChecked="{Binding SeparateDiagnosticOutput}" Margin="0,14,0,0" />
+                        <CheckBox Content="{DynamicResource L10n.settings.autoRestart}" IsChecked="{Binding AutoRestart}" Margin="0,8,0,0" />
+                        <CheckBox Content="{DynamicResource L10n.settings.hangWatchdog}" IsChecked="{Binding EnableHangWatchdog}" Margin="0,8,0,0" />
+                        <CheckBox Content="{DynamicResource L10n.settings.recoveryPoints}" IsChecked="{Binding EnableAutomaticRecoveryPoints}" Margin="0,8,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="{DynamicResource L10n.settings.update}" FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.settings.updateHint}"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,12" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.updateChannel}"
+                                       VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding UpdateChannelOptions}"
+                                      SelectedItem="{Binding SelectedUpdateChannelChoice}"
+                                      DisplayMemberPath="DisplayName" />
+                            <Button Grid.Column="2" Content="{DynamicResource L10n.common.refresh}"
+                                    Command="{Binding RefreshUpdateCommand}" HorizontalAlignment="Right"
+                                    MinWidth="104" />
+                        </Grid>
+                        <TextBlock Text="{DynamicResource L10n.settings.updateStatus}"
+                                   FontWeight="SemiBold" Margin="0,13,0,4" />
+                        <TextBlock Text="{Binding UpdateStatusText}" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding UpdateMessage}" Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap" Margin="0,4,0,0" />
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <Button Content="{DynamicResource L10n.settings.updateCheck}"
+                                    Command="{Binding CheckUpdateCommand}" MinWidth="112" />
+                            <Button Content="{DynamicResource L10n.settings.updateDownload}"
+                                    Command="{Binding DownloadUpdateCommand}" MinWidth="124" Margin="8,0,0,0" />
+                            <Button Content="{DynamicResource L10n.settings.updateApply}"
+                                    Command="{Binding ScheduleUpdateCommand}" Style="{StaticResource PrimaryButton}"
+                                    MinWidth="112" Margin="8,0,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.notification.window.title}" FontSize="18" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.settings.notification.description}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,12,0" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="{DynamicResource L10n.settings.notification.manage}" Command="{Binding OpenNotificationSettingsCommand}"
+                                MinWidth="112" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.provider.window.title}" FontSize="18" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.provider.description}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,12,0" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="{DynamicResource L10n.settings.provider.manage}"
+                                Command="{Binding OpenProviderManagementCommand}"
+                                MinWidth="112" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
+                       VerticalAlignment="Center" Margin="0,0,12,0" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Content="{DynamicResource L10n.common.close}" Command="{Binding CloseCommand}" MinWidth="86" Margin="0,0,8,0" />
+                <Button Content="{DynamicResource L10n.common.apply}" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" MinWidth="112" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

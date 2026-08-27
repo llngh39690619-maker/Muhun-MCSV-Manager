@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "minecraftservermanager.contracts": {
+        "type": "Project"
+      },
+      "minecraftservermanager.core": {
+        "type": "Project"
+      },
+      "minecraftservermanager.providerhost": {
+        "type": "Project",
+        "dependencies": {
+          "MinecraftServerManager.Contracts": "[1.0.0, )"
+        }
+      }
+    },
+    "net10.0/win-x64": {}
+  }
+}

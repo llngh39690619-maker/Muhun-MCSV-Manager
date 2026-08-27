@@ -1,0 +1,500 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.RemoteAccessDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MinecraftServerManager.App.Controls"
+        Title="{DynamicResource L10n.remote.window.title}"
+        Width="820" Height="760" MinWidth="700" MinHeight="620"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        Deactivated="OnWindowDeactivated"
+        Closing="OnWindowClosing">
+    <Grid Background="{DynamicResource WindowBrush}">
+        <Grid Margin="22">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                <TextBlock Text="{DynamicResource L10n.remote.heading}" FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Margin="0,7,0,0" Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                           Text="{DynamicResource L10n.remote.description}" />
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,0,8,0">
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12"
+                            IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
+                        <StackPanel>
+                            <Border Background="#33204A36" BorderBrush="{DynamicResource AccentBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="10">
+                                <TextBlock TextWrapping="Wrap"
+                                           Text="{DynamicResource L10n.remote.legacy.ui.autoConnectHint}" />
+                            </Border>
+
+                            <TextBlock Text="{DynamicResource L10n.remote.connectionMethod}" Style="{StaticResource MutedText}" Margin="0,14,0,6" />
+                            <WrapPanel>
+                                <RadioButton GroupName="RemoteAccessMode" Content="{DynamicResource L10n.remote.legacy.ui.mode.quick}"
+                                             IsChecked="{Binding IsQuickTunnelMode}" Margin="0,0,18,6" />
+                                <RadioButton GroupName="RemoteAccessMode" Content="{DynamicResource L10n.remote.legacy.ui.mode.tailscale}"
+                                             IsChecked="{Binding IsTailscaleMode}" Margin="0,0,18,6" />
+                                <RadioButton GroupName="RemoteAccessMode" Content="{DynamicResource L10n.remote.legacy.ui.mode.funnel}"
+                                             IsChecked="{Binding IsFunnelMode}" Margin="0,0,18,6"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.mode.funnelAria}" />
+                                <RadioButton GroupName="RemoteAccessMode" Content="{DynamicResource L10n.remote.legacy.ui.mode.named}"
+                                             IsChecked="{Binding IsNamedTunnelMode}" Margin="0,0,0,6"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.mode.namedAria}" />
+                            </WrapPanel>
+                            <TextBlock Text="{Binding AccessModeDescription}" Style="{StaticResource MutedText}"
+                                       TextWrapping="Wrap" Margin="0,2,0,0" />
+
+                            <StackPanel Visibility="{Binding IsTailscaleMode, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.allowedGmail}" Style="{StaticResource MutedText}" Margin="0,16,0,5" />
+                                <TextBox Text="{Binding AllowedLogin, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="74" IsReadOnly="{Binding HasTailscaleApprovedAccount}"
+                                         AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.allowedGmailAria}" />
+                                <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.allowedGmailHint}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                            </StackPanel>
+
+                            <Grid Margin="0,16,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.remote.localPort}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding LocalPort, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.localPortAria}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
+                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.openTailscaleDownload}"
+                                            Command="{Binding OpenTailscaleDownloadCommand}"
+                                            Visibility="{Binding IsTailscaleProviderMode, Converter={StaticResource BoolToVisibility}}" />
+                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.openCloudflaredDownload}"
+                                            Command="{Binding OpenCloudflaredDownloadCommand}"
+                                            Visibility="{Binding IsCloudflareMode, Converter={StaticResource BoolToVisibility}}" />
+                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.installCloudflared}"
+                                            Command="{Binding InstallCloudflaredCommand}"
+                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.installCloudflaredAria}"
+                                            Margin="0,6,0,0"
+                                            Visibility="{Binding IsCloudflareMode, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </Grid>
+
+                            <Grid Margin="0,12,0,0"
+                                  Visibility="{Binding IsCloudflareMode, Converter={StaticResource BoolToVisibility}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.cloudflaredPath}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding CloudflaredExecutablePath, UpdateSourceTrigger=PropertyChanged}"
+                                             IsReadOnly="True" FontFamily="Cascadia Mono, Consolas" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.chooseFile}" Command="{Binding ChooseCloudflaredCommand}"
+                                        Margin="8,22,0,0" VerticalAlignment="Top"
+                                        Visibility="{Binding IsQuickTunnelMode, Converter={StaticResource BoolToVisibility}}" />
+                            </Grid>
+                            <TextBlock Text="{Binding CloudflaredInstallStatus, Mode=OneWay}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Visibility="{Binding IsCloudflareMode, Converter={StaticResource BoolToVisibility}}" />
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.quickWarning}"
+                                       Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,8,0,0"
+                                       Visibility="{Binding IsQuickTunnelMode, Converter={StaticResource BoolToVisibility}}" />
+
+                            <Border Background="#332D2410" BorderBrush="{DynamicResource WarningBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,12,0,0"
+                                    Visibility="{Binding IsFunnelMode, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.funnelHeading}" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
+                                               Text="{DynamicResource L10n.remote.legacy.ui.funnelDescription}" />
+                                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontWeight="SemiBold"
+                                               Text="{DynamicResource L10n.remote.legacy.ui.funnelBoundary}" />
+                                    <TextBlock Margin="0,6,0,0" Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                               Text="{DynamicResource L10n.remote.legacy.ui.funnelAuth}" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.funnelLocalUrl}" Style="{StaticResource MutedText}" Margin="0,10,0,5" />
+                                    <TextBox Text="{Binding LocalServiceUrl, Mode=OneWay}" IsReadOnly="True"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.funnelLocalUrlAria}"
+                                             FontFamily="Cascadia Mono, Consolas" />
+                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.openFunnelDocs}"
+                                            Command="{Binding OpenTailscaleFunnelDocumentationCommand}"
+                                            HorizontalAlignment="Left" Margin="0,10,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,12,0,0"
+                                    Visibility="{Binding IsNamedTunnelMode, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedHeading}" FontSize="16" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedDescription}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,10" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedTrustWarning}"
+                                               Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedPublicUrl}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding CloudflareNamedPublicOrigin, UpdateSourceTrigger=PropertyChanged}"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.namedPublicUrlAria}"
+                                             FontFamily="Cascadia Mono, Consolas" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedPublicUrlHint}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,10" />
+
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.namedLocalUrl}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding LocalServiceUrl, Mode=OneWay}" IsReadOnly="True"
+                                             AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.namedLocalUrlAria}"
+                                             FontFamily="Cascadia Mono, Consolas" />
+
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.newToken}" Style="{StaticResource MutedText}" Margin="0,12,0,5" />
+                                    <PasswordBox x:Name="CloudflareNamedTunnelTokenInput"
+                                                 MaxLength="4096"
+                                                 PasswordChanged="OnCloudflareNamedTunnelTokenPasswordChanged"
+                                                 AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.tokenAria}" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.tokenHint}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                                    <WrapPanel Margin="0,9,0,0">
+                                        <Button Content="{DynamicResource L10n.remote.legacy.ui.saveToken}"
+                                                Command="{Binding SaveCloudflareNamedTunnelTokenCommand}"
+                                                Style="{StaticResource PrimaryButton}" />
+                                        <Button Content="{DynamicResource L10n.remote.legacy.ui.deleteToken}"
+                                                Command="{Binding DeleteCloudflareNamedTunnelTokenCommand}"
+                                                Foreground="{DynamicResource DangerBrush}" Margin="8,0,0,0" />
+                                    </WrapPanel>
+                                    <TextBlock Text="{Binding CloudflareNamedTunnelTokenStatus, Mode=OneWay}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.remote.connectionStatus}" FontSize="17" FontWeight="SemiBold" />
+                            <WrapPanel Margin="0,10,0,8">
+                                <Border Background="{DynamicResource PanelRaisedBrush}" CornerRadius="12" Padding="10,5" Margin="0,0,8,4">
+                                    <TextBlock>
+                                        <Run Text="{DynamicResource L10n.remote.legacy.ui.entryLabel}" /><Run Text="{Binding NetworkProviderStatusText, Mode=OneWay}" />
+                                    </TextBlock>
+                                </Border>
+                                <Border Background="{DynamicResource PanelRaisedBrush}" CornerRadius="12" Padding="10,5" Margin="0,0,8,4">
+                                    <TextBlock>
+                                        <Run Text="{DynamicResource L10n.remote.legacy.ui.serviceLabel}" /><Run Text="{Binding RemoteServiceStatusText, Mode=OneWay}" />
+                                    </TextBlock>
+                                </Border>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" />
+                            <Border Background="#33101010" BorderBrush="{DynamicResource DangerBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="10" Margin="0,10,0,0"
+                                    Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.openTailscaleHttps}"
+                                            Command="{Binding OpenTailscaleHttpsSettingsCommand}"
+                                            HorizontalAlignment="Left" Margin="0,10,0,0"
+                                            Visibility="{Binding RequiresTailscaleHttpsCertificateEnablement, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                                    <TextBlock Text="{Binding TailscaleHttpsCertificateGuidanceText, Mode=OneWay}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,0"
+                                               Visibility="{Binding RequiresTailscaleHttpsCertificateEnablement, Mode=OneWay, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12"
+                            IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                            Visibility="{Binding IsTailscaleMode, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.smtpHeading}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.smtpDescription}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,12" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.smtpSender}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding SmtpSenderGmail, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="74" AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.smtpSenderAria}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.smtpPassword}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                    <controls:RevealPasswordBox MaxLength="19"
+                                        Password="{Binding SmtpAppPassword, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                        AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.smtpPasswordAria}" />
+                                </StackPanel>
+                            </Grid>
+                            <WrapPanel Margin="0,10,0,0">
+                                <Button Content="{DynamicResource L10n.remote.legacy.ui.saveSmtp}" Command="{Binding SaveSmtpCommand}"
+                                        Style="{StaticResource PrimaryButton}" />
+                                <Button Content="{DynamicResource L10n.remote.legacy.ui.deleteSmtp}" Command="{Binding DeleteSmtpCommand}" Margin="8,0,0,0"
+                                        Visibility="{Binding HasSavedSmtpCredential, Converter={StaticResource BoolToVisibility}}" />
+                                <Button Content="{DynamicResource L10n.remote.legacy.ui.openGoogleAppPasswords}"
+                                        Command="{Binding OpenGoogleAppPasswordsCommand}" Margin="8,0,0,0" />
+                                <TextBlock Margin="12,6,0,0" Style="{StaticResource MutedText}">
+                                    <Run Text="{DynamicResource L10n.remote.legacy.ui.savedSenderLabel}" /><Run Text="{Binding SavedSmtpSenderText, Mode=OneWay}" />
+                                </TextBlock>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding SecurityStoreStatus}" Style="{StaticResource MutedText}"
+                                       TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12"
+                            IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.registrationHeading}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.registrationDescription}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,10" />
+
+                            <TextBlock Text="{DynamicResource L10n.remote.accounts}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" />
+                            <TextBlock Text="{Binding ApprovedAccountText}" Style="{StaticResource MutedText}"
+                                       TextWrapping="Wrap" Margin="0,4,0,8" />
+                            <ItemsControl ItemsSource="{Binding AccountRows}"
+                                          Visibility="{Binding HasVisibleAccountRows, Converter={StaticResource BoolToVisibility}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,8">
+                                            <StackPanel>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="{Binding Username}" FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding IdentityText}" Style="{StaticResource MutedText}"
+                                                                   TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                            <TextBlock Text="{Binding PinDisplayText}" Style="{StaticResource MutedText}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Button Content="👁"
+                                                                    Command="{Binding TogglePinVisibilityCommand}"
+                                                                    IsEnabled="{Binding IsPinRevealEnabled}"
+                                                                    ToolTip="{Binding PinVisibilityToolTip}"
+                                                                    ToolTipService.ShowOnDisabled="True"
+                                                                    AutomationProperties.Name="{Binding PinVisibilityToolTip}"
+                                                                    MinWidth="36" Padding="6,2" Margin="8,0,0,0" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.accountSettings}" Command="{Binding ToggleSettingsCommand}"
+                                                            MinWidth="72" Margin="12,0,0,0" VerticalAlignment="Center"
+                                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.accountSettingsAria}" />
+                                                </Grid>
+                                                <StackPanel Margin="0,10,0,0"
+                                                            Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="{DynamicResource L10n.remote.permissions}" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.permissionsHint}"
+                                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,3,0,8" />
+                                                    <WrapPanel>
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.start}" IsChecked="{Binding AllowStartServer}" Margin="0,0,16,8" />
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.stop}" IsChecked="{Binding AllowStopServer}" Margin="0,0,16,8" />
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.restart}" IsChecked="{Binding AllowRestartServer}" Margin="0,0,16,8" />
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.command}" IsChecked="{Binding AllowSendConsoleCommand}" Margin="0,0,16,8" />
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.players}" IsChecked="{Binding AllowManagePlayers}" Margin="0,0,16,8" />
+                                                        <CheckBox Content="{DynamicResource L10n.remote.permission.backup}" IsChecked="{Binding AllowCreateBackup}" Margin="0,0,16,8" />
+                                                    </WrapPanel>
+                                                    <Button Content="{DynamicResource L10n.remote.legacy.ui.savePermissions}"
+                                                            Command="{Binding DataContext.SaveAccountPermissionsCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                            CommandParameter="{Binding}"
+                                                            Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" />
+
+                                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.resetPinHeading}" FontWeight="SemiBold" Margin="0,14,0,6" />
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="12" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <controls:RevealPasswordBox Grid.Column="0" MaxLength="12"
+                                                            Password="{Binding NewPin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.newPinAria}" />
+                                                        <controls:RevealPasswordBox Grid.Column="2" MaxLength="12"
+                                                            Password="{Binding ConfirmedNewPin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.confirmNewPinAria}" />
+                                                    </Grid>
+                                                    <WrapPanel Margin="0,8,0,0">
+                                                        <Button Content="{DynamicResource L10n.remote.legacy.ui.resetAccountPin}"
+                                                                Command="{Binding DataContext.ResetAccountPinCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                                CommandParameter="{Binding}" />
+                                                        <Button Content="{DynamicResource L10n.remote.legacy.ui.deleteAccount}"
+                                                                Command="{Binding DataContext.DeleteAccountCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                                CommandParameter="{Binding}"
+                                                                Foreground="{DynamicResource DangerBrush}" Margin="8,0,0,0" />
+                                                    </WrapPanel>
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <Separator Margin="0,8,0,12" />
+                            <TextBlock Text="{DynamicResource L10n.remote.addAccount}" FontSize="16" FontWeight="SemiBold" />
+                            <StackPanel>
+                                <StackPanel Visibility="{Binding IsTailscaleMode, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.recipientGmail}" Style="{StaticResource MutedText}" Margin="0,2,0,5" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding RegistrationGmail, UpdateSourceTrigger=PropertyChanged}"
+                                                 MaxLength="74" AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.recipientGmailAria}" />
+                                        <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.sendCode}"
+                                                Command="{Binding SendVerificationCodeCommand}" Margin="8,0,0,0" />
+                                    </Grid>
+
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.verificationCode}" Style="{StaticResource MutedText}" Margin="0,12,0,5" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding VerificationCode, UpdateSourceTrigger=PropertyChanged}"
+                                                 MaxLength="6" FontFamily="Cascadia Mono, Consolas"
+                                                 AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.verificationCodeAria}" />
+                                        <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.verifyCode}" Command="{Binding VerifyCodeCommand}"
+                                                Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" />
+                                    </Grid>
+                                </StackPanel>
+
+                                <Grid Margin="0,14,0,0" IsEnabled="{Binding CanEditAccountCredentialFields}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{DynamicResource L10n.remote.username}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                        <TextBox Text="{Binding RemoteUsername, UpdateSourceTrigger=PropertyChanged}"
+                                                 MaxLength="32" AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.usernameAria}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="{DynamicResource L10n.remote.pin}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                        <controls:RevealPasswordBox MaxLength="12"
+                                            Password="{Binding RemotePin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.pinAria}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="4">
+                                        <TextBlock Text="{DynamicResource L10n.remote.confirmPin}" Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                        <controls:RevealPasswordBox MaxLength="12"
+                                            Password="{Binding ConfirmedRemotePin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                            AutomationProperties.Name="{DynamicResource L10n.remote.legacy.ui.confirmPinAria}" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.credentialRules}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                <Button Content="{DynamicResource L10n.remote.createAccount}" Command="{Binding RegisterAccountCommand}"
+                                        Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,10,0,0" />
+                            </StackPanel>
+
+                            <Border Background="{DynamicResource PanelRaisedBrush}" CornerRadius="8" Padding="10" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.initialPermissions}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.permissionsHint}"
+                                               Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,8" />
+                                    <WrapPanel>
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.start}" IsChecked="{Binding AllowStartServer}" Margin="0,0,16,8" />
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.stop}" IsChecked="{Binding AllowStopServer}" Margin="0,0,16,8" />
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.restart}" IsChecked="{Binding AllowRestartServer}" Margin="0,0,16,8" />
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.command}" IsChecked="{Binding AllowSendConsoleCommand}" Margin="0,0,16,8" />
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.players}" IsChecked="{Binding AllowManagePlayers}" Margin="0,0,16,8" />
+                                        <CheckBox Content="{DynamicResource L10n.remote.permission.backup}" IsChecked="{Binding AllowCreateBackup}" Margin="0,0,16,8" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Text="{Binding ProvisioningStatus}" TextWrapping="Wrap" Margin="0,12,0,0"
+                                       Visibility="{Binding HasProvisioningStatus, Converter={StaticResource BoolToVisibility}}" />
+                            <Border Background="#33101010" BorderBrush="{DynamicResource DangerBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="10" Margin="0,8,0,0"
+                                    Visibility="{Binding HasProvisioningError, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="{Binding ProvisioningError}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12"
+                            Visibility="{Binding IsRunning, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.remote.mobileUrl}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.mobileHint}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,10" />
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <TextBox Text="{Binding PublicUrl, Mode=OneWay}" IsReadOnly="True" FontFamily="Cascadia Mono, Consolas" />
+                                <Button Grid.Column="1" Content="{DynamicResource L10n.remote.copyUrl}" Command="{Binding CopyPublicUrlCommand}" Margin="8,0,0,0" />
+                            </Grid>
+                            <Grid Margin="0,14,0,8">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.remote.legacy.ui.rememberedDevices}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding RememberedDeviceSummary}" Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.refreshDevices}"
+                                        Command="{Binding RefreshRememberedDevicesCommand}" Margin="8,0,0,0" />
+                            </Grid>
+                            <ItemsControl ItemsSource="{Binding RememberedDevices}"
+                                          Visibility="{Binding HasRememberedDevices, Converter={StaticResource BoolToVisibility}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
+                                                    <TextBlock Style="{StaticResource MutedText}">
+                                                        <Run Text="{DynamicResource L10n.remote.legacy.ui.deviceUsernameLabel}" /><Run Text="{Binding Username}" />
+                                                    </TextBlock>
+                                                    <TextBlock Style="{StaticResource MutedText}">
+                                                        <Run Text="{DynamicResource L10n.remote.legacy.ui.deviceLastUsedLabel}" /><Run Text="{Binding LastUsedAtUtc, StringFormat={}{0:yyyy/MM/dd HH:mm}}" />
+                                                    </TextBlock>
+                                                    <TextBlock Style="{StaticResource MutedText}">
+                                                        <Run Text="{DynamicResource L10n.remote.legacy.ui.deviceExpiryLabel}" /><Run Text="{Binding IdleExpiresAtUtc, StringFormat={}{0:yyyy/MM/dd HH:mm}}" />
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                <Button Grid.Column="1" Content="{DynamicResource L10n.remote.legacy.ui.revokeDevice}"
+                                                        Command="{Binding DataContext.RevokeRememberedDeviceCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                        CommandParameter="{Binding}" Foreground="{DynamicResource DangerBrush}"
+                                                        Margin="12,0,0,0" VerticalAlignment="Center" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Button Content="{DynamicResource L10n.remote.legacy.ui.signOutAll}" Command="{Binding RevokeSessionsCommand}"
+                                    Foreground="{DynamicResource DangerBrush}" HorizontalAlignment="Left" Margin="0,12,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#33204A36" BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1"
+                            CornerRadius="9" Padding="12">
+                        <TextBlock TextWrapping="Wrap"
+                                   Text="{DynamicResource L10n.remote.legacy.ui.securityBoundary}" />
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid Grid.Row="2" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <Button Content="{DynamicResource L10n.remote.closeWeb}" Command="{Binding StopCommand}" HorizontalAlignment="Left"
+                        Foreground="{DynamicResource DangerBrush}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="{DynamicResource L10n.common.close}" Command="{Binding CloseCommand}" Margin="0,0,8,0" MinWidth="88" />
+                    <Button Content="{DynamicResource L10n.remote.reconnect}" Command="{Binding ApplyCommand}" Style="{StaticResource PrimaryButton}" MinWidth="152" />
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

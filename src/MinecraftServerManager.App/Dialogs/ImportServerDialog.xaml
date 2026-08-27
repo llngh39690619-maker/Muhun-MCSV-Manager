@@ -1,0 +1,51 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.ImportServerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.importJar.window.title}" Width="610" Height="590"
+        Style="{StaticResource AppWindowStyle}"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False">
+    <Grid Background="{DynamicResource WindowBrush}">
+        <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
+        <Rectangle Fill="{DynamicResource WindowPatternBrush}" IsHitTestVisible="False" />
+        <Grid Margin="22">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="{DynamicResource L10n.importJar.heading}" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Text="{DynamicResource L10n.importJar.description}" Style="{StaticResource MutedText}" Margin="0,7,0,0" />
+        </StackPanel>
+        <Grid Grid.Row="1" Margin="0,18,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="{DynamicResource L10n.importJar.source}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SourcePath}" TextTrimming="CharacterEllipsis" Margin="0,8" ToolTip="{Binding SourcePath}" />
+            <TextBlock Grid.Row="1" Text="{DynamicResource L10n.importJar.detectedCore}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CoreDisplay}" FontWeight="SemiBold" Margin="0,8" />
+            <TextBlock Grid.Row="2" Text="{DynamicResource L10n.online.gameVersion}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding MinecraftVersion, UpdateSourceTrigger=PropertyChanged}" Margin="0,3" />
+            <TextBlock Grid.Row="3" Text="{DynamicResource L10n.importJar.confidence}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ConfidenceDisplay}" Foreground="{DynamicResource WarningBrush}" FontWeight="SemiBold" Margin="0,8" />
+            <TextBlock Grid.Row="4" Text="{DynamicResource L10n.online.serverName}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,3" />
+            <TextBlock Grid.Row="5" Text="{DynamicResource L10n.importJar.javaVersion}" Style="{StaticResource MutedText}" Margin="0,8" />
+            <ComboBox Grid.Row="5" Grid.Column="1" ItemsSource="{Binding JavaChoices}" SelectedItem="{Binding SelectedJavaMajor}" Margin="0,3" />
+            <Border Grid.Row="6" Grid.ColumnSpan="2" Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource WarningBrush}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,15,0,0">
+                <StackPanel>
+                    <TextBlock Text="{Binding WarningText}" TextWrapping="Wrap" />
+                    <TextBlock Text="{DynamicResource L10n.importJar.evidence}" FontWeight="SemiBold" Margin="0,10,0,4" />
+                    <ItemsControl ItemsSource="{Binding Evidence}">
+                        <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding StringFormat=• {0}}" Style="{StaticResource MutedText}" TextWrapping="Wrap" /></DataTemplate></ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </Grid>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="{DynamicResource L10n.common.cancel}" IsCancel="True" MinWidth="84" Margin="0,0,8,0" />
+            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.importJar.createIsolated}" Click="OnConfirm" MinWidth="130" />
+        </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

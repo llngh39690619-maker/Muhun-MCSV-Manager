@@ -1,0 +1,109 @@
+plugins {
+    id 'com.android.application'
+}
+
+def signingValues = [
+    storeFile: System.getenv('MCSV_ANDROID_KEYSTORE'),
+    storePassword: System.getenv('MCSV_ANDROID_STORE_PASSWORD'),
+    keyAlias: System.getenv('MCSV_ANDROID_KEY_ALIAS'),
+    keyPassword: System.getenv('MCSV_ANDROID_KEY_PASSWORD')
+]
+def hasSigningIdentity = signingValues.values().every { it != null && !it.trim().isEmpty() }
+def releaseRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains('release')
+}
+def releaseVersionName = providers.gradleProperty('MCSV_VERSION_NAME').orElse('1.0.0').get()
+def releaseVersionCodeText = providers.gradleProperty('MCSV_VERSION_CODE').orElse('1').get()
+if (!(releaseVersionName ==~ /(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/)) {
+    throw new GradleException('MCSV_VERSION_NAME must be a bounded semantic version.')
+}
+if (!(releaseVersionCodeText ==~ /[1-9][0-9]{0,8}/)) {
+    throw new GradleException('MCSV_VERSION_CODE must be a positive Android version code.')
+}
+def releaseVersionCode = Integer.parseInt(releaseVersionCodeText)
+if (releaseRequested && !hasSigningIdentity) {
+    throw new GradleException(
+        'Release signing requires MCSV_ANDROID_KEYSTORE, MCSV_ANDROID_STORE_PASSWORD, ' +
+        'MCSV_ANDROID_KEY_ALIAS and MCSV_ANDROID_KEY_PASSWORD.')
+}
+
+android {
+    namespace 'com.muhun.mcsv.remote'
+    compileSdk 37
+
+    defaultConfig {
+        applicationId 'com.muhun.mcsv.remote'
+        minSdk 26
+        targetSdk 37
+        versionCode releaseVersionCode
+        versionName releaseVersionName
+    }
+
+    if (hasSigningIdentity) {
+        signingConfigs {
+            release {
+                storeFile file(signingValues.storeFile)
+                storePassword signingValues.storePassword
+                keyAlias signingValues.keyAlias
+                keyPassword signingValues.keyPassword
+                enableV1Signing false
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasSigningIdentity) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError true
+        warningsAsErrors true
+        checkReleaseBuilds true
+        checkDependencies true
+        htmlReport true
+        sarifReport true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
+    buildFeatures {
+        buildConfig false
+    }
+
+    dependenciesInfo {
+        includeInApk false
+        includeInBundle false
+    }
+
+    packaging {
+        resources.excludes += [
+            'META-INF/AL2.0',
+            'META-INF/LGPL2.1'
+        ]
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

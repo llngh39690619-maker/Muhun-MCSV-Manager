@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.MuhunMcsv" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/mcsv_background</item>
+        <item name="android:navigationBarColor">@color/mcsv_background</item>
+        <item name="android:statusBarColor">@color/mcsv_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">@color/mcsv_accent</item>
+    </style>
+</resources>

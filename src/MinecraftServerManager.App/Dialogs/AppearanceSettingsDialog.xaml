@@ -1,0 +1,187 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.AppearanceSettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="{DynamicResource L10n.appearance.window.title}"
+        Width="880" Height="760" MinWidth="760" MinHeight="620"
+        MaxWidth="1180" MaxHeight="980"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        Closing="OnWindowClosing">
+    <Window.Resources>
+        <Style x:Key="ColorEditorLabel" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+            <Setter Property="Margin" Value="0,0,0,5" />
+        </Style>
+        <Style x:Key="ColorEditorTextBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
+            <Setter Property="MaxLength" Value="7" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource WindowBrush}">
+        <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}"
+                   IsHitTestVisible="False"
+                   AutomationProperties.IsOffscreenBehavior="Onscreen" />
+        <Rectangle Fill="{DynamicResource WindowPatternBrush}"
+                   IsHitTestVisible="False"
+                   AutomationProperties.IsOffscreenBehavior="Onscreen" />
+
+        <Grid Margin="22">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                <TextBlock Text="{DynamicResource L10n.appearance.heading}" FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Text="{DynamicResource L10n.appearance.description}"
+                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,6,0,0" />
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,0,8,0">
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.appearance.colors}" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="18" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="12" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="12" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="12" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.window}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding WindowColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.windowColor}" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="0" Grid.Column="2">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.panel}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding PanelColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.panelColor}" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="2" Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.raised}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding PanelRaisedColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.raisedColor}" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="2" Grid.Column="2">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.border}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding BorderColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.borderColor}" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="4" Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.accent}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding AccentColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.accentColor}" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="4" Grid.Column="2">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.accentDark}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding AccentDarkColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.accentDarkColor}" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="6" Grid.Column="0">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.text}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding TextColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.textColor}" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="6" Grid.Column="2">
+                                    <TextBlock Text="{DynamicResource L10n.appearance.color.muted}" Style="{StaticResource ColorEditorLabel}" />
+                                    <TextBox Text="{Binding MutedTextColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                             AutomationProperties.Name="{DynamicResource L10n.appearance.aria.mutedColor}" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="24" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="{DynamicResource L10n.appearance.pattern}" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+                                <TextBlock Text="{DynamicResource L10n.appearance.pattern.style}" Style="{StaticResource ColorEditorLabel}" />
+                                <ComboBox ItemsSource="{Binding PatternOptions}" DisplayMemberPath="DisplayName"
+                                          SelectedValuePath="Value" SelectedValue="{Binding Pattern}"
+                                          AutomationProperties.Name="{DynamicResource L10n.appearance.pattern.style}" />
+                                <TextBlock Text="{DynamicResource L10n.appearance.pattern.color}" Style="{StaticResource ColorEditorLabel}" Margin="0,12,0,5" />
+                                <TextBox Text="{Binding PatternColor, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource ColorEditorTextBox}"
+                                         AutomationProperties.Name="{DynamicResource L10n.appearance.aria.patternColor}" />
+                                <TextBlock Margin="0,12,0,5">
+                                    <Run Text="{DynamicResource L10n.appearance.pattern.opacity}" /><Run Text="{Binding PatternOpacity, StringFormat={}{0:P0}}" />
+                                </TextBlock>
+                                <Slider Minimum="0" Maximum="0.35" TickFrequency="0.01" IsSnapToTickEnabled="True"
+                                        Value="{Binding PatternOpacity, UpdateSourceTrigger=PropertyChanged}"
+                                        AutomationProperties.Name="{DynamicResource L10n.appearance.pattern.opacity}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="{DynamicResource L10n.appearance.image}" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,12" />
+                                <TextBlock Text="{Binding BackgroundImageFileName}" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding BackgroundImagePath}" Margin="0,0,0,10" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="{DynamicResource L10n.appearance.image.choose}" Click="OnChooseBackgroundClick" Margin="0,0,8,0"
+                                            AutomationProperties.Name="{DynamicResource L10n.appearance.aria.chooseImage}" />
+                                    <Button Content="{DynamicResource L10n.common.delete}" Command="{Binding ClearBackgroundImageCommand}"
+                                            AutomationProperties.Name="{DynamicResource L10n.appearance.aria.clearImage}" />
+                                </StackPanel>
+                                <TextBlock Margin="0,16,0,5">
+                                    <Run Text="{DynamicResource L10n.appearance.image.opacity}" /><Run Text="{Binding BackgroundImageOpacity, StringFormat={}{0:P0}}" />
+                                </TextBlock>
+                                <Slider Minimum="0" Maximum="0.40" TickFrequency="0.01" IsSnapToTickEnabled="True"
+                                        Value="{Binding BackgroundImageOpacity, UpdateSourceTrigger=PropertyChanged}"
+                                        AutomationProperties.Name="{DynamicResource L10n.appearance.image.opacity}" />
+                                <TextBlock Text="{DynamicResource L10n.appearance.image.hint}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,12,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Border Background="#33101010" BorderBrush="{DynamicResource DangerBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="12" Margin="0,0,0,10"
+                            Visibility="{Binding HasValidationError, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="{Binding ValidationMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+                    </Border>
+                    <TextBlock Text="{Binding StatusMessage}" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid Grid.Row="2" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0" Content="{DynamicResource L10n.appearance.reset}" Command="{Binding ResetCommand}" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <Button Content="{DynamicResource L10n.common.cancel}" Command="{Binding CancelCommand}" Margin="0,0,8,0" MinWidth="88" />
+                    <Button Content="{DynamicResource L10n.appearance.preview}" Command="{Binding PreviewCommand}" Margin="0,0,8,0" MinWidth="88" />
+                    <Button Content="{DynamicResource L10n.common.save}" Command="{Binding SaveCommand}" Style="{StaticResource PrimaryButton}" MinWidth="96" />
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

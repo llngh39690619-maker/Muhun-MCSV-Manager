@@ -1,0 +1,164 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.ExistingServerImportChoiceDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.importChoice.window.title}"
+        Width="700" Height="500"
+        MinWidth="640" MinHeight="470"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        FocusManager.FocusedElement="{Binding ElementName=ImportFolderButton}">
+    <Window.Resources>
+        <Style x:Key="ImportChoiceButtonStyle"
+               TargetType="{x:Type Button}"
+               BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="112" />
+            <Setter Property="Padding" Value="16,14" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush"
+                                        Value="{DynamicResource AccentBrush}" />
+                                <Setter TargetName="ButtonBorder" Property="Background"
+                                        Value="{DynamicResource PanelRaisedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush"
+                                        Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.38" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource WindowBrush}">
+        <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
+        <Rectangle Fill="{DynamicResource WindowPatternBrush}" IsHitTestVisible="False" />
+
+        <Grid Margin="22">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0">
+                <TextBlock Text="{DynamicResource L10n.importChoice.heading}" FontSize="23" FontWeight="SemiBold" />
+                <TextBlock Text="{DynamicResource L10n.importChoice.description}"
+                           Style="{StaticResource MutedText}"
+                           TextWrapping="Wrap"
+                           Margin="0,7,0,0" />
+            </StackPanel>
+
+            <Grid Grid.Row="1" Margin="0,18,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="10" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Button x:Name="ImportFolderButton"
+                        Grid.Row="0"
+                        Style="{StaticResource ImportChoiceButtonStyle}"
+                        IsDefault="True"
+                        Click="OnImportFolderClick"
+                        AutomationProperties.Name="{DynamicResource L10n.importChoice.folder.aria}">
+                    <Grid x:Name="FolderChoiceLayout">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="58" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="72" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="FolderChoiceIcon"
+                                Width="44" Height="44" CornerRadius="9"
+                                Background="{DynamicResource AccentDarkBrush}"
+                                BorderBrush="{DynamicResource AccentBrush}"
+                                BorderThickness="1"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="▣" Foreground="{DynamicResource AccentBrush}"
+                                       FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel x:Name="FolderChoiceText"
+                                    Grid.Column="1" VerticalAlignment="Center" Margin="4,0,12,0">
+                            <AccessText Text="{DynamicResource L10n.importChoice.folder}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.importChoice.folder.description}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                        </StackPanel>
+                        <Border x:Name="FolderRecommendationSlot" Grid.Column="2">
+                            <TextBlock Text="{DynamicResource L10n.core.recommended}" Foreground="{DynamicResource AccentBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       TextAlignment="Center" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+                </Button>
+
+                <Button x:Name="ImportJarButton"
+                        Grid.Row="2"
+                        Style="{StaticResource ImportChoiceButtonStyle}"
+                        Click="OnImportJarClick"
+                        AutomationProperties.Name="{DynamicResource L10n.importChoice.jar.aria}">
+                    <Grid x:Name="JarChoiceLayout">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="58" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="72" />
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="JarChoiceIcon"
+                                Width="44" Height="44" CornerRadius="9"
+                                Background="{DynamicResource PanelRaisedBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="JAR" Foreground="{DynamicResource AccentBrush}"
+                                       FontSize="12" FontWeight="Bold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel x:Name="JarChoiceText"
+                                    Grid.Column="1" VerticalAlignment="Center" Margin="4,0,12,0">
+                            <AccessText Text="{DynamicResource L10n.importChoice.jar}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{DynamicResource L10n.importChoice.jar.description}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                        </StackPanel>
+                        <Border x:Name="JarRecommendationSlot" Grid.Column="2" />
+                    </Grid>
+                </Button>
+            </Grid>
+
+            <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                <Button Content="{DynamicResource L10n.common.cancel}" IsCancel="True" MinWidth="92"
+                        AutomationProperties.Name="{DynamicResource L10n.importChoice.cancel.aria}" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

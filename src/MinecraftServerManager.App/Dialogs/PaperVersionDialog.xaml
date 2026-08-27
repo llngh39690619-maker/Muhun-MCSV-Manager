@@ -1,0 +1,39 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.PaperVersionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.paper.window.title}" Width="520" Height="620" MinHeight="460"
+        Style="{StaticResource AppWindowStyle}"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResizeWithGrip" ShowInTaskbar="False">
+    <Grid Background="{DynamicResource WindowBrush}">
+        <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
+        <Rectangle Fill="{DynamicResource WindowPatternBrush}" IsHitTestVisible="False" />
+        <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="{DynamicResource L10n.paper.heading}" FontSize="22" FontWeight="SemiBold" />
+        <StackPanel Grid.Row="1" Margin="0,8,0,12">
+            <TextBlock Text="{DynamicResource L10n.paper.description}" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+            <TextBox x:Name="SearchBox" Margin="0,12,0,0" TextChanged="OnSearchChanged" ToolTip="{DynamicResource L10n.paper.searchHint}" />
+        </StackPanel>
+        <ListBox x:Name="VersionList" Grid.Row="2" MouseDoubleClick="OnVersionDoubleClick"
+                 Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="5">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="10,7"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding}" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Grid.Column="1" Text="{DynamicResource L10n.paper.stableBuild}" Foreground="{DynamicResource AccentBrush}" FontSize="11" VerticalAlignment="Center" />
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+            <Button Content="{DynamicResource L10n.common.cancel}" IsCancel="True" MinWidth="86" Margin="0,0,8,0" />
+            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.paper.downloadCreate}" Click="OnConfirm" MinWidth="120" />
+        </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
