@@ -521,8 +521,10 @@ secrets*.json
 !/docs/使用說明-1.0.5.md
 !/docs/使用說明-1.0.6.md
 !/docs/使用說明-1.0.7.md
+!/docs/使用說明-1.0.8.md
 !/docs/測試報告-1.0.3.md
 !/docs/測試報告-1.0.5.md
 !/docs/測試報告-1.0.6.md
 !/docs/測試報告-1.0.7.md
+!/docs/測試報告-1.0.8.md
 !/docs/iOS-遠端控制下一階段規格.md

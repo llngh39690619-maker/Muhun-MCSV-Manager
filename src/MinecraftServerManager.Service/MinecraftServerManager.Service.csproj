@@ -8,10 +8,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Muhun MCSV Service</AssemblyName>
     <RootNamespace>MinecraftServerManager.Service</RootNamespace>
-    <Version>1.0.7</Version>
-    <AssemblyVersion>1.0.7.0</AssemblyVersion>
-    <FileVersion>1.0.7.0</FileVersion>
-    <InformationalVersion>1.0.7</InformationalVersion>
+    <Version>1.0.8</Version>
+    <AssemblyVersion>1.0.8.0</AssemblyVersion>
+    <FileVersion>1.0.8.0</FileVersion>
+    <InformationalVersion>1.0.8</InformationalVersion>
     <AssemblyTitle>Muhun MCSV Service</AssemblyTitle>
     <Authors>Muhun</Authors>
     <Company>Muhun</Company>
