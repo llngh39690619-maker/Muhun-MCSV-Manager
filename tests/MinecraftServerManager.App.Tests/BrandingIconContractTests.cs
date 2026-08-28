@@ -63,12 +63,6 @@ public sealed class BrandingIconContractTests
             sizes.OrderBy(size => size));
     }
 
-    private static string GetProjectPath([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            "MinecraftServerManager.App.csproj"));
+    private static string GetProjectPath()
+        => TestRepositoryPaths.AppSource("MinecraftServerManager.App.csproj");
 }

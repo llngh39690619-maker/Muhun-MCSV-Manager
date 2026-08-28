@@ -29,7 +29,9 @@ public static partial class ProductLocalizationCatalog
         "language.label", "language.zh-TW", "language.en-US",
         "app.singleInstance.title", "app.singleInstance.message",
         "app.startupFailed.title", "app.startupFailed.message",
+        "app.brand.mark", "app.brand.name",
         "main.window.title", "main.serverList", "main.runningCount", "main.select", "main.startSelected",
+        "main.workspace.server", "main.workspace.client",
         "main.stopSelected", "main.remoteManagement", "main.mobileRemote", "main.webConsole", "main.openDataDirectory",
         "main.onlineModpack", "main.importServer", "main.createCore", "main.noServers",
         "main.noServersHint", "main.tab.console", "main.tab.diagnostics", "main.tab.players",
@@ -92,6 +94,10 @@ public static partial class ProductLocalizationCatalog
         "settings.globalMemory", "settings.globalMemoryHint", "settings.minimumMemory",
         "settings.maximumMemory", "settings.separateDiagnostics", "settings.autoRestart",
         "settings.hangWatchdog", "settings.recoveryPoints", "settings.unsaved.title",
+        "settings.newClientDefaults", "settings.newClientHint", "settings.clientMemoryMode",
+        "settings.clientMemoryAutomatic", "settings.clientMemoryManual", "settings.clientResolution",
+        "settings.clientFullScreen", "settings.clientQuickLaunch", "settings.clientHideLauncher",
+        "settings.clientShowLog", "settings.clientDedicatedGpu", "settings.clientDiscordPresence",
         "settings.unsaved.heading", "settings.validation.window", "settings.validation.memory",
         "settings.update", "settings.updateHint", "settings.updateChannel", "settings.updateStatus",
         "settings.updateCheck", "settings.updateDownload", "settings.updateApply",
@@ -99,6 +105,8 @@ public static partial class ProductLocalizationCatalog
         "settings.memory.fallbackSuffix", "settings.memory.defaultAllocated",
         "settings.validation.width", "settings.validation.height", "settings.validation.font",
         "settings.validation.minimumMemory", "settings.validation.maximumMemory",
+        "settings.validation.clientMinimumMemory", "settings.validation.clientMaximumMemory",
+        "settings.validation.clientWindowWidth", "settings.validation.clientWindowHeight",
         "settings.update.status.unread", "settings.update.status.serviceRequired",
         "settings.update.status.channelChanged", "settings.update.status.refreshed",
         "settings.update.status.checked", "settings.update.status.downloaded",
@@ -549,7 +557,8 @@ public static partial class ProductLocalizationCatalog
         "service.status.tooltip", "service.readOnly.settings", "service.readOnly.addons",
         "service.readOnly.java", "service.readOnly.backups", "service.readOnly.backupOperation",
         "service.migration.pending", "service.registry.empty",
-        .. MainWindowViewModelLocalization.Keys
+        .. MainWindowViewModelLocalization.Keys,
+        .. ClientWorkspaceLocalization.Keys
     ]);
 
     private static readonly IReadOnlyDictionary<string, int> ParameterCounts =
@@ -815,7 +824,9 @@ public static partial class ProductLocalizationCatalog
     public static int GetParameterCount(string key) =>
         ParameterCounts.TryGetValue(key, out var count)
             ? count
-            : MainWindowViewModelLocalization.GetParameterCount(key);
+            : MainWindowViewModelLocalization.Keys.Contains(key, StringComparer.Ordinal)
+                ? MainWindowViewModelLocalization.GetParameterCount(key)
+                : ClientWorkspaceLocalization.GetParameterCount(key);
 
     public static string Format(string? cultureName, string key, params object?[] arguments)
     {
@@ -864,6 +875,15 @@ public static partial class ProductLocalizationCatalog
                 {
                     throw new InvalidOperationException(
                         $"Localization key is duplicated by the MainWindow ViewModel extension: {key}.");
+                }
+            }
+
+            foreach (var (key, value) in ClientWorkspaceLocalization.GetStrings(culture))
+            {
+                if (!model.Strings.TryAdd(key, value))
+                {
+                    throw new InvalidOperationException(
+                        $"Localization key is duplicated by the client workspace extension: {key}.");
                 }
             }
 

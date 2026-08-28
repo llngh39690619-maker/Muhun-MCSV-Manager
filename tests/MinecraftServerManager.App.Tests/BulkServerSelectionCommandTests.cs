@@ -285,14 +285,6 @@ public sealed class BulkServerSelectionCommandTests
         return source[start..(end < 0 ? source.Length : end)];
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

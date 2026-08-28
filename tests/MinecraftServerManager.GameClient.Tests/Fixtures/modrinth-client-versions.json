@@ -1,0 +1,80 @@
+[
+  {
+    "project_id": "PackGood1",
+    "id": "StableV1",
+    "name": "Stable 1.0.0",
+    "version_number": "1.0.0",
+    "version_type": "release",
+    "status": "listed",
+    "environment": "client_and_server",
+    "game_versions": ["1.21.1"],
+    "loaders": ["fabric"],
+    "date_published": "2026-08-20T12:00:00Z",
+    "downloads": 1000,
+    "files": [
+      {
+        "filename": "good-pack-1.0.0.mrpack",
+        "url": "https://cdn.modrinth.com/data/PackGood1/versions/StableV1/good-pack.mrpack",
+        "size": 1234,
+        "primary": true,
+        "hashes": {
+          "sha512": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ]
+  },
+  {
+    "project_id": "PackGood1",
+    "id": "BetaV1",
+    "name": "Beta 2.0.0",
+    "version_number": "2.0.0-beta",
+    "version_type": "beta",
+    "status": "listed",
+    "environment": "client_and_server",
+    "game_versions": ["1.21.1"],
+    "loaders": ["fabric"],
+    "date_published": "2026-08-21T12:00:00Z",
+    "downloads": 2000,
+    "files": []
+  },
+  {
+    "project_id": "PackGood1",
+    "id": "ServerV1",
+    "name": "Server Release",
+    "version_number": "1.1.0",
+    "version_type": "release",
+    "status": "listed",
+    "environment": "server_only",
+    "game_versions": ["1.21.1"],
+    "loaders": ["fabric"],
+    "date_published": "2026-08-19T12:00:00Z",
+    "downloads": 3000,
+    "files": []
+  },
+  {
+    "project_id": "PackGood1",
+    "id": "WrongHost1",
+    "name": "Wrong Host",
+    "version_number": "1.2.0",
+    "version_type": "release",
+    "status": "listed",
+    "environment": "client_and_server",
+    "game_versions": ["1.21.1"],
+    "loaders": ["fabric"],
+    "date_published": "2026-08-18T12:00:00Z",
+    "downloads": 4000,
+    "files": [
+      {
+        "filename": "wrong.mrpack",
+        "url": "https://example.invalid/wrong.mrpack",
+        "size": 1234,
+        "primary": true,
+        "hashes": {
+          "sha512": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }
+    ]
+  }
+]

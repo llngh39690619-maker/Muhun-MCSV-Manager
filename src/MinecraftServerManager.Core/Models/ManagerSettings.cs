@@ -1,9 +1,11 @@
+using MinecraftServerManager.GameClient.Contracts;
+
 namespace MinecraftServerManager.Core.Models;
 
 /// <summary>Top-level persisted settings owned by the manager.</summary>
 public sealed class ManagerSettings
 {
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
@@ -14,6 +16,8 @@ public sealed class ManagerSettings
     public ManagerUiSettings UserInterface { get; set; } = new();
 
     public NewServerDefaultsSettings NewServerDefaults { get; set; } = new();
+
+    public NewMinecraftClientDefaultsSettings NewClientDefaults { get; set; } = new();
 
     /// <summary>
     /// GUI-owned appearance metadata for Service-managed servers. Service launch paths and server

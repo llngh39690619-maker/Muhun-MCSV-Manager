@@ -206,7 +206,7 @@ public sealed class MainWindowTrayLifecycleTests
     [Fact]
     public void ProductionTrayAdapter_LocalizesMenuImmediatelyAndDisposesIdempotently()
     {
-        Assert.Equal("Muhun MCSV Manager", MainWindowTrayIcon.ToolTipText);
+        Assert.Equal("X MCSV", MainWindowTrayIcon.ToolTipText);
 
         WpfStaTestHost.Run(() =>
         {
@@ -218,7 +218,7 @@ public sealed class MainWindowTrayLifecycleTests
                 Assert.Equal(LocalizationService.Current.Get("tray.exit"), trayIcon.ExitMenuTextForTesting);
 
                 LocalizationService.Current.SetCulture("en-US");
-                Assert.Equal("Open MCSV Manager", trayIcon.OpenMenuTextForTesting);
+                Assert.Equal("Open X MCSV", trayIcon.OpenMenuTextForTesting);
                 Assert.Equal("Exit", trayIcon.ExitMenuTextForTesting);
             }
             finally

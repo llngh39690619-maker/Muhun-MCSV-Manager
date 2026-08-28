@@ -1,0 +1,20 @@
+{
+  "id": "PackGood1",
+  "project_type": "modpack",
+  "status": "approved",
+  "slug": "good-pack",
+  "title": "Good Client Pack",
+  "description": "A stable client pack.",
+  "icon_url": "https://cdn.modrinth.com/data/PackGood1/icon.png",
+  "featured_gallery": "https://cdn.modrinth.com/data/PackGood1/images/featured.png",
+  "gallery": [
+    { "url": "https://cdn.modrinth.com/data/PackGood1/images/one.png" },
+    { "url": "https://example.invalid/not-accepted.png" }
+  ],
+  "game_versions": ["1.21.1"],
+  "categories": ["fabric", "adventure"],
+  "environment": ["client_and_server"],
+  "downloads": 5000,
+  "followers": 120,
+  "updated": "2026-08-20T12:00:00Z"
+}

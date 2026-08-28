@@ -21,14 +21,6 @@ public sealed class PlayerManagementPerformanceContractTests
         Assert.Equal("True", (string?)playerList.Attribute("ScrollViewer.CanContentScroll"));
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

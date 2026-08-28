@@ -15,6 +15,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $productId = 'muhun.mcsv.manager'
 $packageId = 'com.muhun.mcsv.remote'
+$androidBuildToolsVersion = '36.0.0'
+$pinnedAapt2Sha256 = 'babf3122e515ddb954c5ac4669e085ce990536c035e3072de30127bddd6e3608'
+$pinnedApkSignerBatSha256 = '549dd0028b0314a5112d6b56e2de7800e713f297da4508b513a735546e52ce38'
+$pinnedApkSignerJarSha256 = '3716d9311e55d2b0918a2fd9d54ba9e406c5f6abeea700b287f11259bc163dec'
 $wrapperSha256 = '497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7'
 $gradleSha256 = '553c78f50dafcd54d65b9a444649057857469edf836431389695608536d6b746'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -33,9 +37,69 @@ if ($VersionName -notmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-
 if ($VersionCode -lt 1 -or $VersionCode -gt 999999999) {
     throw 'Android VersionCode must be between 1 and 999999999.'
 }
+if ($VersionName -eq '1.1.0' -and $VersionCode -ne 10) {
+    throw 'Android 1.1.0 must use the immutable VersionCode 10.'
+}
 
 function Get-Sha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-NoReparseAncestors([string]$Path, [string]$Label) {
+    $cursor = Get-Item -LiteralPath ([IO.Path]::GetFullPath($Path)) -Force -ErrorAction Stop
+    while ($null -ne $cursor) {
+        if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label traverses a reparse point: $($cursor.FullName)"
+        }
+        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
+    }
+}
+
+function Assert-PinnedAndroidBuildTools($Toolchain) {
+    $buildToolsRoot = [IO.Path]::GetFullPath($Toolchain.BuildTools).TrimEnd('\', '/')
+    if ((Split-Path -Leaf $buildToolsRoot) -ne $androidBuildToolsVersion) {
+        throw 'Android build-tools directory does not match the pinned version.'
+    }
+    $expected = @(
+        [pscustomobject]@{
+            RelativePath = 'aapt2.exe'
+            Path = [IO.Path]::GetFullPath($Toolchain.Aapt2)
+            Sha256 = $pinnedAapt2Sha256
+            MaximumBytes = 16MB
+        },
+        [pscustomobject]@{
+            RelativePath = 'apksigner.bat'
+            Path = [IO.Path]::GetFullPath($Toolchain.ApkSigner)
+            Sha256 = $pinnedApkSignerBatSha256
+            MaximumBytes = 64KB
+        },
+        [pscustomobject]@{
+            RelativePath = 'lib/apksigner.jar'
+            Path = [IO.Path]::GetFullPath((Join-Path $buildToolsRoot 'lib\apksigner.jar'))
+            Sha256 = $pinnedApkSignerJarSha256
+            MaximumBytes = 8MB
+        }
+    )
+    foreach ($entry in $expected) {
+        $expectedPath = [IO.Path]::GetFullPath((Join-Path $buildToolsRoot $entry.RelativePath.Replace('/', '\')))
+        if ($entry.Path -ne $expectedPath -or
+            -not (Test-Path -LiteralPath $entry.Path -PathType Leaf)) {
+            throw "Pinned Android build tool is missing or outside build-tools ${androidBuildToolsVersion}: $($entry.RelativePath)"
+        }
+        Assert-NoReparseAncestors -Path $entry.Path -Label "Android build tool $($entry.RelativePath)"
+        $file = Get-Item -LiteralPath $entry.Path -Force
+        if ($file.Length -lt 1 -or $file.Length -gt $entry.MaximumBytes -or
+            (Get-Sha256 $entry.Path) -ne $entry.Sha256) {
+            throw "Android build tool failed its pinned SHA-256 or size check: $($entry.RelativePath)"
+        }
+    }
+    return @($expected | ForEach-Object {
+        [ordered]@{
+            relativePath = $_.RelativePath
+            sizeBytes = (Get-Item -LiteralPath $_.Path -Force).Length
+            sha256 = $_.Sha256
+        }
+    })
 }
 
 function Assert-SafeChildPath([string]$Root, [string]$Path) {
@@ -76,6 +140,7 @@ $initializer = Join-Path $PSScriptRoot 'Initialize-MuhunMcsvAndroidToolchain.ps1
 $toolchain = & $initializer `
     -ToolingRoot $ToolingRoot `
     -AcceptAndroidSdkLicenses:$AcceptAndroidSdkLicenses
+$verifiedBuildTools = @(Assert-PinnedAndroidBuildTools -Toolchain $toolchain)
 
 $wrapperJar = Join-Path $androidRoot 'gradle\wrapper\gradle-wrapper.jar'
 $wrapperProperties = Join-Path $androidRoot 'gradle\wrapper\gradle-wrapper.properties'
@@ -239,11 +304,27 @@ try {
     $artifactSha256 = Get-Sha256 $artifactPath
     $v4ArtifactSha256 = Get-Sha256 $v4ArtifactPath
 
+    $toolchainReceipt = [ordered]@{
+        schemaVersion = 1
+        buildToolsVersion = $androidBuildToolsVersion
+        tools = $verifiedBuildTools
+    }
+    $toolchainReceiptPath = Join-Path $mobileRoot 'android-toolchain.v1.json'
+    $toolchainReceiptPartial = Join-Path $mobileRoot ".android-toolchain.v1.json.$PID.partial"
+    [IO.File]::WriteAllText(
+        $toolchainReceiptPartial,
+        (($toolchainReceipt | ConvertTo-Json -Depth 5) + "`n"),
+        [Text.UTF8Encoding]::new($false))
+    [IO.File]::Move($toolchainReceiptPartial, $toolchainReceiptPath, $true)
+    $toolchainReceiptFile = Get-Item -LiteralPath $toolchainReceiptPath -Force
+    $toolchainReceiptSha256 = Get-Sha256 $toolchainReceiptPath
+
     $metadata = [ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         productId = $productId
         packageId = $packageId
         version = $VersionName
+        versionCode = $VersionCode
         sizeBytes = $artifact.Length
         sha256 = $artifactSha256
         signingCertificateSha256 = $certificateDigests[0]
@@ -251,9 +332,12 @@ try {
         v4SignatureSizeBytes = $v4Artifact.Length
         v4SignatureSha256 = $v4ArtifactSha256
         verifiedSignatureSchemes = @('v2', 'v3', 'v4')
+        toolchainReceiptFileName = $toolchainReceiptFile.Name
+        toolchainReceiptSizeBytes = $toolchainReceiptFile.Length
+        toolchainReceiptSha256 = $toolchainReceiptSha256
     }
-    $metadataPath = Join-Path $mobileRoot 'android-release.v2.json'
-    $metadataPartial = Join-Path $mobileRoot ".android-release.v2.json.$PID.partial"
+    $metadataPath = Join-Path $mobileRoot 'android-release.v3.json'
+    $metadataPartial = Join-Path $mobileRoot ".android-release.v3.json.$PID.partial"
     [IO.File]::WriteAllText(
         $metadataPartial,
         (($metadata | ConvertTo-Json -Depth 3) + "`n"),
@@ -264,6 +348,7 @@ try {
         Apk = $artifactPath
         V4Signature = $v4ArtifactPath
         Metadata = $metadataPath
+        ToolchainReceipt = $toolchainReceiptPath
         PackageId = $packageId
         Version = $VersionName
         VersionCode = $VersionCode

@@ -84,6 +84,19 @@ public partial class App : Application
         var renderPreviewPath = renderArgumentIndex >= 0 && renderArgumentIndex + 1 < e.Args.Length
             ? Path.GetFullPath(e.Args[renderArgumentIndex + 1])
             : null;
+        var renderClientArgumentIndex = Array.FindIndex(
+            e.Args,
+            argument => argument.Equals("--render-client-preview", StringComparison.OrdinalIgnoreCase));
+        var renderClientPreviewPath = renderClientArgumentIndex >= 0 && renderClientArgumentIndex + 1 < e.Args.Length
+            ? Path.GetFullPath(e.Args[renderClientArgumentIndex + 1])
+            : null;
+        var renderClientCatalogArgumentIndex = Array.FindIndex(
+            e.Args,
+            argument => argument.Equals("--render-client-catalog-preview", StringComparison.OrdinalIgnoreCase));
+        var renderClientCatalogPreviewPath = renderClientCatalogArgumentIndex >= 0 &&
+                                             renderClientCatalogArgumentIndex + 1 < e.Args.Length
+            ? Path.GetFullPath(e.Args[renderClientCatalogArgumentIndex + 1])
+            : null;
         var detectPackIndex = Array.FindIndex(e.Args, argument => argument.Equals("--detect-server-pack", StringComparison.OrdinalIgnoreCase));
         var detectPackPath = detectPackIndex >= 0 && detectPackIndex + 2 < e.Args.Length
             ? Path.GetFullPath(e.Args[detectPackIndex + 1])
@@ -107,6 +120,8 @@ public partial class App : Application
             || remoteDialogSmokeTest
             || remoteAccountSmokeTest
             || renderPreviewPath is not null
+            || renderClientPreviewPath is not null
+            || renderClientCatalogPreviewPath is not null
             || detectPackPath is not null
             || singleInstanceReadyPath is not null;
         MainWindow? applicationWindow = null;
@@ -367,6 +382,19 @@ public partial class App : Application
                 RenderPreview(applicationWindow, renderPreviewPath);
             }
 
+            if (renderClientPreviewPath is not null)
+            {
+                await viewModel.ShowClientWorkspaceForDiagnosticsAsync();
+                RenderPreview(applicationWindow, renderClientPreviewPath);
+            }
+
+            if (renderClientCatalogPreviewPath is not null)
+            {
+                await viewModel.ShowClientCatalogForDiagnosticsAsync();
+                await WaitForThumbnailRenderingAsync(applicationWindow);
+                RenderPreview(applicationWindow, renderClientCatalogPreviewPath);
+            }
+
             if (closeTest)
             {
                 applicationWindow.Close();
@@ -377,6 +405,7 @@ public partial class App : Application
             {
                 await viewModel.ShutdownAsync();
                 applicationWindow.PrepareForApplicationShutdown();
+                applicationWindow.Close();
                 Shutdown(0);
             }
         }
@@ -473,14 +502,7 @@ public partial class App : Application
     {
         const int width = 1480;
         const int height = 900;
-        if (window.Content is not FrameworkElement root)
-        {
-            throw new InvalidOperationException("主視窗沒有可渲染的內容。");
-        }
-
-        root.Measure(new Size(width, height));
-        root.Arrange(new Rect(0, 0, width, height));
-        root.UpdateLayout();
+        var root = PreparePreviewLayout(window, width, height);
 
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(root);
@@ -489,6 +511,52 @@ public partial class App : Application
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
         using var stream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
         encoder.Save(stream);
+    }
+
+    private static async Task WaitForThumbnailRenderingAsync(Window window)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var root = PreparePreviewLayout(window, width: 1480, height: 900);
+        await window.Dispatcher.InvokeAsync(
+            window.UpdateLayout,
+            DispatcherPriority.Loaded,
+            timeout.Token);
+        var thumbnailImages = FindVisualChildren<Image>(root)
+            .Where(image => !string.IsNullOrWhiteSpace(LocalImageThumbnail.GetSourcePath(image)))
+            .ToArray();
+        if (thumbnailImages.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "Client catalog diagnostic did not materialize any artwork image controls.");
+        }
+
+        await Task.WhenAll(thumbnailImages.Select(
+            image => LocalImageThumbnail.LoadForDiagnosticsAsync(image, timeout.Token)));
+        var decodedCount = thumbnailImages.Count(static image => image.Source is not null);
+        if (decodedCount == 0)
+        {
+            throw new InvalidOperationException(
+                "Client catalog diagnostic could not decode any downloaded artwork.");
+        }
+
+        await LocalImageThumbnail.WaitForPendingLoadsAsync(timeout.Token);
+        await window.Dispatcher.InvokeAsync(
+            window.UpdateLayout,
+            DispatcherPriority.Render,
+            timeout.Token);
+    }
+
+    private static FrameworkElement PreparePreviewLayout(Window window, int width, int height)
+    {
+        if (window.Content is not FrameworkElement root)
+        {
+            throw new InvalidOperationException("主視窗沒有可渲染的內容。");
+        }
+
+        root.Measure(new Size(width, height));
+        root.Arrange(new Rect(0, 0, width, height));
+        root.UpdateLayout();
+        return root;
     }
 
     private static void EnsureListItemMaterialized(

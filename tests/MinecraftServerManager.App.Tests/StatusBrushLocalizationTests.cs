@@ -56,11 +56,6 @@ public sealed class StatusBrushLocalizationTests
         Assert.Contains("Text=\"{Binding StateText}\"", source, StringComparison.Ordinal);
     }
 
-    private static string GetSourcePath(
-        string fileName,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..", "..",
-            "src", "MinecraftServerManager.App", fileName));
+    private static string GetSourcePath(string fileName)
+        => TestRepositoryPaths.AppSource(fileName);
 }

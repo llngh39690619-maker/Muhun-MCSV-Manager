@@ -16,6 +16,12 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="MinecraftServerManager.TestInfrastructure" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\TestInfrastructure\TestRepositoryPaths.cs"
+             Link="TestInfrastructure\TestRepositoryPaths.cs" />
   </ItemGroup>
 
   <ItemGroup>

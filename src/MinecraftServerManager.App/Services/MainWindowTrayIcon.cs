@@ -48,7 +48,7 @@ internal sealed class DisabledMainWindowTrayIcon : IMainWindowTrayIcon
 
 internal sealed class MainWindowTrayIcon : IMainWindowTrayIcon
 {
-    internal const string ToolTipText = "Muhun MCSV Manager";
+    internal const string ToolTipText = "X MCSV";
 
     private readonly LocalizationService _localization;
     private readonly Dispatcher _dispatcher;

@@ -1,0 +1,43 @@
+{
+  "hits": [
+    {
+      "project_id": "PackGood1",
+      "project_type": "modpack",
+      "slug": "good-pack",
+      "title": "Good Client Pack",
+      "description": "A stable client pack.",
+      "author": "TestAuthor",
+      "icon_url": "https://cdn.modrinth.com/data/PackGood1/icon.png",
+      "featured_gallery": "https://cdn.modrinth.com/data/PackGood1/images/featured.png",
+      "gallery": [
+        "https://cdn.modrinth.com/data/PackGood1/images/one.png",
+        "https://example.invalid/not-accepted.png"
+      ],
+      "versions": ["1.21.1"],
+      "categories": ["fabric", "adventure"],
+      "environment": ["client_and_server"],
+      "downloads": 5000,
+      "follows": 120,
+      "date_modified": "2026-08-20T12:00:00Z"
+    },
+    {
+      "project_id": "ServerOnly1",
+      "project_type": "modpack",
+      "slug": "server-only",
+      "title": "Server Only Pack",
+      "description": "Must not be shown in the client catalog.",
+      "author": "TestAuthor",
+      "icon_url": "https://cdn.modrinth.com/data/ServerOnly1/icon.png",
+      "gallery": [],
+      "versions": ["1.21.1"],
+      "categories": ["fabric"],
+      "environment": ["server_only"],
+      "downloads": 9999,
+      "follows": 10,
+      "date_modified": "2026-08-21T12:00:00Z"
+    }
+  ],
+  "offset": 0,
+  "limit": 20,
+  "total_hits": 2
+}

@@ -303,14 +303,6 @@ public sealed class Preview5FeatureSurfaceContractTests
     private static XDocument LoadDialog(string name) =>
         XDocument.Load(GetAppSourcePath(Path.Combine("Dialogs", name)));
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

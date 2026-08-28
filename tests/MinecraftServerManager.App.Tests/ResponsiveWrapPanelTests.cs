@@ -123,6 +123,36 @@ public sealed class ResponsiveWrapPanelTests
         });
     }
 
+    [Fact]
+    public void ClientCatalogCards_ResizeReflowsWithFixedHeightAndFillsEveryRow()
+    {
+        RunSta(() =>
+        {
+            var panel = CreatePanel(itemCount: 6, minItemWidth: 240d, horizontalSpacing: 12d);
+            panel.ItemHeight = 324d;
+            panel.MaximumColumns = 5;
+            foreach (FrameworkElement child in panel.Children)
+            {
+                child.ClearValue(FrameworkElement.HeightProperty);
+            }
+
+            MeasureAndArrange(panel, width: 1000d);
+            Assert.Equal(656d, panel.DesiredSize.Height, precision: 6);
+            Assert.Equal(241d, panel.Children[0].RenderSize.Width, precision: 6);
+            Assert.Equal(494d, panel.Children[5].RenderSize.Width, precision: 6);
+            Assert.Equal(324d, panel.Children[5].RenderSize.Height, precision: 6);
+            var wideLastOffset = VisualTreeHelper.GetOffset(panel.Children[5]);
+            Assert.Equal(1000d, wideLastOffset.X + panel.Children[5].RenderSize.Width, precision: 6);
+
+            MeasureAndArrange(panel, width: 520d);
+            Assert.Equal(988d, panel.DesiredSize.Height, precision: 6);
+            Assert.Equal(254d, panel.Children[0].RenderSize.Width, precision: 6);
+            Assert.Equal(254d, panel.Children[5].RenderSize.Width, precision: 6);
+            var narrowLastOffset = VisualTreeHelper.GetOffset(panel.Children[5]);
+            Assert.Equal(520d, narrowLastOffset.X + panel.Children[5].RenderSize.Width, precision: 6);
+        });
+    }
+
     private static ResponsiveWrapPanel CreatePanel(
         int itemCount,
         double minItemWidth,

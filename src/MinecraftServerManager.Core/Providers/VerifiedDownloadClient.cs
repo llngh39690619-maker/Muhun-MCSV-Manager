@@ -3,10 +3,17 @@ using System.Security.Cryptography;
 
 namespace MinecraftServerManager.Core.Providers;
 
+/// <summary>
+/// Explicitly authorizes one HTTP redirect hop for a verified download. The downloader still
+/// enforces its own loop, downgrade and hop-count protections before invoking this policy.
+/// </summary>
+public delegate bool VerifiedDownloadRedirectPolicy(Uri source, Uri destination);
+
 public sealed class VerifiedDownloadClient(HttpClient httpClient)
 {
     private const long MaximumUnspecifiedDownloadBytes = 2L * 1024 * 1024 * 1024;
     private const int MaximumErrorBytes = 64 * 1024;
+    private const int MaximumRedirectHops = 3;
 
     public async Task DownloadAsync(
         Uri source,
@@ -15,7 +22,8 @@ public sealed class VerifiedDownloadClient(HttpClient httpClient)
         string expectedHashHex,
         long? expectedSize = null,
         IProgress<double>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        VerifiedDownloadRedirectPolicy? redirectPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentException.ThrowIfNullOrWhiteSpace(partialPath);
@@ -46,7 +54,11 @@ public sealed class VerifiedDownloadClient(HttpClient httpClient)
 
         try
         {
-            using var response = await SendWithRetryAsync(source, cancellationToken).ConfigureAwait(false);
+            using var response = await SendWithRetryAsync(
+                    source,
+                    redirectPolicy,
+                    cancellationToken)
+                .ConfigureAwait(false);
             await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             await using var output = new FileStream(
                 partialPath,
@@ -120,14 +132,97 @@ public sealed class VerifiedDownloadClient(HttpClient httpClient)
         }
     }
 
-    private async Task<HttpResponseMessage> SendWithRetryAsync(Uri source, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendWithRetryAsync(
+        Uri source,
+        VerifiedDownloadRedirectPolicy? redirectPolicy,
+        CancellationToken cancellationToken)
+    {
+        var current = source;
+        var visited = new HashSet<string>(StringComparer.Ordinal)
+        {
+            NormalizeRequestUri(source),
+        };
+        var redirectCount = 0;
+        while (true)
+        {
+            var response = await SendSingleRequestWithRetryAsync(current, cancellationToken)
+                .ConfigureAwait(false);
+            var responseUri = response.RequestMessage?.RequestUri;
+            if (responseUri is not null && !RequestUrisEqual(current, responseUri))
+            {
+                response.Dispose();
+                throw new InvalidDataException(
+                    "The HTTP handler followed a redirect without per-hop verification.");
+            }
+
+            if (!IsRedirectStatusCode(response.StatusCode))
+            {
+                return response;
+            }
+
+            try
+            {
+                if (redirectPolicy is null)
+                {
+                    throw new InvalidDataException(
+                        "The download source redirected, but this download does not allow redirects.");
+                }
+
+                if (++redirectCount > MaximumRedirectHops)
+                {
+                    throw new InvalidDataException(
+                        $"The download exceeded the {MaximumRedirectHops}-redirect safety limit.");
+                }
+
+                var location = response.Headers.Location
+                    ?? throw new InvalidDataException("The redirect response did not include a Location header.");
+                var destination = location.IsAbsoluteUri
+                    ? location
+                    : new Uri(current, location);
+                if (!destination.IsAbsoluteUri
+                    || !string.IsNullOrEmpty(destination.UserInfo)
+                    || (current.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                        && !destination.Scheme.Equals(
+                            Uri.UriSchemeHttps,
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new InvalidDataException(
+                        "The download redirect attempted an unsafe URI or HTTPS downgrade.");
+                }
+
+                if (!redirectPolicy(current, destination))
+                {
+                    throw new InvalidDataException(
+                        $"The download redirect was rejected by its per-download policy: {destination}");
+                }
+
+                if (!visited.Add(NormalizeRequestUri(destination)))
+                {
+                    throw new InvalidDataException("The download redirect chain contains a loop.");
+                }
+
+                current = destination;
+            }
+            finally
+            {
+                response.Dispose();
+            }
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendSingleRequestWithRetryAsync(
+        Uri source,
+        CancellationToken cancellationToken)
     {
         for (var attempt = 0; ; attempt++)
         {
-            var response = await httpClient.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            var response = await httpClient.GetAsync(
+                    source,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
-            if (response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode || IsRedirectStatusCode(response.StatusCode))
             {
                 return response;
             }
@@ -156,6 +251,22 @@ public sealed class VerifiedDownloadClient(HttpClient httpClient)
             await Task.Delay(retryAfter, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool IsRedirectStatusCode(HttpStatusCode statusCode) => statusCode is
+        HttpStatusCode.MovedPermanently
+        or HttpStatusCode.Redirect
+        or HttpStatusCode.RedirectMethod
+        or HttpStatusCode.TemporaryRedirect
+        or HttpStatusCode.PermanentRedirect;
+
+    private static bool RequestUrisEqual(Uri first, Uri second) =>
+        string.Equals(
+            NormalizeRequestUri(first),
+            NormalizeRequestUri(second),
+            StringComparison.Ordinal);
+
+    private static string NormalizeRequestUri(Uri uri) =>
+        uri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
 
     private static async Task<string> ReadBoundedErrorTextAsync(
         HttpContent content,

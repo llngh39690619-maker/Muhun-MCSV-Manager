@@ -33,12 +33,12 @@ internal sealed class GmailSmtpVerificationSender : IVerificationEmailSender
         }
 
         var message = new MimeMessage();
-        message.From.Add(new MailboxAddress("Muhun MCSV Manager", credential.SenderGmail));
+        message.From.Add(new MailboxAddress("X MCSV", credential.SenderGmail));
         message.To.Add(MailboxAddress.Parse(recipientGmail));
-        message.Subject = "Muhun MCSV Manager 遠端帳號驗證碼";
+        message.Subject = "X MCSV 遠端帳號驗證碼";
         message.Body = new TextPart("plain")
         {
-            Text = $"您的 MCSV Manager 驗證碼是：{code}\r\n\r\n" +
+            Text = $"您的 X MCSV 驗證碼是：{code}\r\n\r\n" +
                    $"此驗證碼將於 {expiresAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} 到期，且只能使用一次。\r\n" +
                    "如果您沒有在電腦端要求建立遠端帳號，請忽略此郵件。\r\n"
         };

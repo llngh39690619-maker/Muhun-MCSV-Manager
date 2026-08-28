@@ -632,16 +632,8 @@ public sealed class ServerRemovalContractTests
         Assert.True(File.GetAttributes(linkPath).HasFlag(FileAttributes.ReparsePoint));
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private sealed class FakeRemovalConfirmationService(bool result)
         : IServerRemovalConfirmationService

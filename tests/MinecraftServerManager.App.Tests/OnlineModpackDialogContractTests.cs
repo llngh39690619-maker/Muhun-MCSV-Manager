@@ -362,16 +362,8 @@ public sealed class OnlineModpackDialogContractTests
             > code.IndexOf("AllowAutoRedirect = false", start, StringComparison.Ordinal));
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private static IEnumerable<(string Key, XElement Element)> ExplicitResourceEntries(
         XElement resources,

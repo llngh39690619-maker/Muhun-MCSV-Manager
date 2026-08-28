@@ -187,10 +187,9 @@ public sealed class ProductServiceRemoteAccessViewModelTests
     [Fact]
     public void MainWindowServiceBranch_PrecedesLegacyCoordinatorConstruction()
     {
-        var source = File.ReadAllText(Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..", "..",
-            "src", "MinecraftServerManager.App", "ViewModels", "MainWindowViewModel.cs")));
+        var source = File.ReadAllText(TestRepositoryPaths.AppSource(
+            "ViewModels",
+            "MainWindowViewModel.cs"));
         var start = source.IndexOf(
             "private async Task<string?> InitializeRemoteAccessAsync(",
             StringComparison.Ordinal);

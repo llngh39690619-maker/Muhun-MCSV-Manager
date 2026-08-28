@@ -405,7 +405,7 @@ public sealed class RemoteControlHostIntegrationTests
             Assert.Equal(HttpStatusCode.OK, pageResponse.StatusCode);
             Assert.Equal("text/html", pageResponse.Content.Headers.ContentType?.MediaType);
             Assert.Contains("no-store", pageResponse.Headers.CacheControl?.ToString(), StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("Muhun MCSV 遠端控制", await pageResponse.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Contains("X MCSV 遠端控制", await pageResponse.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }
 
         using var statusResponse = await client.GetAsync("api/v1/auth/status");

@@ -108,6 +108,7 @@ $testProjects = [ordered]@{
     Notifications = 'tests\MinecraftServerManager.Notifications.Tests\MinecraftServerManager.Notifications.Tests.csproj'
     Updater = 'tests\MinecraftServerManager.Updater.Tests\MinecraftServerManager.Updater.Tests.csproj'
     Client = 'tests\MinecraftServerManager.Client.Tests\MinecraftServerManager.Client.Tests.csproj'
+    GameClient = 'tests\MinecraftServerManager.GameClient.Tests\MinecraftServerManager.GameClient.Tests.csproj'
     ProviderHost = 'tests\MinecraftServerManager.ProviderHost.Tests\MinecraftServerManager.ProviderHost.Tests.csproj'
 }
 $discoveredTests = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'tests') -Recurse -Filter '*.Tests.csproj' |

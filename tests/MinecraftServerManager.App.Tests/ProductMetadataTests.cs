@@ -9,32 +9,32 @@ namespace MinecraftServerManager.App.Tests;
 public sealed class ProductMetadataTests
 {
     [Fact]
-    public void ApplicationAssembly_UsesMuhunBrandAndVersionedOutputName()
+    public void ApplicationAssembly_UsesXBrandAndKeepsCompatibleOutputName()
     {
         var assembly = typeof(App).Assembly;
         var versionInfo = FileVersionInfo.GetVersionInfo(assembly.Location);
 
         Assert.Equal("Muhun MCSV Manager", assembly.GetName().Name);
-        Assert.Equal("1.0.8.0", versionInfo.FileVersion);
-        Assert.Equal("1.0.8", versionInfo.ProductVersion);
-        Assert.Equal("Muhun MCSV Manager", versionInfo.ProductName);
-        Assert.Equal("Muhun MCSV Manager", versionInfo.FileDescription);
+        Assert.Equal("1.1.0.0", versionInfo.FileVersion);
+        Assert.Equal("1.1.0", versionInfo.ProductVersion);
+        Assert.Equal("X MCSV", versionInfo.ProductName);
+        Assert.Equal("X MCSV", versionInfo.FileDescription);
         Assert.Equal("Copyright © Muhun 2026", versionInfo.LegalCopyright);
         Assert.Equal(
-            "Muhun MCSV Manager",
+            "X MCSV",
             assembly.GetCustomAttribute<AssemblyTitleAttribute>()?.Title);
 
         var coreAssembly = typeof(MinecraftServerManager.Core.Models.ServerInstance).Assembly;
-        Assert.Equal("1.0.8.0", coreAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.1.0.0", coreAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.0.8",
+            "1.1.0",
             coreAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
 
         var remoteAssembly = typeof(MinecraftServerManager.Remote.RemoteControlOptions).Assembly;
-        Assert.Equal("1.0.8.0", remoteAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.1.0.0", remoteAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.0.8",
+            "1.1.0",
             remoteAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
     }
@@ -47,7 +47,7 @@ public sealed class ProductMetadataTests
         var identity = Assert.Single(document.Descendants(assembly + "assemblyIdentity"));
 
         Assert.Equal("Muhun.MCSV.Manager.app", (string?)identity.Attribute("name"));
-        Assert.Equal("1.0.8.0", (string?)identity.Attribute("version"));
+        Assert.Equal("1.1.0.0", (string?)identity.Attribute("version"));
     }
 
     [Fact]
@@ -57,10 +57,10 @@ public sealed class ProductMetadataTests
         var appProperties = appProject.Root!.Elements("PropertyGroup").Elements().ToArray();
 
         Assert.Equal("Muhun MCSV Manager", SingleProperty(appProperties, "AssemblyName"));
-        Assert.Equal("1.0.8", SingleProperty(appProperties, "Version"));
-        Assert.Equal("1.0.8.0", SingleProperty(appProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.8.0", SingleProperty(appProperties, "FileVersion"));
-        Assert.Equal("1.0.8", SingleProperty(appProperties, "InformationalVersion"));
+        Assert.Equal("1.1.0", SingleProperty(appProperties, "Version"));
+        Assert.Equal("1.1.0.0", SingleProperty(appProperties, "AssemblyVersion"));
+        Assert.Equal("1.1.0.0", SingleProperty(appProperties, "FileVersion"));
+        Assert.Equal("1.1.0", SingleProperty(appProperties, "InformationalVersion"));
         Assert.Equal("true", SingleProperty(appProperties, "UseWindowsForms"));
         var mailKit = Assert.Single(
             appProject.Descendants("PackageReference"),
@@ -69,17 +69,17 @@ public sealed class ProductMetadataTests
 
         var coreProject = XDocument.Load(GetCoreSourcePath("MinecraftServerManager.Core.csproj"));
         var coreProperties = coreProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.0.8", SingleProperty(coreProperties, "Version"));
-        Assert.Equal("1.0.8.0", SingleProperty(coreProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.8.0", SingleProperty(coreProperties, "FileVersion"));
-        Assert.Equal("1.0.8", SingleProperty(coreProperties, "InformationalVersion"));
+        Assert.Equal("1.1.0", SingleProperty(coreProperties, "Version"));
+        Assert.Equal("1.1.0.0", SingleProperty(coreProperties, "AssemblyVersion"));
+        Assert.Equal("1.1.0.0", SingleProperty(coreProperties, "FileVersion"));
+        Assert.Equal("1.1.0", SingleProperty(coreProperties, "InformationalVersion"));
 
         var remoteProject = XDocument.Load(GetRemoteSourcePath("MinecraftServerManager.Remote.csproj"));
         var remoteProperties = remoteProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.0.8", SingleProperty(remoteProperties, "Version"));
-        Assert.Equal("1.0.8.0", SingleProperty(remoteProperties, "AssemblyVersion"));
-        Assert.Equal("1.0.8.0", SingleProperty(remoteProperties, "FileVersion"));
-        Assert.Equal("1.0.8", SingleProperty(remoteProperties, "InformationalVersion"));
+        Assert.Equal("1.1.0", SingleProperty(remoteProperties, "Version"));
+        Assert.Equal("1.1.0.0", SingleProperty(remoteProperties, "AssemblyVersion"));
+        Assert.Equal("1.1.0.0", SingleProperty(remoteProperties, "FileVersion"));
+        Assert.Equal("1.1.0", SingleProperty(remoteProperties, "InformationalVersion"));
     }
 
     [Fact]
@@ -90,7 +90,8 @@ public sealed class ProductMetadataTests
             "MainWindowViewModel.cs")));
 
         Assert.Contains("MuhunMCSVManager/1.0 (Windows; manager)", source, StringComparison.Ordinal);
-        Assert.Contains("Muhun MCSV Manager 1.0 · .NET 10 · Windows x64", source, StringComparison.Ordinal);
+        Assert.Contains("ProductDisplayVersion", source, StringComparison.Ordinal);
+        Assert.Contains("X MCSV {ProductDisplayVersion} · .NET 10 · Windows x64", source, StringComparison.Ordinal);
         Assert.Contains("\"Muhun MCSV Manager 0.4.11 Remote Preview 4.exe\"", source, StringComparison.Ordinal);
         Assert.Contains("\"Muhun MCSV Manager 0.4.11 Remote Preview 3.exe\"", source, StringComparison.Ordinal);
         Assert.Contains("\"Muhun MCSV Manager 0.4.11 Remote Preview 2.exe\"", source, StringComparison.Ordinal);
@@ -173,7 +174,26 @@ public sealed class ProductMetadataTests
         Assert.Contains("MailKit 4.17.0", notices, StringComparison.Ordinal);
         Assert.Contains("MimeKit 4.17.0", notices, StringComparison.Ordinal);
         Assert.Contains("BouncyCastle.Cryptography 2.6.2", notices, StringComparison.Ordinal);
+        Assert.Contains("CmlLib.Core 4.0.6", notices, StringComparison.Ordinal);
+        Assert.Contains("CmlLib.Core.Commons 4.0.0", notices, StringComparison.Ordinal);
+        Assert.Contains("CmlLib.Core.Auth.Microsoft 3.3.1", notices, StringComparison.Ordinal);
+        Assert.DoesNotContain("CmlLib.Core.Installer.Forge", notices, StringComparison.Ordinal);
+        Assert.DoesNotContain("CmlLib.Core.Installer.NeoForge", notices, StringComparison.Ordinal);
+        Assert.DoesNotContain("HtmlAgilityPack", notices, StringComparison.Ordinal);
+        Assert.Contains("SharpZipLib 1.4.2", notices, StringComparison.Ordinal);
+        Assert.Contains("XboxAuthNet 3.0.4", notices, StringComparison.Ordinal);
+        Assert.Contains("Microsoft.Web.WebView2 1.0.1823.32", notices, StringComparison.Ordinal);
         Assert.Contains("MIT License Text", notices, StringComparison.Ordinal);
+        Assert.Contains("Microsoft WebView2 License Text", notices, StringComparison.Ordinal);
+
+        var formalBuild = File.ReadAllText(Path.Combine(
+            projectRoot,
+            "scripts",
+            "Build-MuhunMcsvFormalRelease.ps1"));
+        Assert.Contains("THIRD-PARTY-NOTICES.txt", formalBuild, StringComparison.Ordinal);
+        Assert.Contains("LICENSE.txt", formalBuild, StringComparison.Ordinal);
+        Assert.Contains("MinecraftServerManager.GameClient.Tests.csproj", formalBuild, StringComparison.Ordinal);
+        Assert.Contains("exact eleven test projects", formalBuild, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -205,7 +225,7 @@ public sealed class ProductMetadataTests
     }
 
     [Fact]
-    public void MainWindowHeader_UsesMuhunProductBrand()
+    public void MainWindowHeader_UsesVersionedXProductBrandResources()
     {
         var document = XDocument.Load(GetMainWindowXamlPath());
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
@@ -215,8 +235,8 @@ public sealed class ProductMetadataTests
             .Where(text => text is not null)
             .ToArray();
 
-        Assert.Contains("MUHUN", headerTexts);
-        Assert.Contains("MCSV Manager", headerTexts);
+        Assert.Contains("{DynamicResource L10n.app.brand.mark}", headerTexts);
+        Assert.Contains("{DynamicResource L10n.app.brand.name}", headerTexts);
         Assert.DoesNotContain("MINECRAFT", headerTexts);
         Assert.DoesNotContain("Server Manager", headerTexts);
     }
@@ -247,45 +267,18 @@ public sealed class ProductMetadataTests
     private static string SingleProperty(IEnumerable<XElement> properties, string name)
         => Assert.Single(properties, element => element.Name.LocalName == name).Value;
 
-    private static string GetMainWindowXamlPath([CallerFilePath] string testFilePath = "")
-        => GetAppSourcePath("MainWindow.xaml", testFilePath);
+    private static string GetMainWindowXamlPath()
+        => TestRepositoryPaths.AppSource("MainWindow.xaml");
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
-    private static string GetCoreSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.Core",
-            relativePath));
+    private static string GetCoreSourcePath(string relativePath)
+        => TestRepositoryPaths.CoreSource(relativePath);
 
-    private static string GetRemoteSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.Remote",
-            relativePath));
+    private static string GetRemoteSourcePath(string relativePath)
+        => TestRepositoryPaths.RemoteSource(relativePath);
 
-    private static string GetProjectRoot([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            ".."));
+    private static string GetProjectRoot()
+        => TestRepositoryPaths.RepositoryRoot;
 }

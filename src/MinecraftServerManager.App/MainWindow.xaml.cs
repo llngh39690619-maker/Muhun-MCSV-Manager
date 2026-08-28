@@ -59,6 +59,7 @@ public partial class MainWindow : Window
         };
         _windowSizePersistenceTimer.Tick += OnWindowSizePersistenceTimerTick;
         DataContext = viewModel;
+        viewModel.ClientWorkspace.HideLauncherRequested += OnClientHideLauncherRequested;
         _trayIcon.OpenRequested += OnTrayOpenRequested;
         _trayIcon.ExitRequested += OnTrayExitRequested;
     }
@@ -384,6 +385,24 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnClientHideLauncherRequested(object? sender, EventArgs e)
+    {
+        if (_isClosed || _shutdownInProgress)
+        {
+            return;
+        }
+
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(
+                () => OnClientHideLauncherRequested(sender, e),
+                DispatcherPriority.Normal);
+            return;
+        }
+
+        WindowState = WindowState.Minimized;
+    }
+
     private void OnTrayOpenRequested(object? sender, EventArgs e)
         => DispatchTrayAction(RestoreFromTray);
 
@@ -548,6 +567,10 @@ public partial class MainWindow : Window
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _isClosed = true;
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.ClientWorkspace.HideLauncherRequested -= OnClientHideLauncherRequested;
+        }
         _windowSizePersistenceTimer.Stop();
         _windowSizePersistenceTimer.Tick -= OnWindowSizePersistenceTimerTick;
         DisposeTrayIcon();

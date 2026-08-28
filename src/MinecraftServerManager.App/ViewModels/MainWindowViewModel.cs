@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Security;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -21,12 +22,20 @@ using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Core.Providers;
 using MinecraftServerManager.Core.Runtime;
 using MinecraftServerManager.Core.Services;
+using MinecraftServerManager.GameClient.Contracts;
 using MinecraftServerManager.Remote;
 
 namespace MinecraftServerManager.App.ViewModels;
 
 public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 {
+    private static readonly string ProductDisplayVersion =
+        typeof(MainWindowViewModel).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion?
+            .Split('+', 2)[0]
+        ?? "1.0";
+
     internal const string ConsoleWorkspaceTabKey = "Console";
     internal const string DiagnosticWorkspaceTabKey = "Diagnostics";
     internal const string PlayersWorkspaceTabKey = "Players";
@@ -185,6 +194,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private long _playerRegistryReloadVersion;
     private CancellationTokenSource? _addonScanCancellation;
     private long _addonScanVersion;
+    private bool _isClientWorkspace;
 
     public MainWindowViewModel(ApplicationPaths paths)
         : this(
@@ -263,6 +273,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(onlineModpackWorkflow);
 
         _paths = paths;
+        ClientWorkspace = new ClientWorkspaceViewModel(
+            _paths,
+            () => _settings.NewClientDefaults ??= new NewMinecraftClientDefaultsSettings());
         _settingsStore = settingsStore ?? new JsonSettingsStore<ManagerSettings>(_paths.SettingsFile);
         _appearanceThemeService = new AppearanceThemeService(_paths);
         _serverRemovalConfirmationService = serverRemovalConfirmationService;
@@ -328,6 +341,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _processManager.ConsoleLineReceived += OnConsoleLineReceived;
         _processManager.StateChanged += OnServerStateChanged;
         _processManager.ResourceSampled += OnResourceSampled;
+
+        ShowServerWorkspaceCommand = new RelayCommand(() => IsClientWorkspace = false);
+        ShowClientWorkspaceCommand = new RelayCommand(() =>
+        {
+            IsClientWorkspace = true;
+            if (ClientWorkspace.InitializeCommand.CanExecute(null))
+            {
+                ClientWorkspace.InitializeCommand.Execute(null);
+            }
+        });
 
         ImportExistingServerCommand = new AsyncRelayCommand(
             () => GuardAsync(ImportExistingServerAsync, "main.vm.operation.importExisting"),
@@ -475,10 +498,40 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     }
 
     public ObservableCollection<ServerInstanceViewModel> Servers { get; } = [];
+
+    public ClientWorkspaceViewModel ClientWorkspace { get; }
+
+    public bool IsClientWorkspace
+    {
+        get => _isClientWorkspace;
+        private set
+        {
+            if (SetProperty(ref _isClientWorkspace, value))
+            {
+                OnPropertyChanged(nameof(IsServerWorkspace));
+            }
+        }
+    }
+
+    public bool IsServerWorkspace => !IsClientWorkspace;
+
+    internal async Task ShowClientWorkspaceForDiagnosticsAsync()
+    {
+        IsClientWorkspace = true;
+        await ClientWorkspace.InitializeForDiagnosticsAsync();
+    }
+
+    internal async Task ShowClientCatalogForDiagnosticsAsync()
+    {
+        await ShowClientWorkspaceForDiagnosticsAsync();
+        await ClientWorkspace.ShowCatalogForDiagnosticsAsync();
+    }
     public ObservableCollection<JavaRuntimeItemViewModel> InstalledJavaRuntimes { get; } = [];
     public IReadOnlyList<int> JavaMajorChoices { get; } = JavaVersionRecommendationService.SupportedMajorVersions;
 
     public AsyncRelayCommand ImportExistingServerCommand { get; }
+    public RelayCommand ShowServerWorkspaceCommand { get; }
+    public RelayCommand ShowClientWorkspaceCommand { get; }
     public AsyncRelayCommand ImportServerCommand { get; }
     public AsyncRelayCommand ImportServerFolderCommand { get; }
     public AsyncRelayCommand CreateCoreServerCommand { get; }
@@ -774,7 +827,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         "main.vm.runningSummary",
         Servers.Count(server => server.State == ServerState.Running),
         Servers.Count);
-    public string VersionText => "Muhun MCSV Manager 1.0 · .NET 10 · Windows x64";
+    public string VersionText => $"X MCSV {ProductDisplayVersion} · .NET 10 · Windows x64";
     internal Task LastDiagnosticOutputPreferenceSave => _lastDiagnosticOutputPreferenceSave;
     internal Task LastPlayerRegistryReload => _lastPlayerRegistryReload;
     internal Task LastAutomaticMemoryRecommendation => _lastAutomaticMemoryRecommendation;
@@ -842,16 +895,29 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    internal Task PersistGeneralSettingsValuesAsync(
+        ManagerUiSettings userInterface,
+        NewServerDefaultsSettings defaults,
+        ApplicationAppearanceSettings appearance)
+        => PersistGeneralSettingsValuesAsync(
+            userInterface,
+            defaults,
+            (_settings.NewClientDefaults ?? new NewMinecraftClientDefaultsSettings()).Copy(),
+            appearance);
+
     internal async Task PersistGeneralSettingsValuesAsync(
         ManagerUiSettings userInterface,
         NewServerDefaultsSettings defaults,
+        NewMinecraftClientDefaultsSettings clientDefaults,
         ApplicationAppearanceSettings appearance)
     {
         ArgumentNullException.ThrowIfNull(userInterface);
         ArgumentNullException.ThrowIfNull(defaults);
+        ArgumentNullException.ThrowIfNull(clientDefaults);
         ArgumentNullException.ThrowIfNull(appearance);
         var nextUserInterface = userInterface.Copy();
         var nextDefaults = defaults.Copy();
+        var nextClientDefaults = clientDefaults.Copy();
         var nextAppearance = appearance.Copy();
 
         await _settingsSaveGate.WaitAsync();
@@ -860,9 +926,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             var previousAppearance = _settings.Appearance;
             var previousUserInterface = _settings.UserInterface;
             var previousDefaults = _settings.NewServerDefaults;
+            var previousClientDefaults = _settings.NewClientDefaults;
             _settings.Appearance = nextAppearance;
             _settings.UserInterface = nextUserInterface;
             _settings.NewServerDefaults = nextDefaults;
+            _settings.NewClientDefaults = nextClientDefaults;
             _settings.SchemaVersion = Math.Max(
                 _settings.SchemaVersion,
                 ManagerSettings.CurrentSchemaVersion);
@@ -877,6 +945,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 _settings.Appearance = previousAppearance;
                 _settings.UserInterface = previousUserInterface;
                 _settings.NewServerDefaults = previousDefaults;
+                _settings.NewClientDefaults = previousClientDefaults;
                 throw;
             }
         }
@@ -896,8 +965,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var remoteAutoStartMigrated = ApplyRemoteAutoStartMigration(_settings);
         _settings.UserInterface ??= new ManagerUiSettings();
         _settings.NewServerDefaults ??= new NewServerDefaultsSettings();
+        _settings.NewClientDefaults ??= new NewMinecraftClientDefaultsSettings();
         RepairManagerUiSettings(_settings.UserInterface);
         RepairNewServerDefaults(_settings.NewServerDefaults);
+        RepairNewMinecraftClientDefaults(_settings.NewClientDefaults);
         foreach (var model in _settings.Instances)
         {
             RepairPortablePaths(model);
@@ -1558,6 +1629,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
+        await ClientWorkspace.DisposeAsync();
         LocalizationService.Current.CultureChanged -= OnLocalizationCultureChanged;
         Servers.CollectionChanged -= OnServersCollectionChanged;
         foreach (var server in _bulkSelectionSubscriptions)
@@ -3865,7 +3937,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         var editor = new GeneralSettingsViewModel(
             _settings.UserInterface.Copy(),
             _settings.NewServerDefaults.Copy(),
-            async (userInterface, defaults, appearance) =>
+            _settings.NewClientDefaults.Copy(),
+            async (userInterface, defaults, clientDefaults, appearance) =>
             {
                 try
                 {
@@ -3876,6 +3949,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     await PersistGeneralSettingsValuesAsync(
                         userInterface,
                         defaults,
+                        clientDefaults,
                         normalizedAppearance);
                     _previewWindowWidth = null;
                     _previewWindowHeight = null;
@@ -5055,6 +5129,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 RemoteControl = _settings.RemoteControl.Copy(),
                 UserInterface = _settings.UserInterface.Copy(),
                 NewServerDefaults = _settings.NewServerDefaults.Copy(),
+                NewClientDefaults = _settings.NewClientDefaults.Copy(),
                 ServiceServerAppearances = _settings.ServiceServerAppearances.ToDictionary(
                     entry => entry.Key,
                     entry => entry.Value.Copy()),
@@ -8297,6 +8372,21 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         settings.MemoryMode = MemoryAllocationMode.Manual;
         settings.MinimumMemoryMb = Math.Clamp(settings.MinimumMemoryMb, 512, 131072);
         settings.MaximumMemoryMb = Math.Clamp(settings.MaximumMemoryMb, settings.MinimumMemoryMb, 131072);
+    }
+
+    private static void RepairNewMinecraftClientDefaults(
+        NewMinecraftClientDefaultsSettings settings)
+    {
+        settings.MemoryMode = settings.MemoryMode == MinecraftClientMemoryMode.Manual
+            ? MinecraftClientMemoryMode.Manual
+            : MinecraftClientMemoryMode.Automatic;
+        settings.MinimumMemoryMb = Math.Clamp(settings.MinimumMemoryMb, 512, 32768);
+        settings.MaximumMemoryMb = Math.Clamp(
+            settings.MaximumMemoryMb,
+            settings.MinimumMemoryMb,
+            32768);
+        settings.WindowWidth = Math.Clamp(settings.WindowWidth, 640, 16384);
+        settings.WindowHeight = Math.Clamp(settings.WindowHeight, 360, 16384);
     }
 
     private static void ApplyFontResources(ResourceDictionary resources, double baseFontSize)

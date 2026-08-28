@@ -17,6 +17,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$AndroidAapt2Path,
 
+    [ValidateRange(1, 999999999)]
+    [int]$AndroidVersionCode = 10,
+
     [Parameter(Mandatory = $true)]
     [string]$OutputDirectory,
 
@@ -53,6 +56,11 @@ $builtinProviderRoot = [IO.Path]::GetFullPath($BuiltinProviderDirectory).TrimEnd
 $mobileArtifactRoot = [IO.Path]::GetFullPath($MobileArtifactDirectory).TrimEnd('\', '/')
 $androidApkSigner = [IO.Path]::GetFullPath($AndroidApkSignerPath)
 $androidAapt2 = [IO.Path]::GetFullPath($AndroidAapt2Path)
+$androidBuildToolsVersion = '36.0.0'
+$pinnedAapt2Sha256 = 'babf3122e515ddb954c5ac4669e085ce990536c035e3072de30127bddd6e3608'
+$pinnedApkSignerBatSha256 = '549dd0028b0314a5112d6b56e2de7800e713f297da4508b513a735546e52ce38'
+$pinnedApkSignerJarSha256 = '3716d9311e55d2b0918a2fd9d54ba9e406c5f6abeea700b287f11259bc163dec'
+$expectedPublisherCertificateSha256 = '1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71'
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\', '/')
 $identityRoot = [IO.Path]::GetFullPath($SigningIdentityDirectory).TrimEnd('\', '/')
 
@@ -84,6 +92,126 @@ function Test-SafeRelativePath {
 function Get-Sha256Hex {
     param([Parameter(Mandatory = $true)][string]$Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-NoReparseAncestors {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $cursor = Get-Item -LiteralPath ([IO.Path]::GetFullPath($Path)) -Force -ErrorAction Stop
+    while ($null -ne $cursor) {
+        if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label traverses a reparse point: $($cursor.FullName)"
+        }
+        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
+    }
+}
+
+function Assert-ExactJsonProperties {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $actual = @($Object.psobject.Properties.Name | Sort-Object)
+    $expectedSorted = @($Expected | Sort-Object)
+    if ($actual.Count -ne $expectedSorted.Count -or
+        @(Compare-Object $expectedSorted $actual).Count -ne 0) {
+        throw "$Label JSON property set is invalid."
+    }
+}
+
+function Get-PinnedAndroidBuildTools {
+    $buildToolsRoot = [IO.Path]::GetFullPath((Split-Path -Parent $androidAapt2)).TrimEnd('\', '/')
+    if ((Split-Path -Leaf $buildToolsRoot) -ne $androidBuildToolsVersion) {
+        throw 'Android build-tools directory does not match the pinned version.'
+    }
+    $expected = @(
+        [pscustomobject]@{
+            RelativePath = 'aapt2.exe'
+            Path = $androidAapt2
+            Sha256 = $pinnedAapt2Sha256
+            MaximumBytes = 16MB
+        },
+        [pscustomobject]@{
+            RelativePath = 'apksigner.bat'
+            Path = $androidApkSigner
+            Sha256 = $pinnedApkSignerBatSha256
+            MaximumBytes = 64KB
+        },
+        [pscustomobject]@{
+            RelativePath = 'lib/apksigner.jar'
+            Path = [IO.Path]::GetFullPath((Join-Path $buildToolsRoot 'lib\apksigner.jar'))
+            Sha256 = $pinnedApkSignerJarSha256
+            MaximumBytes = 8MB
+        }
+    )
+    foreach ($entry in $expected) {
+        $expectedPath = [IO.Path]::GetFullPath((Join-Path $buildToolsRoot $entry.RelativePath.Replace('/', '\')))
+        if ($entry.Path -ne $expectedPath -or
+            -not (Test-Path -LiteralPath $entry.Path -PathType Leaf)) {
+            throw "Pinned Android build tool is missing or outside build-tools ${androidBuildToolsVersion}: $($entry.RelativePath)"
+        }
+        Assert-NoReparseAncestors -Path $entry.Path -Label "Android build tool $($entry.RelativePath)"
+        $file = Get-Item -LiteralPath $entry.Path -Force
+        if ($file.Length -lt 1 -or $file.Length -gt $entry.MaximumBytes -or
+            (Get-Sha256Hex -Path $entry.Path) -ne $entry.Sha256) {
+            throw "Android build tool failed its pinned SHA-256 or size check: $($entry.RelativePath)"
+        }
+    }
+    return @($expected | ForEach-Object {
+        [pscustomobject]@{
+            relativePath = $_.RelativePath
+            sizeBytes = (Get-Item -LiteralPath $_.Path -Force).Length
+            sha256 = $_.Sha256
+        }
+    })
+}
+
+function Assert-AndroidToolchainReceipt {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'Android toolchain receipt is missing.'
+    }
+    Assert-NoReparseAncestors -Path $Path -Label 'Android toolchain receipt'
+    $receiptFile = Get-Item -LiteralPath $Path -Force
+    if ($receiptFile.Length -lt 1 -or $receiptFile.Length -gt 32KB) {
+        throw 'Android toolchain receipt size is invalid.'
+    }
+    try {
+        $receipt = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -Depth 8
+    } catch {
+        throw "Android toolchain receipt is not valid JSON: $($_.Exception.Message)"
+    }
+    Assert-ExactJsonProperties -Object $receipt `
+        -Expected @('schemaVersion', 'buildToolsVersion', 'tools') `
+        -Label 'Android toolchain receipt'
+    $actualTools = @(Get-PinnedAndroidBuildTools)
+    if (-not ($receipt.schemaVersion -is [long]) -or
+        $receipt.schemaVersion -ne 1 -or
+        $receipt.buildToolsVersion -ne $androidBuildToolsVersion -or
+        @($receipt.tools).Count -ne $actualTools.Count) {
+        throw 'Android toolchain receipt schema or tool count is invalid.'
+    }
+    for ($index = 0; $index -lt $actualTools.Count; $index++) {
+        $record = @($receipt.tools)[$index]
+        $actual = $actualTools[$index]
+        Assert-ExactJsonProperties -Object $record `
+            -Expected @('relativePath', 'sizeBytes', 'sha256') `
+            -Label "Android toolchain receipt record $index"
+        if ($record.relativePath -cne $actual.relativePath -or
+            -not ($record.sizeBytes -is [long]) -or
+            $record.sizeBytes -ne $actual.sizeBytes -or
+            $record.sha256 -cne $actual.sha256) {
+            throw "Android toolchain receipt record does not match pinned tool bytes: $($actual.relativePath)"
+        }
+    }
+    return [pscustomobject]@{
+        Receipt = $receipt
+        SizeBytes = $receiptFile.Length
+        Sha256 = Get-Sha256Hex -Path $Path
+    }
 }
 
 function Get-CertificateSha256 {
@@ -302,27 +430,96 @@ function Assert-SignedReleasePowerShellScript {
     }
 }
 
-function Assert-SigningIdentityAcl {
-    param([string]$Path)
-    $acl = Get-Acl -LiteralPath $Path
-    $forbiddenSids = @(
-        'S-1-1-0',       # Everyone
-        'S-1-5-11',      # Authenticated Users
-        'S-1-5-32-545'   # Builtin Users
+function Get-SidValueFailClosed {
+    param(
+        [Parameter(Mandatory = $true)]$IdentityReference,
+        [Parameter(Mandatory = $true)][string]$Label
     )
+    try {
+        return $IdentityReference.Translate(
+            [Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw "$Label contains an identity that cannot be translated to a SID."
+    }
+}
+
+function Assert-PrivateSigningAclNode {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedOwnerSid,
+        [Parameter(Mandatory = $true)][bool]$RequireProtectedAcl
+    )
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $ownerReference = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+    } catch {
+        throw "Cannot read signing-secret owner or ACL: $Path"
+    }
+    $ownerSid = Get-SidValueFailClosed -IdentityReference $ownerReference `
+        -Label "Signing-secret owner for $Path"
+    if ($ownerSid -cne $ExpectedOwnerSid) {
+        throw "Signing-secret owner must be the current Windows user: $Path"
+    }
+    if ($RequireProtectedAcl -and -not $acl.AreAccessRulesProtected) {
+        throw "Signing identity root must disable inherited ACLs: $Path"
+    }
+
+    $allowedAllowSids = @($ExpectedOwnerSid, 'S-1-5-18') # current user and LocalSystem
+    $currentUserReadable = $false
     foreach ($rule in $acl.Access) {
-        try {
-            $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        } catch {
-            continue
-        }
-        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-            $sid -in $forbiddenSids -and
-            (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadData) -ne 0 -or
-             ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne 0)) {
-            throw 'Signing identity ACL grants private-key access to a broad Windows principal.'
+        $sid = Get-SidValueFailClosed -IdentityReference $rule.IdentityReference `
+            -Label "Signing-secret ACL for $Path"
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
+            if ($sid -notin $allowedAllowSids) {
+                throw "Signing-secret ACL grants access to an unauthorized or broad principal: $Path ($sid)"
+            }
+            if ($sid -ceq $ExpectedOwnerSid -and
+                (($rule.FileSystemRights -band
+                    [Security.AccessControl.FileSystemRights]::ReadData) -ne 0)) {
+                $currentUserReadable = $true
+            }
         }
     }
+    if (-not $currentUserReadable) {
+        throw "Signing-secret ACL does not grant the current user required access: $Path"
+    }
+}
+
+function Assert-SigningSecretPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $normalizedRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $normalizedPath = [IO.Path]::GetFullPath($Path)
+    $rootPrefix = $normalizedRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $normalizedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $normalizedPath -PathType Leaf)) {
+        throw "Signing secret is not a regular child of its identity root: $normalizedPath"
+    }
+    Assert-NoReparseAncestors -Path $normalizedPath -Label 'Signing secret'
+    $currentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $cursor = Get-Item -LiteralPath $normalizedPath -Force
+    while ($null -ne $cursor) {
+        $isRoot = $cursor.FullName.TrimEnd('\', '/').Equals(
+            $normalizedRoot,
+            [StringComparison]::OrdinalIgnoreCase)
+        Assert-PrivateSigningAclNode -Path $cursor.FullName `
+            -ExpectedOwnerSid $currentUserSid `
+            -RequireProtectedAcl:$isRoot
+        if ($isRoot) {
+            return
+        }
+        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
+        if ($null -eq $cursor -or
+            (-not $cursor.FullName.TrimEnd('\', '/').Equals(
+                $normalizedRoot,
+                [StringComparison]::OrdinalIgnoreCase) -and
+             -not $cursor.FullName.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase))) {
+            throw "Signing secret escaped its identity ACL root: $normalizedPath"
+        }
+    }
+    throw "Signing identity root was not reached for secret: $normalizedPath"
 }
 
 function Assert-CodeSigningCertificate {
@@ -397,13 +594,7 @@ foreach ($inputRoot in @($payloadRoot, $builtinProviderRoot, $mobileArtifactRoot
         throw "A required release input directory is missing or unsafe: $inputRoot"
     }
 }
-foreach ($androidVerifier in @($androidApkSigner, $androidAapt2)) {
-    if (-not (Test-Path -LiteralPath $androidVerifier -PathType Leaf) -or
-        ((Get-Item -LiteralPath $androidVerifier -Force).Attributes -band
-            [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'A pinned Android APK verification tool is missing or unsafe.'
-    }
-}
+$pinnedAndroidTools = @(Get-PinnedAndroidBuildTools)
 if (-not (Test-Path -LiteralPath $identityRoot -PathType Container)) {
     throw 'SigningIdentityDirectory does not exist.'
 }
@@ -431,6 +622,9 @@ if ($Version -match '(?i)(?:^|[.-])(preview|alpha)(?:[.-]|$)' -or
     ($Channel -eq 'stable' -and $Version.Contains('-'))) {
     throw 'Formal releases cannot use preview/alpha versions, and the stable channel requires a final semantic version.'
 }
+if ($Version -eq '1.1.0' -and $AndroidVersionCode -ne 10) {
+    throw 'Formal Android 1.1.0 must use the immutable versionCode 10.'
+}
 if (Test-Path -LiteralPath $outputRoot) {
     if (-not (Test-Path -LiteralPath $outputRoot -PathType Container) -or
         (Get-ChildItem -LiteralPath $outputRoot -Force | Select-Object -First 1)) {
@@ -457,7 +651,15 @@ foreach ($name in $requiredIdentityFiles) {
         throw "Signing identity is missing a safe $name file."
     }
 }
-Assert-SigningIdentityAcl -Path $identityRoot
+foreach ($sensitiveIdentityFile in @(
+        'muhun-mcsv-release-signing.pfx',
+        'pfx-password.dpapi',
+        'provider-signing-private-key.pem',
+        'provider-key-password.dpapi'
+    )) {
+    Assert-SigningSecretPath -Root $identityRoot `
+        -Path (Join-Path $identityRoot $sensitiveIdentityFile)
+}
 
 $protectedPassword = (Get-Content -LiteralPath (Join-Path $identityRoot 'pfx-password.dpapi') -Raw).Trim()
 $securePassword = ConvertTo-SecureString -String $protectedPassword
@@ -475,6 +677,9 @@ try {
         [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
     Assert-CodeSigningCertificate -Certificate $certificate -TrustMode $PublisherTrustMode
     $script:publisherCertificateSha256 = Get-CertificateSha256 -Certificate $certificate
+    if ($script:publisherCertificateSha256 -cne $expectedPublisherCertificateSha256) {
+        throw 'The formal signing identity does not match the independently published X MCSV publisher fingerprint.'
+    }
 
     $providerProtectedPassword = (Get-Content -LiteralPath `
         (Join-Path $identityRoot 'provider-key-password.dpapi') -Raw).Trim()
@@ -555,7 +760,8 @@ try {
                 'release-manifest.json.sig',
                 'update-manifest.json',
                 'update-manifest.json.sig',
-                'SHA256SUMS.txt')) {
+                'SHA256SUMS.txt',
+                '開始使用.txt')) {
                 throw "Payload contains a release-reserved file name: $relative"
             }
             if ($file.Length -gt (2GB - $totalPayloadBytes)) {
@@ -632,6 +838,7 @@ try {
             'Uninstall-MuhunMcsv.ps1',
             'Test-MuhunMcsvRelease.ps1'
         )
+        $uninstallerUnsignedBytes = $null
         foreach ($name in $releaseScripts) {
             $source = Join-Path $PSScriptRoot $name
             $destination = Join-Path $outputRoot $name
@@ -640,7 +847,22 @@ try {
             Set-ProductAuthenticodeSignature -Path $destination -Certificate $certificate
             Assert-SignedReleasePowerShellScript -Path $destination `
                 -ExpectedUnsignedBytes $unsignedScriptBytes
+            if ($name -ceq 'Uninstall-MuhunMcsv.ps1') {
+                $uninstallerUnsignedBytes = $unsignedScriptBytes
+            }
         }
+        if ($null -eq $uninstallerUnsignedBytes) {
+            throw 'The signed release uninstaller was not produced.'
+        }
+        $versionToolsRoot = Join-Path $outputRoot 'tools'
+        [IO.Directory]::CreateDirectory($versionToolsRoot) | Out-Null
+        $versionUninstallerPath = Join-Path $versionToolsRoot 'Uninstall-MuhunMcsv.ps1'
+        [IO.File]::Copy(
+            (Join-Path $outputRoot 'Uninstall-MuhunMcsv.ps1'),
+            $versionUninstallerPath,
+            $false)
+        Assert-SignedReleasePowerShellScript -Path $versionUninstallerPath `
+            -ExpectedUnsignedBytes $uninstallerUnsignedBytes
 
         [IO.File]::Copy(
             (Join-Path $identityRoot 'muhun-mcsv-release-signing.cer'),
@@ -813,22 +1035,49 @@ try {
 
         $mobileApkSource = Join-Path $mobileArtifactRoot 'Muhun-MCSV-Remote.apk'
         $mobileV4SignatureSource = Join-Path $mobileArtifactRoot 'Muhun-MCSV-Remote.apk.idsig'
-        $mobileMetadataSource = Join-Path $mobileArtifactRoot 'android-release.v2.json'
-        foreach ($mobileFile in @($mobileApkSource, $mobileV4SignatureSource, $mobileMetadataSource)) {
+        $mobileMetadataSource = Join-Path $mobileArtifactRoot 'android-release.v3.json'
+        $mobileToolchainReceiptSource = Join-Path $mobileArtifactRoot 'android-toolchain.v1.json'
+        foreach ($mobileFile in @(
+                $mobileApkSource,
+                $mobileV4SignatureSource,
+                $mobileMetadataSource,
+                $mobileToolchainReceiptSource
+            )) {
             if (-not (Test-Path -LiteralPath $mobileFile -PathType Leaf) -or
                 ((Get-Item -LiteralPath $mobileFile -Force).Attributes -band
                     [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw 'The formal Android APK or its verified metadata is missing or unsafe.'
             }
+            Assert-NoReparseAncestors -Path $mobileFile -Label 'Android release input'
         }
         if ((Get-Item -LiteralPath $mobileMetadataSource).Length -gt 64KB) {
             throw 'Android release metadata exceeds its size limit.'
         }
-        $mobileMetadata = Get-Content -LiteralPath $mobileMetadataSource -Raw | ConvertFrom-Json
-        if ($mobileMetadata.schemaVersion -ne 2 -or
+        try {
+            $mobileMetadata = Get-Content -LiteralPath $mobileMetadataSource -Raw |
+                ConvertFrom-Json -Depth 8
+        } catch {
+            throw "Android release metadata is not valid JSON: $($_.Exception.Message)"
+        }
+        Assert-ExactJsonProperties -Object $mobileMetadata `
+            -Expected @(
+                'schemaVersion', 'productId', 'packageId', 'version', 'versionCode',
+                'sizeBytes', 'sha256', 'signingCertificateSha256',
+                'v4SignatureFileName', 'v4SignatureSizeBytes', 'v4SignatureSha256',
+                'verifiedSignatureSchemes', 'toolchainReceiptFileName',
+                'toolchainReceiptSizeBytes', 'toolchainReceiptSha256'
+            ) `
+            -Label 'Android release metadata'
+        $mobileToolchainReceipt = Assert-AndroidToolchainReceipt `
+            -Path $mobileToolchainReceiptSource
+        if (-not ($mobileMetadata.schemaVersion -is [long]) -or
+            $mobileMetadata.schemaVersion -ne 3 -or
             $mobileMetadata.productId -ne 'muhun.mcsv.manager' -or
             $mobileMetadata.packageId -ne 'com.muhun.mcsv.remote' -or
             $mobileMetadata.version -ne $Version -or
+            -not ($mobileMetadata.versionCode -is [long]) -or
+            $mobileMetadata.versionCode -ne $AndroidVersionCode -or
+            $mobileMetadata.versionCode -lt 1 -or
             $mobileMetadata.sizeBytes -lt 1 -or $mobileMetadata.sizeBytes -gt 512MB -or
             $mobileMetadata.sha256 -notmatch '^[a-f0-9]{64}$' -or
             $mobileMetadata.signingCertificateSha256 -notmatch '^[a-f0-9]{64}$' -or
@@ -840,6 +1089,9 @@ try {
             $mobileMetadata.verifiedSignatureSchemes[0] -ne 'v2' -or
             $mobileMetadata.verifiedSignatureSchemes[1] -ne 'v3' -or
             $mobileMetadata.verifiedSignatureSchemes[2] -ne 'v4' -or
+            $mobileMetadata.toolchainReceiptFileName -cne 'android-toolchain.v1.json' -or
+            $mobileMetadata.toolchainReceiptSizeBytes -ne $mobileToolchainReceipt.SizeBytes -or
+            $mobileMetadata.toolchainReceiptSha256 -cne $mobileToolchainReceipt.Sha256 -or
             (Get-Item -LiteralPath $mobileApkSource).Length -ne $mobileMetadata.sizeBytes -or
             (Get-Sha256Hex -Path $mobileApkSource) -ne $mobileMetadata.sha256 -or
             (Get-Item -LiteralPath $mobileV4SignatureSource).Length -ne
@@ -876,8 +1128,9 @@ try {
             -Arguments @('dump', 'badging', $mobileApkSource) `
             -Label 'Android APK identity verification') -join "`n"
         if ($apkBadging -notmatch "package: name='com\.muhun\.mcsv\.remote'" -or
+            $apkBadging -notmatch "versionCode='$AndroidVersionCode'" -or
             $apkBadging -notmatch "versionName='$([regex]::Escape($Version))'") {
-            throw 'Android APK package or version identity is not the requested formal release.'
+            throw 'Android APK package, versionName or versionCode is not the requested formal release.'
         }
         $mobileReleaseRoot = Join-Path $outputRoot 'mobile'
         [IO.Directory]::CreateDirectory($mobileReleaseRoot) | Out-Null
@@ -886,7 +1139,17 @@ try {
             $mobileV4SignatureSource,
             (Join-Path $mobileReleaseRoot 'Muhun-MCSV-Remote.apk.idsig'),
             $false)
-        [IO.File]::Copy($mobileMetadataSource, (Join-Path $mobileReleaseRoot 'android-release.v2.json'), $false)
+        [IO.File]::Copy(
+            $mobileToolchainReceiptSource,
+            (Join-Path $mobileReleaseRoot 'android-toolchain.v1.json'),
+            $false)
+        [IO.File]::Copy(
+            $mobileMetadataSource,
+            (Join-Path $mobileReleaseRoot 'android-release.v3.json'),
+            $false)
+        $mobileMetadataRelease = Get-Item -LiteralPath `
+            (Join-Path $mobileReleaseRoot 'android-release.v3.json') -Force
+        $mobileMetadataReleaseSha256 = Get-Sha256Hex -Path $mobileMetadataRelease.FullName
 
         $packageFileName = "Muhun-MCSV-$Version-win-x64.zip"
         $packagePath = Join-Path $outputRoot $packageFileName
@@ -966,7 +1229,59 @@ try {
         Write-AtomicBytes -Path (Join-Path $outputRoot 'update-manifest.json') -Bytes $updateManifestBytes
         Write-AtomicBytes -Path (Join-Path $outputRoot 'update-manifest.json.sig') -Bytes $updateSignature
 
-        $authenticodeFiles = @($requiredExecutables + $releaseScripts)
+        # This is an installable release directory, not a portable single-EXE bundle. Keep the
+        # first-run instructions at release-root level (outside the updater payload), then bind
+        # them into the signed release manifest and SHA256SUMS below like every other release file.
+        $gettingStartedLines = @(
+            "X MCSV $Version 正式發行包 — 開始使用",
+            '',
+            '重要：這不是可攜式（portable）單一 EXE。請勿直接從發行資料夾執行 GUI EXE；必須先完成安裝。',
+            '',
+            '安裝需求：',
+            '1. Windows x64。',
+            '2. PowerShell 7.4 或更新版本（命令為 pwsh，不是 Windows PowerShell 5.1）。',
+            '3. 以系統管理員身分開啟 PowerShell 7。',
+            '',
+            '安裝步驟：',
+            '1. 將完整發行包解壓縮到一般本機資料夾，並在該資料夾開啟 PowerShell 7。',
+            '2. 先將下方顯示的 publisher.cer SHA-256 與 X MCSV GitHub Release 的獨立正式公告核對；只有完全一致才能輸入 YES。',
+            '3. 再依序匯入本機電腦 Root 與 TrustedPublisher、啟用 Process AllSigned、驗證腳本並安裝；請勿改用 Bypass 執行政策：',
+            '',
+            '$release = (Get-Location).Path',
+            '$expectedPublisherCertificateSha256 = ''1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71''',
+            '$publisherCertificatePath = Join-Path $release ''publisher.cer''',
+            '$publisherCertificateSha256 = (Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256).Hash.ToLowerInvariant()',
+            'Write-Host "publisher.cer SHA-256: $publisherCertificateSha256"',
+            'Write-Host ''請與 X MCSV GitHub Release 的獨立正式公告核對上方 SHA-256。''',
+            'if ($publisherCertificateSha256 -cne $expectedPublisherCertificateSha256) { throw ''publisher.cer SHA-256 與 X MCSV 固定正式發布者指紋不符。'' }',
+            '$publisherConfirmation = Read-Host ''完成獨立公告核對且完全一致後輸入 YES''',
+            'if ($publisherConfirmation -cne ''YES'') { throw ''尚未確認獨立正式公告中的發布者指紋，停止安裝。'' }',
+            '& "$env:SystemRoot\System32\certutil.exe" -addstore -f Root $publisherCertificatePath',
+            'if ($LASTEXITCODE -ne 0) { throw ''publisher.cer 匯入 LocalMachine Root 失敗。'' }',
+            '& "$env:SystemRoot\System32\certutil.exe" -addstore -f TrustedPublisher $publisherCertificatePath',
+            'if ($LASTEXITCODE -ne 0) { throw ''publisher.cer 匯入 LocalMachine TrustedPublisher 失敗。'' }',
+            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
+            'foreach ($scriptName in @(''Test-MuhunMcsvRelease.ps1'', ''Install-MuhunMcsv.ps1'', ''Uninstall-MuhunMcsv.ps1'')) {',
+            '    $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $release $scriptName)',
+            '    $signatureSha256 = if ($null -eq $signature.SignerCertificate) { '''' } else { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData)).ToLowerInvariant() }',
+            '    if ($signature.Status -ne ''Valid'' -or $signatureSha256 -cne $expectedPublisherCertificateSha256) { throw "$scriptName 的 Authenticode 或發布者指紋無效。" }',
+            '}',
+            '& (Join-Path $release ''Test-MuhunMcsvRelease.ps1'') -ReleaseDirectory $release',
+            '& (Join-Path $release ''Install-MuhunMcsv.ps1'') -SourceDirectory $release',
+            '',
+            '驗證與安裝都成功後，請從 Windows 開始功能表的「X MCSV」捷徑啟動 GUI。',
+            '日後不需要再從本發行資料夾直接執行 EXE。'
+        )
+        # Migration note only; this legacy product name is intentionally not emitted into the
+        # guide. Existing releases called the Start Menu entry Muhun MCSV Manager.
+        Write-AtomicUtf8Text -Path (Join-Path $outputRoot '開始使用.txt') `
+            -Value (($gettingStartedLines -join [Environment]::NewLine) + [Environment]::NewLine)
+
+        $authenticodeFiles = @(
+            $requiredExecutables +
+            $releaseScripts +
+            @('tools/Uninstall-MuhunMcsv.ps1')
+        )
         $releaseFileObjects = @()
         $releaseFiles = @(Get-ChildItem -LiteralPath $outputRoot -Recurse -File -Force |
             Where-Object { $_.Name -notin @('release-manifest.json', 'release-manifest.json.sig', 'SHA256SUMS.txt') } |
@@ -1015,9 +1330,12 @@ try {
             }
             androidApk = [ordered]@{
                 path = 'mobile/Muhun-MCSV-Remote.apk'
-                metadataPath = 'mobile/android-release.v2.json'
+                metadataPath = 'mobile/android-release.v3.json'
+                metadataSizeBytes = [long]$mobileMetadataRelease.Length
+                metadataSha256 = $mobileMetadataReleaseSha256
                 packageId = 'com.muhun.mcsv.remote'
                 version = $Version
+                versionCode = [int]$AndroidVersionCode
                 sizeBytes = [long]$mobileMetadata.sizeBytes
                 sha256 = [string]$mobileMetadata.sha256
                 signingCertificateSha256 = [string]$mobileMetadata.signingCertificateSha256
@@ -1025,6 +1343,9 @@ try {
                 v4SignatureSizeBytes = [long]$mobileMetadata.v4SignatureSizeBytes
                 v4SignatureSha256 = [string]$mobileMetadata.v4SignatureSha256
                 verifiedSignatureSchemes = @('v2', 'v3', 'v4')
+                toolchainReceiptPath = 'mobile/android-toolchain.v1.json'
+                toolchainReceiptSizeBytes = [long]$mobileToolchainReceipt.SizeBytes
+                toolchainReceiptSha256 = [string]$mobileToolchainReceipt.Sha256
             }
             package = [ordered]@{
                 path = $packageFileName

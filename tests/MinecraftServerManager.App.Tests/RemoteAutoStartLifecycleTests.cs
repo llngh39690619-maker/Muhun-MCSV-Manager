@@ -254,16 +254,8 @@ public sealed class RemoteAutoStartLifecycleTests
         throw new InvalidDataException($"Unterminated method: {signature}");
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private sealed class TestDirectory : IDisposable
     {

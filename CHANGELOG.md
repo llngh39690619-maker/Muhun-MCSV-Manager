@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 — X MCSV 客戶端與伺服器整合版
+
+- 產品顯示名稱更新為 X MCSV；既有 Windows Service、ACL、IPC、檔案路徑、更新身分與相容 EXE 名稱維持不變，升級不搬動或覆寫玩家與 Server 資料。
+- 新增隔離的 Minecraft Java 客戶端工作區，只列出 Mojang 正式 release；支援 Vanilla、Fabric、Forge、NeoForge、Quilt 的官方穩定 Loader。OptiFine／LabyMod 僅交給官方外部流程，不爬取、鏡像或靜默下載。
+- 新增基岩版官方入口交接；只嘗試固定的 `minecraft://`，失敗時交給固定的 Microsoft Minecraft Launcher Store 頁面。不下載基岩版、不建立本機受管理實例，也不套用 Java 記憶體或 Loader 設定。
+- 新增 Microsoft OAuth 互動登入、Minecraft Java 擁有權／Profile 驗證、多帳號選擇與 CurrentUser DPAPI token vault；不要求或保存 Microsoft 密碼。
+- 依遊戲版本自動準備 Eclipse Adoptium Java，提供全域預設、自動估算及手動記憶體、解析度、全螢幕、JVM 參數與環境變數；高效能 GPU 偏好只寫入目前使用者的 Windows 圖形設定。
+- 客戶端程序以 PID、精確啟動時間及 Java 完整路徑三重身分恢復監看；GUI 關閉不終止遊戲，重開不重複啟動同一實例，執行中禁止改寫會破壞程序身分的設定。
+- 新增模組、資源包、光影、地圖與截圖管理；所有匯入、停用、回收、還原及永久刪除都受實例根目錄、重解析點、檔案數與大小限制保護，掃描與縮圖在背景執行並可取消。
+- Modrinth 客戶端模組包採官方 API、官方 CDN、SHA-512／SHA-1 與安全 `.mrpack` 解壓；FTB 顯示官方目錄並只交給官方 `ftb://` 安裝協定，不爬取或重新託管第三方檔案。
+- 目錄卡片、預覽圖、來源、版本、Loader、分類、排序、搜尋與結果數採響應式版面；來源或條件切換會取消舊請求並立即載入新結果。
+- 快速啟動、啟動後縮至系統匣與即時遊戲日誌已整合；日誌以有界 queue、75 ms 批次及最多 2,000 行呈現，避免大量輸出逐行塞入 UI Dispatcher。
+- 新客戶端畫面、狀態、驗證與設定完整納入繁體中文／英文即時切換；正式深色 surface、卡片與縮圖管線避免首幀、切換、縮放或資料忙碌時露出白底。
+- 正式發行管線納入獨立 GameClient 測試專案，使正式測試專案總數為十一個；CmlLib／XboxAuthNet／WebView2／SQLitePCLRaw 等第三方聲明及隨包授權文件一併納入。1.1.0 使用新的不可變產品與 Provider 版本身分，正式發行目錄仍須透過簽署安裝器安裝，不是 portable EXE。
+
 ## 1.0.8 — Server 匯入自動恢復修正版
 
 - 修正核心建置完成後，Windows Service 在 Server／Java Runtime 原子搬移期間遇到暫時性存取拒絕，背景工作會永久停在「正在安全加入管理器」的問題。

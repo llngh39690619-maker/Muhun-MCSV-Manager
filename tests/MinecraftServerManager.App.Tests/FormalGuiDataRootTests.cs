@@ -34,12 +34,7 @@ public sealed class FormalGuiDataRootTests
     [Fact]
     public void InteractiveStartup_UsesPerUserRootForDataAndCrossVersionSingleInstance()
     {
-        var repositoryRoot = FindRepositoryRoot();
-        var source = File.ReadAllText(Path.Combine(
-            repositoryRoot,
-            "src",
-            "MinecraftServerManager.App",
-            "App.xaml.cs"));
+        var source = File.ReadAllText(TestRepositoryPaths.AppSource("App.xaml.cs"));
 
         Assert.Contains("ApplicationPaths.CreateForCurrentUser()", source, StringComparison.Ordinal);
         Assert.Contains("diagnosticMode ? AppContext.BaseDirectory : paths.Root", source, StringComparison.Ordinal);
@@ -48,12 +43,7 @@ public sealed class FormalGuiDataRootTests
     [Fact]
     public void ActivationAcknowledgement_IsSentOnlyAfterViewModelInitialization()
     {
-        var repositoryRoot = FindRepositoryRoot();
-        var source = File.ReadAllText(Path.Combine(
-            repositoryRoot,
-            "src",
-            "MinecraftServerManager.App",
-            "App.xaml.cs"));
+        var source = File.ReadAllText(TestRepositoryPaths.AppSource("App.xaml.cs"));
 
         var initialize = source.IndexOf(
             "await viewModel.InitializeAsync",
@@ -65,21 +55,6 @@ public sealed class FormalGuiDataRootTests
         Assert.True(initialize >= 0);
         Assert.True(acknowledge > initialize);
         Assert.Contains("viewModel.ProductServiceNegotiatedApiVersion", source, StringComparison.Ordinal);
-    }
-
-    private static string FindRepositoryRoot()
-    {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
-             directory is not null;
-             directory = directory.Parent)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "MinecraftServerManager.sln")))
-            {
-                return directory.FullName;
-            }
-        }
-
-        throw new DirectoryNotFoundException("Could not locate repository root.");
     }
 
     private sealed class TemporaryDirectory : IDisposable

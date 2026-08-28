@@ -25,6 +25,11 @@ param(
 
     [string]$MobileArtifactDirectory,
 
+    [ValidateRange(1, 999999999)]
+    [int]$AndroidVersionCode = 10,
+
+    [string]$ToolingRoot,
+
     [switch]$KeepStaging
 )
 
@@ -38,29 +43,246 @@ if ($Version -match '(?i)(?:^|[.-])(preview|alpha)(?:[.-]|$)' -or
     ($Channel -eq 'stable' -and $Version.Contains('-'))) {
     throw 'Formal releases cannot use preview/alpha versions, and the stable channel requires a final semantic version.'
 }
+if ($Version -eq '1.1.0' -and $AndroidVersionCode -ne 10) {
+    throw 'Formal Android 1.1.0 must use the immutable versionCode 10.'
+}
 
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\', '/')
 $solution = Join-Path $projectRoot 'MinecraftServerManager.sln'
-$bundledDotnet = Join-Path (Split-Path -Parent $projectRoot) 'tooling\dotnet10\dotnet.exe'
-$dotnet = if (Test-Path -LiteralPath $bundledDotnet -PathType Leaf) {
-    $bundledDotnet
+$resolvedToolingRoot = if ([string]::IsNullOrWhiteSpace($ToolingRoot)) {
+    [IO.Path]::GetFullPath(
+        (Join-Path (Split-Path -Parent $projectRoot) 'tooling')).TrimEnd('\', '/')
 } else {
-    (Get-Command dotnet -ErrorAction Stop).Source
+    if (-not [IO.Path]::IsPathFullyQualified($ToolingRoot)) {
+        throw 'ToolingRoot must be an explicit fully-qualified physical directory path.'
+    }
+    [IO.Path]::GetFullPath($ToolingRoot).TrimEnd('\', '/')
 }
+$dotnet = Join-Path $resolvedToolingRoot 'dotnet10\dotnet.exe'
 $stagingParent = Join-Path $projectRoot 'artifacts\formal-staging'
 $stagingRoot = Join-Path $stagingParent "$Version-$([guid]::NewGuid().ToString('N'))"
 $stagingMarker = Join-Path $stagingRoot '.muhun-formal-staging'
 $payloadRoot = Join-Path $stagingRoot 'payload'
 $builtinProviderRoot = Join-Path $stagingRoot 'builtin-provider-win-x64'
 $testResultsRoot = Join-Path $stagingRoot 'test-results'
-$androidBuildToolsRoot = Join-Path (Split-Path -Parent $projectRoot) `
-    'tooling\android-sdk\build-tools\36.0.0'
+$androidBuildToolsRoot = Join-Path $resolvedToolingRoot 'android-sdk\build-tools\36.0.0'
 $androidApkSigner = Join-Path $androidBuildToolsRoot 'apksigner.bat'
 $androidAapt2 = Join-Path $androidBuildToolsRoot 'aapt2.exe'
+$androidBuildToolsVersion = '36.0.0'
+$pinnedAapt2Sha256 = 'babf3122e515ddb954c5ac4669e085ce990536c035e3072de30127bddd6e3608'
+$pinnedApkSignerBatSha256 = '549dd0028b0314a5112d6b56e2de7800e713f297da4508b513a735546e52ce38'
+$pinnedApkSignerJarSha256 = '3716d9311e55d2b0918a2fd9d54ba9e406c5f6abeea700b287f11259bc163dec'
 $mobileArtifactRoot = if ([string]::IsNullOrWhiteSpace($MobileArtifactDirectory)) {
     Join-Path $projectRoot 'artifacts\android-release-staging\mobile'
 } else {
     [IO.Path]::GetFullPath($MobileArtifactDirectory)
+}
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-NoReparseAncestors {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $cursor = Get-Item -LiteralPath ([IO.Path]::GetFullPath($Path)) -Force -ErrorAction Stop
+    while ($null -ne $cursor) {
+        if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label traverses a reparse point: $($cursor.FullName)"
+        }
+        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
+    }
+}
+
+function Assert-PhysicalToolingRoot {
+    $volumeRoot = [IO.Path]::GetPathRoot($resolvedToolingRoot).TrimEnd('\', '/')
+    if ($resolvedToolingRoot.StartsWith('\\') -or
+        [string]::Equals(
+            $resolvedToolingRoot,
+            $volumeRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'ToolingRoot must be a dedicated local physical directory, not UNC or a volume root.'
+    }
+    if (-not (Test-Path -LiteralPath $resolvedToolingRoot -PathType Container)) {
+        throw "ToolingRoot does not exist as a physical directory: $resolvedToolingRoot"
+    }
+    Assert-NoReparseAncestors -Path $resolvedToolingRoot -Label 'ToolingRoot'
+    $toolingItem = Get-Item -LiteralPath $resolvedToolingRoot -Force -ErrorAction Stop
+    if ($toolingItem -isnot [IO.DirectoryInfo] -or
+        ($toolingItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'ToolingRoot must be a physical non-reparse directory.'
+    }
+
+    $expectedDotnet = [IO.Path]::GetFullPath(
+        (Join-Path $resolvedToolingRoot 'dotnet10\dotnet.exe'))
+    if ([IO.Path]::GetFullPath($dotnet) -cne $expectedDotnet -or
+        -not (Test-Path -LiteralPath $dotnet -PathType Leaf)) {
+        throw 'Pinned formal-release dotnet10 host is missing or outside ToolingRoot.'
+    }
+    Assert-NoReparseAncestors -Path $dotnet -Label 'Formal-release dotnet10 host'
+    $dotnetItem = Get-Item -LiteralPath $dotnet -Force -ErrorAction Stop
+    if ($dotnetItem -isnot [IO.FileInfo] -or $dotnetItem.Length -lt 1 -or
+        $dotnetItem.Length -gt 16MB -or
+        ($dotnetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Pinned formal-release dotnet10 host is not a safe regular file.'
+    }
+
+    $expectedAndroidRoot = [IO.Path]::GetFullPath(
+        (Join-Path $resolvedToolingRoot 'android-sdk\build-tools\36.0.0'))
+    if ([IO.Path]::GetFullPath($androidBuildToolsRoot) -cne $expectedAndroidRoot) {
+        throw 'Android build-tools root escaped the explicit ToolingRoot.'
+    }
+}
+
+function Assert-ExactJsonProperties {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $actual = @($Object.psobject.Properties.Name | Sort-Object)
+    $expectedSorted = @($Expected | Sort-Object)
+    if ($actual.Count -ne $expectedSorted.Count -or
+        @(Compare-Object $expectedSorted $actual).Count -ne 0) {
+        throw "$Label JSON property set is invalid."
+    }
+}
+
+function Get-PinnedAndroidBuildTools {
+    $expected = @(
+        [pscustomobject]@{
+            relativePath = 'aapt2.exe'
+            path = $androidAapt2
+            sha256 = $pinnedAapt2Sha256
+            maximumBytes = 16MB
+        },
+        [pscustomobject]@{
+            relativePath = 'apksigner.bat'
+            path = $androidApkSigner
+            sha256 = $pinnedApkSignerBatSha256
+            maximumBytes = 64KB
+        },
+        [pscustomobject]@{
+            relativePath = 'lib/apksigner.jar'
+            path = Join-Path $androidBuildToolsRoot 'lib\apksigner.jar'
+            sha256 = $pinnedApkSignerJarSha256
+            maximumBytes = 8MB
+        }
+    )
+    if ((Split-Path -Leaf $androidBuildToolsRoot) -cne $androidBuildToolsVersion) {
+        throw 'Android build-tools directory does not match the pinned version.'
+    }
+    foreach ($tool in $expected) {
+        $tool.path = [IO.Path]::GetFullPath($tool.path)
+        $expectedPath = [IO.Path]::GetFullPath(
+            (Join-Path $androidBuildToolsRoot $tool.relativePath.Replace('/', '\')))
+        if ($tool.path -cne $expectedPath -or
+            -not (Test-Path -LiteralPath $tool.path -PathType Leaf)) {
+            throw "Pinned Android tool is missing or outside build-tools ${androidBuildToolsVersion}: $($tool.relativePath)"
+        }
+        Assert-NoReparseAncestors -Path $tool.path -Label "Android tool $($tool.relativePath)"
+        $file = Get-Item -LiteralPath $tool.path -Force
+        if ($file.Length -lt 1 -or $file.Length -gt $tool.maximumBytes -or
+            (Get-Sha256Hex -Path $tool.path) -cne $tool.sha256) {
+            throw "Pinned Android tool failed its SHA-256 or size check: $($tool.relativePath)"
+        }
+    }
+    return @($expected | ForEach-Object {
+        [pscustomobject]@{
+            relativePath = $_.relativePath
+            sizeBytes = (Get-Item -LiteralPath $_.path -Force).Length
+            sha256 = $_.sha256
+        }
+    })
+}
+
+function Assert-AndroidStagingContract {
+    $apkPath = Join-Path $mobileArtifactRoot 'Muhun-MCSV-Remote.apk'
+    $idsigPath = Join-Path $mobileArtifactRoot 'Muhun-MCSV-Remote.apk.idsig'
+    $metadataPath = Join-Path $mobileArtifactRoot 'android-release.v3.json'
+    $receiptPath = Join-Path $mobileArtifactRoot 'android-toolchain.v1.json'
+    foreach ($path in @($apkPath, $idsigPath, $metadataPath, $receiptPath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Android staging artifact is missing: $path"
+        }
+        Assert-NoReparseAncestors -Path $path -Label 'Android staging artifact'
+    }
+
+    $pinnedTools = @(Get-PinnedAndroidBuildTools)
+    if ((Get-Item -LiteralPath $receiptPath -Force).Length -gt 32KB -or
+        (Get-Item -LiteralPath $metadataPath -Force).Length -gt 64KB) {
+        throw 'Android metadata or toolchain receipt exceeds its size limit.'
+    }
+    try {
+        $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -Depth 8
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json -Depth 8
+    } catch {
+        throw "Android metadata or toolchain receipt is invalid JSON: $($_.Exception.Message)"
+    }
+    Assert-ExactJsonProperties -Object $receipt `
+        -Expected @('schemaVersion', 'buildToolsVersion', 'tools') `
+        -Label 'Android toolchain receipt'
+    if (-not ($receipt.schemaVersion -is [long]) -or
+        $receipt.schemaVersion -ne 1 -or
+        $receipt.buildToolsVersion -cne $androidBuildToolsVersion -or
+        @($receipt.tools).Count -ne $pinnedTools.Count) {
+        throw 'Android toolchain receipt schema or tool count is invalid.'
+    }
+    for ($index = 0; $index -lt $pinnedTools.Count; $index++) {
+        $record = @($receipt.tools)[$index]
+        $tool = $pinnedTools[$index]
+        Assert-ExactJsonProperties -Object $record `
+            -Expected @('relativePath', 'sizeBytes', 'sha256') `
+            -Label "Android toolchain receipt record $index"
+        if ($record.relativePath -cne $tool.relativePath -or
+            -not ($record.sizeBytes -is [long]) -or
+            $record.sizeBytes -ne $tool.sizeBytes -or
+            $record.sha256 -cne $tool.sha256) {
+            throw "Android toolchain receipt does not bind the pinned tool: $($tool.relativePath)"
+        }
+    }
+
+    Assert-ExactJsonProperties -Object $metadata `
+        -Expected @(
+            'schemaVersion', 'productId', 'packageId', 'version', 'versionCode',
+            'sizeBytes', 'sha256', 'signingCertificateSha256',
+            'v4SignatureFileName', 'v4SignatureSizeBytes', 'v4SignatureSha256',
+            'verifiedSignatureSchemes', 'toolchainReceiptFileName',
+            'toolchainReceiptSizeBytes', 'toolchainReceiptSha256'
+        ) `
+        -Label 'Android release metadata'
+    $receiptFile = Get-Item -LiteralPath $receiptPath -Force
+    if (-not ($metadata.schemaVersion -is [long]) -or
+        $metadata.schemaVersion -ne 3 -or
+        $metadata.productId -cne 'muhun.mcsv.manager' -or
+        $metadata.packageId -cne 'com.muhun.mcsv.remote' -or
+        $metadata.version -cne $Version -or
+        -not ($metadata.versionCode -is [long]) -or
+        $metadata.versionCode -ne $AndroidVersionCode -or
+        $metadata.versionCode -lt 1 -or
+        $metadata.sizeBytes -lt 1 -or $metadata.sizeBytes -gt 512MB -or
+        $metadata.sha256 -notmatch '^[a-f0-9]{64}$' -or
+        $metadata.signingCertificateSha256 -notmatch '^[a-f0-9]{64}$' -or
+        $metadata.v4SignatureSizeBytes -lt 1 -or
+        $metadata.v4SignatureSizeBytes -gt 16MB -or
+        $metadata.v4SignatureSha256 -notmatch '^[a-f0-9]{64}$' -or
+        @($metadata.verifiedSignatureSchemes).Count -ne 3 -or
+        $metadata.verifiedSignatureSchemes[0] -cne 'v2' -or
+        $metadata.verifiedSignatureSchemes[1] -cne 'v3' -or
+        $metadata.verifiedSignatureSchemes[2] -cne 'v4' -or
+        $metadata.toolchainReceiptFileName -cne 'android-toolchain.v1.json' -or
+        $metadata.toolchainReceiptSizeBytes -ne $receiptFile.Length -or
+        $metadata.toolchainReceiptSha256 -cne (Get-Sha256Hex -Path $receiptPath) -or
+        $metadata.sizeBytes -ne (Get-Item -LiteralPath $apkPath -Force).Length -or
+        $metadata.sha256 -cne (Get-Sha256Hex -Path $apkPath) -or
+        $metadata.v4SignatureFileName -cne 'Muhun-MCSV-Remote.apk.idsig' -or
+        $metadata.v4SignatureSizeBytes -ne (Get-Item -LiteralPath $idsigPath -Force).Length -or
+        $metadata.v4SignatureSha256 -cne (Get-Sha256Hex -Path $idsigPath)) {
+        throw 'Android staging metadata is not hash-bound to the requested release artifacts.'
+    }
 }
 
 function Invoke-Dotnet {
@@ -362,6 +584,7 @@ function Assert-FormalSourceIdentity {
     }
 }
 
+Assert-PhysicalToolingRoot
 Assert-FormalSourceIdentity
 
 if (Test-Path -LiteralPath $OutputDirectory) {
@@ -370,13 +593,7 @@ if (Test-Path -LiteralPath $OutputDirectory) {
         throw 'OutputDirectory must be new or empty.'
     }
 }
-foreach ($androidVerifier in @($androidApkSigner, $androidAapt2)) {
-    if (-not (Test-Path -LiteralPath $androidVerifier -PathType Leaf) -or
-        ((Get-Item -LiteralPath $androidVerifier -Force).Attributes -band
-            [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Pinned Android release verifier is missing or unsafe: $androidVerifier"
-    }
-}
+Assert-AndroidStagingContract
 
 New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $testResultsRoot -Force | Out-Null
@@ -406,6 +623,7 @@ try {
         'MinecraftServerManager.Contracts.Tests.csproj',
         'MinecraftServerManager.Core.Tests.csproj',
         'MinecraftServerManager.Data.Tests.csproj',
+        'MinecraftServerManager.GameClient.Tests.csproj',
         'MinecraftServerManager.Notifications.Tests.csproj',
         'MinecraftServerManager.ProviderHost.Tests.csproj',
         'MinecraftServerManager.Remote.Tests.csproj',
@@ -415,7 +633,7 @@ try {
     $actualTestProjects = @($testProjects | ForEach-Object Name | Sort-Object)
     if ($actualTestProjects.Count -ne $expectedTestProjects.Count -or
         @(Compare-Object $expectedTestProjects $actualTestProjects).Count -ne 0) {
-        throw "Formal release requires the exact ten test projects: $($actualTestProjects -join ', ')"
+        throw "Formal release requires the exact eleven test projects: $($actualTestProjects -join ', ')"
     }
     foreach ($testProject in $testProjects) {
         Invoke-Dotnet @('restore', $testProject.FullName, '--locked-mode', '--nologo')
@@ -474,6 +692,20 @@ try {
         Remove-PublishDebugArtifacts -Destination $publish.Destination
     }
 
+    foreach ($releaseDocument in @(
+            [pscustomobject]@{ Source = 'THIRD-PARTY-NOTICES.txt'; Destination = 'THIRD-PARTY-NOTICES.txt' },
+            [pscustomobject]@{ Source = 'LICENSE'; Destination = 'LICENSE.txt' }
+        )) {
+        $sourcePath = Join-Path $projectRoot $releaseDocument.Source
+        if (-not [IO.File]::Exists($sourcePath)) {
+            throw "Required release document is missing: $($releaseDocument.Source)"
+        }
+        [IO.File]::Copy(
+            $sourcePath,
+            (Join-Path $payloadRoot $releaseDocument.Destination),
+            $false)
+    }
+
     $providerProject = Join-Path $projectRoot `
         'src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj'
     Invoke-Dotnet @('restore', $providerProject, '--runtime', 'win-x64', '--locked-mode', '--nologo')
@@ -488,6 +720,7 @@ try {
         -MobileArtifactDirectory $mobileArtifactRoot `
         -AndroidApkSignerPath $androidApkSigner `
         -AndroidAapt2Path $androidAapt2 `
+        -AndroidVersionCode $AndroidVersionCode `
         -OutputDirectory $OutputDirectory `
         -Version $Version `
         -PackageBaseUri $PackageBaseUri `

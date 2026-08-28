@@ -259,14 +259,6 @@ public sealed class CurseForgeUpdateCredentialTests
     {
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-    {
-        var root = Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            ".."));
-        return Path.Combine(root, "src", "MinecraftServerManager.App", relativePath);
-    }
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

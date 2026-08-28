@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MCSV 遠端控制</string>
-    <string name="setup_title">連接 Muhun MCSV</string>
+    <string name="app_name">X MCSV 遠端控制</string>
+    <string name="setup_title">連接 X MCSV</string>
     <string name="setup_description">輸入電腦端顯示的固定 HTTPS 網址。App 只允許這個網域，登入狀態由安全 Cookie 保存。</string>
     <string name="setup_hint">https://your-device.example.ts.net</string>
     <string name="server_address">固定 HTTPS 網址</string>
@@ -11,14 +11,14 @@
     <string name="security_note">安全模式只允許這個 HTTPS 網域；不會開啟外部網站，也不會把 Android 功能暴露給網頁。登入 Cookie 會留在這個 App 的私有空間，供已配對裝置自動登入。</string>
     <string name="change_server">變更伺服器網址</string>
     <string name="change_server_title">清除目前連線？</string>
-    <string name="change_server_message">這會清除 App 內保存的 MCSV 網址與登入 Cookie，再回到連線設定。</string>
+    <string name="change_server_message">這會清除 App 內保存的 X MCSV 網址與登入 Cookie，再回到連線設定。</string>
     <string name="cancel">取消</string>
     <string name="clear">清除並變更</string>
     <string name="connection_title">連線已停止</string>
-    <string name="connection_failed">無法載入遠端面板。請確認 MCSV、Tailscale 與網路皆已連線。</string>
+    <string name="connection_failed">無法載入遠端面板。請確認 X MCSV、Tailscale 與網路皆已連線。</string>
     <string name="tls_failed">HTTPS 憑證驗證失敗，已停止連線。</string>
     <string name="retry">重新連線</string>
-    <string name="blocked_navigation">已阻擋離開核准 MCSV 網域的連結。</string>
+    <string name="blocked_navigation">已阻擋離開核准 X MCSV 網域的連結。</string>
     <string name="security_blocked">Android 安全瀏覽已阻擋這個頁面。</string>
     <string name="download_blocked">安全模式不允許從遠端面板下載檔案。</string>
     <string name="webview_restarted">網頁元件已重新初始化，請再次連接。</string>

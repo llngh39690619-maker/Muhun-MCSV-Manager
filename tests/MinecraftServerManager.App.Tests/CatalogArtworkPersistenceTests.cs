@@ -79,7 +79,7 @@ public sealed class CatalogArtworkPersistenceTests
         };
 
         Assert.True(MainWindowViewModel.ApplyRemoteAutoStartMigration(settings));
-        Assert.Equal(12, ManagerSettings.CurrentSchemaVersion);
+        Assert.Equal(13, ManagerSettings.CurrentSchemaVersion);
         Assert.Equal(ManagerSettings.CurrentSchemaVersion, settings.SchemaVersion);
         Assert.True(settings.RemoteControl.Enabled);
     }

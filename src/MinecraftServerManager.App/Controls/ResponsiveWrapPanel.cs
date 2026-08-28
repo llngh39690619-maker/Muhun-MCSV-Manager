@@ -44,6 +44,24 @@ public class ResponsiveWrapPanel : Panel
             FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
         IsNonNegativeFiniteDouble);
 
+    public static readonly DependencyProperty ItemHeightProperty = DependencyProperty.Register(
+        nameof(ItemHeight),
+        typeof(double),
+        typeof(ResponsiveWrapPanel),
+        new FrameworkPropertyMetadata(
+            double.NaN,
+            FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
+        IsAutoOrPositiveFiniteDouble);
+
+    public static readonly DependencyProperty MaximumColumnsProperty = DependencyProperty.Register(
+        nameof(MaximumColumns),
+        typeof(int),
+        typeof(ResponsiveWrapPanel),
+        new FrameworkPropertyMetadata(
+            int.MaxValue,
+            FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsArrange),
+        static value => value is int columns && columns > 0);
+
     public double MinItemWidth
     {
         get => (double)GetValue(MinItemWidthProperty);
@@ -60,6 +78,18 @@ public class ResponsiveWrapPanel : Panel
     {
         get => (double)GetValue(VerticalSpacingProperty);
         set => SetValue(VerticalSpacingProperty, value);
+    }
+
+    public double ItemHeight
+    {
+        get => (double)GetValue(ItemHeightProperty);
+        set => SetValue(ItemHeightProperty, value);
+    }
+
+    public int MaximumColumns
+    {
+        get => (int)GetValue(MaximumColumnsProperty);
+        set => SetValue(MaximumColumnsProperty, value);
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -93,8 +123,12 @@ public class ResponsiveWrapPanel : Panel
             for (var index = 0; index < rowCount; index++)
             {
                 var child = children[rowStart + index];
-                child.Measure(new Size(itemWidth, double.PositiveInfinity));
-                rowHeight = Math.Max(rowHeight, child.DesiredSize.Height);
+                child.Measure(new Size(
+                    itemWidth,
+                    double.IsNaN(ItemHeight) ? double.PositiveInfinity : ItemHeight));
+                rowHeight = double.IsNaN(ItemHeight)
+                    ? Math.Max(rowHeight, child.DesiredSize.Height)
+                    : ItemHeight;
             }
 
             if (rowStart > 0)
@@ -128,7 +162,9 @@ public class ResponsiveWrapPanel : Panel
 
             for (var index = 0; index < rowCount; index++)
             {
-                rowHeight = Math.Max(rowHeight, children[rowStart + index].DesiredSize.Height);
+                rowHeight = double.IsNaN(ItemHeight)
+                    ? Math.Max(rowHeight, children[rowStart + index].DesiredSize.Height)
+                    : ItemHeight;
             }
 
             var x = 0d;
@@ -225,7 +261,7 @@ public class ResponsiveWrapPanel : Panel
         }
 
         var columns = (int)Math.Floor((availableWidth + HorizontalSpacing) / (MinItemWidth + HorizontalSpacing));
-        return Math.Clamp(columns, 1, childCount);
+        return Math.Clamp(columns, 1, Math.Min(childCount, MaximumColumns));
     }
 
     private double GetItemWidth(double availableWidth, int rowCount)
@@ -239,6 +275,9 @@ public class ResponsiveWrapPanel : Panel
 
     private static bool IsNonNegativeFiniteDouble(object value)
         => value is double number && IsFinite(number) && number >= 0d;
+
+    private static bool IsAutoOrPositiveFiniteDouble(object value)
+        => value is double number && (double.IsNaN(number) || IsFinite(number) && number > 0d);
 
     private static bool IsFinite(double value)
         => !double.IsNaN(value) && !double.IsInfinity(value);

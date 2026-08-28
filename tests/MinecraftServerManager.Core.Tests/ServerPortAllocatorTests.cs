@@ -111,9 +111,6 @@ public sealed class ServerPortAllocatorTests
         Assert.Equal(25568, port);
     }
 
-    private static string GetSolutionDirectory([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            ".."));
+    private static string GetSolutionDirectory()
+        => TestRepositoryPaths.RepositoryRoot;
 }

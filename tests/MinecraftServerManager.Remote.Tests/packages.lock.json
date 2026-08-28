@@ -105,7 +105,7 @@
       "minecraftservermanager.remote": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.0.0, )"
+          "MinecraftServerManager.Contracts": "[1.1.0, )"
         }
       }
     }

@@ -4,6 +4,8 @@
     <ProjectReference Include="..\MinecraftServerManager.Client\MinecraftServerManager.Client.csproj" />
     <ProjectReference Include="..\MinecraftServerManager.Core\MinecraftServerManager.Core.csproj" />
     <ProjectReference Include="..\MinecraftServerManager.Contracts\MinecraftServerManager.Contracts.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.GameClient\MinecraftServerManager.GameClient.csproj" />
+    <ProjectReference Include="..\MinecraftServerManager.GameClient.Contracts\MinecraftServerManager.GameClient.Contracts.csproj" />
     <ProjectReference Include="..\MinecraftServerManager.Remote\MinecraftServerManager.Remote.csproj" />
   </ItemGroup>
 
@@ -24,16 +26,16 @@
     <RootNamespace>MinecraftServerManager.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\MuhunMcsvManager.ico</ApplicationIcon>
-    <Version>1.0.8</Version>
-    <AssemblyVersion>1.0.8.0</AssemblyVersion>
-    <FileVersion>1.0.8.0</FileVersion>
-    <InformationalVersion>1.0.8</InformationalVersion>
-    <AssemblyTitle>Muhun MCSV Manager</AssemblyTitle>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.0</InformationalVersion>
+    <AssemblyTitle>X MCSV</AssemblyTitle>
     <Authors>Muhun</Authors>
     <Company>Muhun</Company>
-    <Product>Muhun MCSV Manager</Product>
+    <Product>X MCSV</Product>
     <Copyright>Copyright © Muhun 2026</Copyright>
-    <Description>Portable multi-instance Minecraft server manager for Windows.</Description>
+    <Description>X MCSV client launcher and multi-instance game server manager for Windows.</Description>
   </PropertyGroup>
 
   <ItemGroup>

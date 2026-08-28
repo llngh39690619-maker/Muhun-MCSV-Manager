@@ -79,7 +79,7 @@ public sealed class LocalizationServiceTests
 
         LocalizationService.Current.ApplyResources(resources);
 
-        Assert.Equal("Muhun MCSV Manager", resources["L10n.main.window.title"]);
+        Assert.Equal("X MCSV", resources["L10n.main.window.title"]);
         Assert.StartsWith(
             "Windows Service is connected",
             Assert.IsType<string>(resources["L10n.service.status.connected"]),
@@ -546,13 +546,8 @@ public sealed class LocalizationServiceTests
         }
     }
 
-    private static string GetAppSourcePath([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App"));
+    private static string GetAppSourcePath()
+        => TestRepositoryPaths.AppSource();
 
     private sealed class TemporaryDirectory : IDisposable
     {

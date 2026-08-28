@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Muhun MCSV 遠端控制",
-  "short_name": "MCSV",
-  "description": "從 iPhone 或 iPad 安全管理 Muhun MCSV Manager 伺服器。",
+  "name": "X MCSV 遠端控制",
+  "short_name": "X MCSV",
+  "description": "從 iPhone 或 iPad 安全管理 X MCSV 伺服器。",
   "lang": "zh-TW",
   "dir": "ltr",
   "start_url": "/?culture=zh-TW",

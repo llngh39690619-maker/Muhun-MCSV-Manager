@@ -41,6 +41,7 @@ public sealed partial class CoreServerCreationWorkflow
         hybridMohistArtifactClient.DefaultRequestHeaders.UserAgent.ParseAdd(ProviderUserAgent);
         var javaClient = new HttpClient(new SocketsHttpHandler
         {
+            AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.All
         });
         var official = new OfficialCoreServerCreationBackend(

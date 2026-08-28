@@ -9,7 +9,16 @@ public sealed class ApplicationPaths
     {
         Root = Path.GetFullPath(applicationRoot);
         Servers = Path.Combine(Root, "servers");
+        ClientRoot = Path.Combine(Root, "client");
+        Clients = Path.Combine(ClientRoot, "instances");
+        ClientCache = Path.Combine(ClientRoot, "cache");
+        ClientCatalogCache = Path.Combine(ClientCache, "catalog");
+        ClientOperations = Path.Combine(ClientRoot, "operations");
+        ClientStaging = Path.Combine(ClientRoot, "staging");
+        ClientSecrets = Path.Combine(ClientRoot, "secrets");
+        ClientRegistryFile = Path.Combine(ClientRoot, "client-instances.v1.json");
         Runtimes = Path.Combine(Root, "runtimes");
+        ClientRuntimes = Path.Combine(ClientRoot, "runtimes");
         Backups = Path.Combine(Root, "backups");
         Cache = Path.Combine(Root, "cache");
         OnlineModpackArtworkCache = Path.Combine(Cache, "online-modpack-artwork");
@@ -58,7 +67,16 @@ public sealed class ApplicationPaths
 
     public string Root { get; }
     public string Servers { get; }
+    public string ClientRoot { get; }
+    public string Clients { get; }
+    public string ClientCache { get; }
+    public string ClientCatalogCache { get; }
+    public string ClientOperations { get; }
+    public string ClientStaging { get; }
+    public string ClientSecrets { get; }
+    public string ClientRegistryFile { get; }
     public string Runtimes { get; }
+    public string ClientRuntimes { get; }
     public string Backups { get; }
     public string Cache { get; }
     public string OnlineModpackArtworkCache { get; }
@@ -74,8 +92,10 @@ public sealed class ApplicationPaths
     {
         foreach (var path in new[]
                  {
-                     Root, Servers, Runtimes, Backups, Cache, OnlineModpackArtworkCache, Themes,
-                     Logs, CrashReports, RecoveryPoints
+                     Root, Servers, ClientRoot, Clients, ClientCache, ClientCatalogCache,
+                     ClientOperations, ClientStaging, ClientSecrets, ClientRuntimes, Runtimes,
+                     Backups, Cache, OnlineModpackArtworkCache, Themes, Logs, CrashReports,
+                     RecoveryPoints
                  })
         {
             Directory.CreateDirectory(path);

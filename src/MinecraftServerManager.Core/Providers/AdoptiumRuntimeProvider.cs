@@ -39,6 +39,8 @@ public sealed record InstalledJavaDevelopmentKit(
 public sealed partial class AdoptiumRuntimeProvider
 {
     private static readonly Uri BaseUri = new("https://api.adoptium.net/");
+    private const string GithubHost = "github.com";
+    private const string GithubReleaseAssetsHost = "release-assets.githubusercontent.com";
     private const long MaximumApiResponseBytes = 16L * 1024 * 1024;
     private const long MaximumRuntimeArchiveBytes = 2L * 1024 * 1024 * 1024;
     private const int MaximumArchiveEntries = 100_000;
@@ -236,7 +238,11 @@ public sealed partial class AdoptiumRuntimeProvider
                 package.Sha256,
                 package.Size,
                 progress,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                (source, destination) => IsAllowedPackageRedirect(
+                    package.DownloadUri,
+                    source,
+                    destination)).ConfigureAwait(false);
 
             Directory.CreateDirectory(extraction);
             await ExtractZipSafelyAsync(archive, extraction, cancellationToken).ConfigureAwait(false);
@@ -628,6 +634,8 @@ public sealed partial class AdoptiumRuntimeProvider
                 throw new InvalidDataException("Adoptium Windows Runtime 必須是 ZIP 封裝。");
             }
 
+            EnsureOfficialPackageDownloadUri(link, majorVersion, fileName);
+
             return new JavaRuntimePackage(
                 majorVersion,
                 releaseName,
@@ -642,6 +650,94 @@ public sealed partial class AdoptiumRuntimeProvider
         return null;
         }
     }
+
+    private static void EnsureOfficialPackageDownloadUri(
+        Uri uri,
+        int majorVersion,
+        string expectedFileName)
+    {
+        if (!IsSafeHttpsUri(uri)
+            || !uri.IdnHost.Equals(GithubHost, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new InvalidDataException(
+                "Adoptium package link is not an official GitHub release URL.");
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string decodedFileName;
+        try
+        {
+            decodedFileName = segments.Length == 0
+                ? string.Empty
+                : Uri.UnescapeDataString(segments[^1]);
+        }
+        catch (UriFormatException exception)
+        {
+            throw new InvalidDataException("Adoptium package link contains invalid escaping.", exception);
+        }
+
+        if (segments.Length != 6
+            || !segments[0].Equals("adoptium", StringComparison.OrdinalIgnoreCase)
+            || !segments[1].Equals(
+                $"temurin{majorVersion}-binaries",
+                StringComparison.OrdinalIgnoreCase)
+            || !segments[2].Equals("releases", StringComparison.OrdinalIgnoreCase)
+            || !segments[3].Equals("download", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(segments[4])
+            || !decodedFileName.Equals(expectedFileName, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "Adoptium package link is not bound to the expected official GitHub release asset.");
+        }
+    }
+
+    internal static bool IsAllowedPackageRedirect(
+        Uri originalPackageUri,
+        Uri source,
+        Uri destination)
+    {
+        ArgumentNullException.ThrowIfNull(originalPackageUri);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        if (!IsSafeHttpsUri(source)
+            || !IsSafeHttpsUri(destination)
+            || !string.IsNullOrEmpty(destination.Fragment))
+        {
+            return false;
+        }
+
+        if (UrisEqual(originalPackageUri, source))
+        {
+            return source.IdnHost.Equals(GithubHost, StringComparison.OrdinalIgnoreCase)
+                   && destination.IdnHost.Equals(
+                       GithubReleaseAssetsHost,
+                       StringComparison.OrdinalIgnoreCase)
+                   && IsGithubReleaseAssetPath(destination);
+        }
+
+        return source.IdnHost.Equals(
+                   GithubReleaseAssetsHost,
+                   StringComparison.OrdinalIgnoreCase)
+               && destination.IdnHost.Equals(
+                   GithubReleaseAssetsHost,
+                   StringComparison.OrdinalIgnoreCase)
+               && IsGithubReleaseAssetPath(source)
+               && IsGithubReleaseAssetPath(destination);
+    }
+
+    private static bool IsSafeHttpsUri(Uri uri) =>
+        uri.IsAbsoluteUri
+        && uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+        && uri.IsDefaultPort
+        && string.IsNullOrEmpty(uri.UserInfo);
+
+    private static bool IsGithubReleaseAssetPath(Uri uri) =>
+        uri.AbsolutePath.StartsWith(
+            "/github-production-release-asset/",
+            StringComparison.Ordinal)
+        && uri.AbsolutePath.Length > "/github-production-release-asset/".Length;
 
     private static void EnsureOfficialApiUri(Uri uri, string context)
     {

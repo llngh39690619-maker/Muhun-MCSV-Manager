@@ -558,6 +558,61 @@ public sealed class InstallerScriptContractTests
     }
 
     [Fact]
+    public void ReleaseGettingStartedGuide_IsVersionedActionableAndCoveredBySignedHashes()
+    {
+        var release = File.ReadAllText(Path.Combine(
+            RepositoryRoot,
+            "scripts",
+            "New-MuhunMcsvRelease.ps1"));
+        var verifier = File.ReadAllText(Path.Combine(
+            RepositoryRoot,
+            "scripts",
+            "Test-MuhunMcsvRelease.ps1"));
+
+        var guideStart = release.IndexOf("$gettingStartedLines = @(", StringComparison.Ordinal);
+        var guideEnd = release.IndexOf("$authenticodeFiles =", guideStart, StringComparison.Ordinal);
+        Assert.True(guideStart >= 0 && guideEnd > guideStart);
+        var guideSource = release[guideStart..guideEnd];
+
+        Assert.Contains("X MCSV $Version 正式發行包 — 開始使用", guideSource, StringComparison.Ordinal);
+        Assert.Contains("這不是可攜式（portable）單一 EXE", guideSource, StringComparison.Ordinal);
+        Assert.Contains("PowerShell 7.4 或更新版本", guideSource, StringComparison.Ordinal);
+        Assert.Contains("以系統管理員身分開啟 PowerShell 7", guideSource, StringComparison.Ordinal);
+        Assert.Contains("Get-AuthenticodeSignature", guideSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force",
+            guideSource,
+            StringComparison.Ordinal);
+        Assert.Contains("Test-MuhunMcsvRelease.ps1", guideSource, StringComparison.Ordinal);
+        Assert.Contains("Install-MuhunMcsv.ps1", guideSource, StringComparison.Ordinal);
+        Assert.Contains("Muhun MCSV Manager", guideSource, StringComparison.Ordinal);
+        Assert.DoesNotMatch("(?i)\\b[a-z]:[\\\\/]", guideSource);
+        Assert.DoesNotContain("ExecutionPolicy Bypass", guideSource, StringComparison.OrdinalIgnoreCase);
+
+        var guideWrite = release.IndexOf(
+            "Write-AtomicUtf8Text -Path (Join-Path $outputRoot '開始使用.txt')",
+            StringComparison.Ordinal);
+        var signedFileEnumeration = release.IndexOf(
+            "$releaseFiles = @(Get-ChildItem",
+            guideWrite,
+            StringComparison.Ordinal);
+        var checksumWrite = release.IndexOf(
+            "Write-AtomicUtf8Text -Path (Join-Path $outputRoot 'SHA256SUMS.txt')",
+            signedFileEnumeration,
+            StringComparison.Ordinal);
+        Assert.True(guideWrite >= 0 && signedFileEnumeration > guideWrite && checksumWrite > signedFileEnumeration);
+
+        Assert.Contains("'開始使用.txt'", verifier, StringComparison.Ordinal);
+        Assert.Contains(
+            "$entries.ContainsKey($gettingStartedRelativePath.ToLowerInvariant())",
+            verifier,
+            StringComparison.Ordinal);
+        Assert.Contains("[Text.UTF8Encoding]::new($false, $true)", verifier, StringComparison.Ordinal);
+        Assert.Contains("$gettingStartedText.Contains", verifier, StringComparison.Ordinal);
+        Assert.Contains("contains a fixed build path", verifier, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UninstallerKeepsDataUnlessExplicitlyRequestedAndUsesMarkers()
     {
         var source = File.ReadAllText(Path.Combine(RepositoryRoot, "scripts", "Uninstall-MuhunMcsv.ps1"));
@@ -574,6 +629,15 @@ public sealed class InstallerScriptContractTests
         Assert.Contains("Resolve-GuardedRoot $install", source, StringComparison.Ordinal);
         Assert.Contains("CloseMainWindow", source, StringComparison.Ordinal);
         Assert.Contains("managedVersionsPrefix", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$RemoveUserClientData", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$UserClientDataRoot", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$UserClientDataOwnerSid", source, StringComparison.Ordinal);
+        Assert.Contains("Resolve-GuardedUserClientDataRoot", source, StringComparison.Ordinal);
+        Assert.Contains("ProfileList\\$OwnerSid", source, StringComparison.Ordinal);
+        Assert.Contains("AppData\\Local\\Muhun\\MCSV\\client", source, StringComparison.Ordinal);
+        Assert.Contains("Get-Acl -LiteralPath $fullPath", source, StringComparison.Ordinal);
+        Assert.Contains("$actualOwnerSid.Value -ne $expectedOwnerSid.Value", source, StringComparison.Ordinal);
+        Assert.Contains("提升權限後不可推測互動使用者的 LocalAppData", source, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

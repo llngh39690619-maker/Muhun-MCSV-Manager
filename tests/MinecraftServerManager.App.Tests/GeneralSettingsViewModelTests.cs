@@ -3,6 +3,7 @@ using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Core.Services;
+using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Tests;
 
@@ -292,6 +293,108 @@ public sealed class GeneralSettingsViewModelTests
         Assert.Equal(MemoryAllocationMode.Automatic, existingDefaults.MemoryMode);
         Assert.Equal(2048, existingDefaults.MinimumMemoryMb);
         Assert.Equal(4096, existingDefaults.MaximumMemoryMb);
+    }
+
+    [Fact]
+    public async Task Apply_PersistsIndependentDefaultsForFutureMinecraftClients()
+    {
+        NewMinecraftClientDefaultsSettings? savedClientDefaults = null;
+        var originalClientDefaults = new NewMinecraftClientDefaultsSettings
+        {
+            MemoryMode = MinecraftClientMemoryMode.Automatic,
+            WindowWidth = 1280,
+            WindowHeight = 720,
+            HideLauncherAfterGameStarts = true,
+        };
+        var viewModel = new GeneralSettingsViewModel(
+            new ManagerUiSettings(),
+            new NewServerDefaultsSettings(),
+            originalClientDefaults,
+            (_, _, clientDefaults, _) =>
+            {
+                savedClientDefaults = clientDefaults;
+                return Task.CompletedTask;
+            },
+            new FixedMemoryProbe());
+
+        viewModel.SelectedClientMemoryMode = viewModel.ClientMemoryModes.Single(choice =>
+            choice.Mode == MinecraftClientMemoryMode.Manual);
+        viewModel.ClientMinimumMemoryMb = 3072;
+        viewModel.ClientMaximumMemoryMb = 8192;
+        viewModel.ClientWindowWidth = 1600;
+        viewModel.ClientWindowHeight = 900;
+        viewModel.ClientFullScreen = true;
+        viewModel.ClientQuickLaunch = true;
+        viewModel.ClientHideLauncherAfterGameStarts = false;
+        viewModel.ClientShowGameLog = true;
+        viewModel.ClientEnableDedicatedGpu = false;
+        viewModel.ClientEnableDiscordPresence = false;
+
+        Assert.True(await viewModel.SaveAndApplyAsync());
+
+        Assert.NotNull(savedClientDefaults);
+        Assert.Equal(MinecraftClientMemoryMode.Manual, savedClientDefaults.MemoryMode);
+        Assert.Equal(3072, savedClientDefaults.MinimumMemoryMb);
+        Assert.Equal(8192, savedClientDefaults.MaximumMemoryMb);
+        Assert.Equal(1600, savedClientDefaults.WindowWidth);
+        Assert.Equal(900, savedClientDefaults.WindowHeight);
+        Assert.True(savedClientDefaults.FullScreen);
+        Assert.True(savedClientDefaults.EnableQuickLaunch);
+        Assert.False(savedClientDefaults.HideLauncherAfterGameStarts);
+        Assert.True(savedClientDefaults.ShowGameLog);
+        Assert.False(savedClientDefaults.EnableDedicatedGpu);
+        Assert.False(savedClientDefaults.EnableDiscordPresence);
+        Assert.False(viewModel.HasUnsavedChanges);
+
+        Assert.Equal(MinecraftClientMemoryMode.Automatic, originalClientDefaults.MemoryMode);
+        Assert.Equal(1280, originalClientDefaults.WindowWidth);
+        Assert.True(originalClientDefaults.HideLauncherAfterGameStarts);
+    }
+
+    [Fact]
+    public async Task ClientDefaultMemory_AutomaticRefreshStaysAutomaticAndUserSliderEditsPersistAsManual()
+    {
+        NewMinecraftClientDefaultsSettings? savedClientDefaults = null;
+        var viewModel = new GeneralSettingsViewModel(
+            new ManagerUiSettings(),
+            new NewServerDefaultsSettings(),
+            new NewMinecraftClientDefaultsSettings
+            {
+                MemoryMode = MinecraftClientMemoryMode.Manual,
+                MinimumMemoryMb = 6144,
+                MaximumMemoryMb = 8192,
+            },
+            (_, _, clientDefaults, _) =>
+            {
+                savedClientDefaults = clientDefaults;
+                return Task.CompletedTask;
+            },
+            new FixedMemoryProbe());
+
+        viewModel.SelectedClientMemoryMode = viewModel.ClientMemoryModes.Single(choice =>
+            choice.Mode == MinecraftClientMemoryMode.Automatic);
+
+        Assert.Equal(MinecraftClientMemoryMode.Automatic, viewModel.SelectedClientMemoryMode.Mode);
+        Assert.Equal(2048, viewModel.ClientMinimumMemoryMb);
+        Assert.Equal(4096, viewModel.ClientMaximumMemoryMb);
+
+        viewModel.ClientMinimumMemoryMb = 2304;
+        Assert.Equal(MinecraftClientMemoryMode.Manual, viewModel.SelectedClientMemoryMode.Mode);
+
+        viewModel.SelectedClientMemoryMode = viewModel.ClientMemoryModes.Single(choice =>
+            choice.Mode == MinecraftClientMemoryMode.Automatic);
+        Assert.Equal(MinecraftClientMemoryMode.Automatic, viewModel.SelectedClientMemoryMode.Mode);
+        Assert.Equal(2048, viewModel.ClientMinimumMemoryMb);
+        Assert.Equal(4096, viewModel.ClientMaximumMemoryMb);
+
+        viewModel.ClientMaximumMemoryMb = 5120;
+        Assert.Equal(MinecraftClientMemoryMode.Manual, viewModel.SelectedClientMemoryMode.Mode);
+
+        Assert.True(await viewModel.SaveAndApplyAsync());
+        Assert.NotNull(savedClientDefaults);
+        Assert.Equal(MinecraftClientMemoryMode.Manual, savedClientDefaults.MemoryMode);
+        Assert.Equal(2048, savedClientDefaults.MinimumMemoryMb);
+        Assert.Equal(5120, savedClientDefaults.MaximumMemoryMb);
     }
 
     private static GeneralSettingsViewModel CreateViewModel(

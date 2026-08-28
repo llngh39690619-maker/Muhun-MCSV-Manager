@@ -154,14 +154,6 @@ public sealed class DarkMessageDialogContractTests
             .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             .Contains(segment, StringComparer.OrdinalIgnoreCase);
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

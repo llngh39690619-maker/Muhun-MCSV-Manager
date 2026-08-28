@@ -21,6 +21,28 @@ if (-not $IsWindows) {
 }
 
 $releaseRoot = [IO.Path]::GetFullPath($ReleaseDirectory).TrimEnd('\', '/')
+$expectedPublisherCertificateSha256 = '1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71'
+$androidBuildToolsVersion = '36.0.0'
+$pinnedAndroidToolRecords = @(
+    [pscustomobject]@{
+        relativePath = 'aapt2.exe'
+        sizeBytes = 5423200L
+        sha256 = 'babf3122e515ddb954c5ac4669e085ce990536c035e3072de30127bddd6e3608'
+        maximumBytes = 16MB
+    },
+    [pscustomobject]@{
+        relativePath = 'apksigner.bat'
+        sizeBytes = 3233L
+        sha256 = '549dd0028b0314a5112d6b56e2de7800e713f297da4508b513a735546e52ce38'
+        maximumBytes = 64KB
+    },
+    [pscustomobject]@{
+        relativePath = 'lib/apksigner.jar'
+        sizeBytes = 1100545L
+        sha256 = '3716d9311e55d2b0918a2fd9d54ba9e406c5f6abeea700b287f11259bc163dec'
+        maximumBytes = 8MB
+    }
+)
 if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
     throw 'ReleaseDirectory does not exist.'
 }
@@ -81,6 +103,112 @@ function Resolve-ReleaseFile {
 function Get-Sha256Hex {
     param([Parameter(Mandatory = $true)][string]$Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-NoReparseAncestors {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $cursor = Get-Item -LiteralPath ([IO.Path]::GetFullPath($Path)) -Force -ErrorAction Stop
+    while ($null -ne $cursor) {
+        if (($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label traverses a reparse point: $($cursor.FullName)"
+        }
+        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
+    }
+}
+
+function Assert-ExactJsonProperties {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $actual = @($Object.psobject.Properties.Name | Sort-Object)
+    $expectedSorted = @($Expected | Sort-Object)
+    if ($actual.Count -ne $expectedSorted.Count -or
+        @(Compare-Object $expectedSorted $actual).Count -ne 0) {
+        throw "$Label JSON property set is invalid."
+    }
+}
+
+function Get-PinnedAndroidBuildTools {
+    if ([string]::IsNullOrWhiteSpace($AndroidApkSignerPath) -or
+        [string]::IsNullOrWhiteSpace($AndroidAapt2Path)) {
+        throw 'Pinned Android tools were not supplied.'
+    }
+    $aapt2 = [IO.Path]::GetFullPath($AndroidAapt2Path)
+    $apkSigner = [IO.Path]::GetFullPath($AndroidApkSignerPath)
+    $buildToolsRoot = [IO.Path]::GetFullPath((Split-Path -Parent $aapt2)).TrimEnd('\', '/')
+    if ((Split-Path -Leaf $buildToolsRoot) -cne $androidBuildToolsVersion) {
+        throw 'Android build-tools directory does not match the pinned version.'
+    }
+    $paths = @{
+        'aapt2.exe' = $aapt2
+        'apksigner.bat' = $apkSigner
+        'lib/apksigner.jar' = [IO.Path]::GetFullPath(
+            (Join-Path $buildToolsRoot 'lib\apksigner.jar'))
+    }
+    foreach ($record in $pinnedAndroidToolRecords) {
+        $path = $paths[$record.relativePath]
+        $expectedPath = [IO.Path]::GetFullPath(
+            (Join-Path $buildToolsRoot $record.relativePath.Replace('/', '\')))
+        if ($path -cne $expectedPath -or
+            -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Pinned Android build tool is missing or outside build-tools ${androidBuildToolsVersion}: $($record.relativePath)"
+        }
+        Assert-NoReparseAncestors -Path $path -Label "Android build tool $($record.relativePath)"
+        $file = Get-Item -LiteralPath $path -Force
+        if ($file.Length -ne $record.sizeBytes -or $file.Length -gt $record.maximumBytes -or
+            (Get-Sha256Hex -Path $path) -cne $record.sha256) {
+            throw "Android build tool failed its fixed SHA-256 or size check: $($record.relativePath)"
+        }
+    }
+    return [pscustomobject]@{
+        ApkSigner = $apkSigner
+        Aapt2 = $aapt2
+    }
+}
+
+function Assert-AndroidToolchainReceipt {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $file = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($file.Length -lt 1 -or $file.Length -gt 32KB) {
+        throw 'Android toolchain receipt has an invalid size.'
+    }
+    try {
+        $receipt = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 8
+    } catch {
+        throw "Android toolchain receipt is invalid JSON: $($_.Exception.Message)"
+    }
+    Assert-ExactJsonProperties -Object $receipt `
+        -Expected @('schemaVersion', 'buildToolsVersion', 'tools') `
+        -Label 'Android toolchain receipt'
+    if (-not ($receipt.schemaVersion -is [long]) -or
+        $receipt.schemaVersion -ne 1 -or
+        $receipt.buildToolsVersion -cne $androidBuildToolsVersion -or
+        @($receipt.tools).Count -ne $pinnedAndroidToolRecords.Count) {
+        throw 'Android toolchain receipt schema or tool count is invalid.'
+    }
+    for ($index = 0; $index -lt $pinnedAndroidToolRecords.Count; $index++) {
+        $actual = @($receipt.tools)[$index]
+        $expected = $pinnedAndroidToolRecords[$index]
+        Assert-ExactJsonProperties -Object $actual `
+            -Expected @('relativePath', 'sizeBytes', 'sha256') `
+            -Label "Android toolchain receipt record $index"
+        if ($actual.relativePath -cne $expected.relativePath -or
+            -not ($actual.sizeBytes -is [long]) -or
+            $actual.sizeBytes -ne $expected.sizeBytes -or
+            $actual.sha256 -cne $expected.sha256) {
+            throw "Android toolchain receipt does not bind the pinned tool: $($expected.relativePath)"
+        }
+    }
+    return [pscustomobject]@{
+        Receipt = $receipt
+        SizeBytes = $file.Length
+        Sha256 = Get-Sha256Hex -Path $Path
+    }
 }
 
 function Get-CertificateSha256 {
@@ -258,7 +386,8 @@ $requiredMetadata = @(
     'release-manifest.json',
     'release-manifest.json.sig',
     'SHA256SUMS.txt',
-    'publisher.cer'
+    'publisher.cer',
+    '開始使用.txt'
 )
 foreach ($relative in $requiredMetadata) {
     [void](Resolve-ReleaseFile -RelativePath $relative)
@@ -280,6 +409,7 @@ if ($manifest.schemaVersion -ne 1 -or
     $manifest.signatureAlgorithm -ne 'rsa-pss-sha256' -or
     $manifest.publisherTrustMode -notin @('self-signed-local', 'public-ca') -or
     $manifest.publisherCertificateSha256 -notmatch '^[a-f0-9]{64}$' -or
+    $manifest.publisherCertificateSha256 -cne $expectedPublisherCertificateSha256 -or
     $manifest.keyId -notmatch '^[a-z][a-z0-9._-]{2,63}$') {
     throw 'Release manifest metadata is invalid or unsupported.'
 }
@@ -366,13 +496,81 @@ try {
             throw 'Release directory contains missing or unexpected files.'
         }
 
+        $gettingStartedRelativePath = '開始使用.txt'
+        if (-not $entries.ContainsKey($gettingStartedRelativePath.ToLowerInvariant())) {
+            throw 'The signed release manifest is missing 開始使用.txt.'
+        }
+        $gettingStartedPath = Resolve-ReleaseFile -RelativePath $gettingStartedRelativePath
+        $gettingStartedBytes = [IO.File]::ReadAllBytes($gettingStartedPath)
+        if ($gettingStartedBytes.Length -lt 1 -or $gettingStartedBytes.Length -gt 32KB) {
+            throw '開始使用.txt has an invalid size.'
+        }
+        try {
+            $gettingStartedText = [Text.UTF8Encoding]::new($false, $true).GetString(
+                $gettingStartedBytes)
+        } catch {
+            throw '開始使用.txt must be strict UTF-8.'
+        }
+        $requiredGettingStartedText = @(
+            "X MCSV $($manifest.version) 正式發行包 — 開始使用",
+            '這不是可攜式（portable）單一 EXE',
+            'PowerShell 7.4 或更新版本',
+            '以系統管理員身分開啟 PowerShell 7',
+            "`$expectedPublisherCertificateSha256 = '$expectedPublisherCertificateSha256'",
+            'Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256',
+            'GitHub Release 的獨立正式公告核對',
+            'Read-Host',
+            'certutil.exe" -addstore -f Root',
+            'if ($LASTEXITCODE -ne 0)',
+            'certutil.exe" -addstore -f TrustedPublisher',
+            'Get-AuthenticodeSignature',
+            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
+            'Test-MuhunMcsvRelease.ps1',
+            'Install-MuhunMcsv.ps1',
+            'Windows 開始功能表的「X MCSV」捷徑啟動 GUI'
+        )
+        if (@($requiredGettingStartedText | Where-Object {
+                    -not $gettingStartedText.Contains($_, [StringComparison]::Ordinal)
+                }).Count -ne 0 -or
+            $gettingStartedText -match '(?i)-ExecutionPolicy\s+Bypass' -or
+            $gettingStartedText -match '(?i)\b[a-z]:[\\/]' -or
+            $gettingStartedText -match '(?i)(?:formal-release-output|new-chat[\\/]work)') {
+            throw '開始使用.txt is incomplete, has the wrong version, or contains a fixed build path.'
+        }
+        $orderedGettingStartedText = @(
+            'Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256',
+            'Write-Host "publisher.cer SHA-256:',
+            'GitHub Release 的獨立正式公告核對',
+            'Read-Host',
+            'certutil.exe" -addstore -f Root',
+            'if ($LASTEXITCODE -ne 0)',
+            'certutil.exe" -addstore -f TrustedPublisher',
+            'if ($LASTEXITCODE -ne 0)',
+            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
+            'Get-AuthenticodeSignature',
+            "& (Join-Path `$release 'Test-MuhunMcsvRelease.ps1')",
+            "& (Join-Path `$release 'Install-MuhunMcsv.ps1')"
+        )
+        $previousGuideOffset = -1
+        foreach ($orderedText in $orderedGettingStartedText) {
+            $guideOffset = $gettingStartedText.IndexOf(
+                $orderedText,
+                $previousGuideOffset + 1,
+                [StringComparison]::Ordinal)
+            if ($guideOffset -lt 0) {
+                throw '開始使用.txt does not preserve the required trust-bootstrap execution order.'
+            }
+            $previousGuideOffset = $guideOffset
+        }
+
         $requiredAuthenticodeFiles = @(
             'service-win-x64/Muhun MCSV Service.exe',
             'gui-win-x64/Muhun MCSV Manager.exe',
             'updater-win-x64/Muhun MCSV Updater.exe',
             'Install-MuhunMcsv.ps1',
             'Uninstall-MuhunMcsv.ps1',
-            'Test-MuhunMcsvRelease.ps1'
+            'Test-MuhunMcsvRelease.ps1',
+            'tools/Uninstall-MuhunMcsv.ps1'
         )
         $listedAuthenticodeFiles = @($manifest.authenticodeFiles)
         if ($listedAuthenticodeFiles.Count -ne $requiredAuthenticodeFiles.Count -or
@@ -406,6 +604,13 @@ try {
                     throw "Self-signed Authenticode is not locally trusted: $relativePath"
                 }
             }
+        }
+        $rootUninstallerHash = Get-Sha256Hex -Path (
+            Resolve-ReleaseFile -RelativePath 'Uninstall-MuhunMcsv.ps1')
+        $versionUninstallerHash = Get-Sha256Hex -Path (
+            Resolve-ReleaseFile -RelativePath 'tools/Uninstall-MuhunMcsv.ps1')
+        if ($rootUninstallerHash -cne $versionUninstallerHash) {
+            throw 'The release-root and version-tree uninstallers are not byte-identical.'
         }
 
         $publicKeyPath = Resolve-ReleaseFile -RelativePath $manifest.updatePublicKey.path
@@ -532,6 +737,7 @@ try {
             'service-win-x64/Muhun MCSV Service.exe',
             'gui-win-x64/Muhun MCSV Manager.exe',
             'updater-win-x64/Muhun MCSV Updater.exe',
+            'tools/Uninstall-MuhunMcsv.ps1',
             'service-win-x64/update-signing-public-key.json',
             'providers/muhun.catalog/deployment.v1.json',
             'providers/muhun.catalog/muhun.catalog.mcsvp',
@@ -817,17 +1023,36 @@ try {
         }
 
         $android = $manifest.androidApk
+        Assert-ExactJsonProperties -Object $android `
+            -Expected @(
+                'path', 'metadataPath', 'metadataSizeBytes', 'metadataSha256',
+                'packageId', 'version', 'versionCode', 'sizeBytes', 'sha256',
+                'signingCertificateSha256', 'v4SignaturePath',
+                'v4SignatureSizeBytes', 'v4SignatureSha256',
+                'verifiedSignatureSchemes', 'toolchainReceiptPath',
+                'toolchainReceiptSizeBytes', 'toolchainReceiptSha256'
+            ) `
+            -Label 'Signed Android release manifest entry'
         if ($android.path -ne 'mobile/Muhun-MCSV-Remote.apk' -or
             $android.v4SignaturePath -ne 'mobile/Muhun-MCSV-Remote.apk.idsig' -or
-            $android.metadataPath -ne 'mobile/android-release.v2.json' -or
+            $android.metadataPath -ne 'mobile/android-release.v3.json' -or
+            $android.toolchainReceiptPath -ne 'mobile/android-toolchain.v1.json' -or
             $android.packageId -ne 'com.muhun.mcsv.remote' -or
             $android.version -ne $manifest.version -or
+            -not ($android.versionCode -is [long]) -or
+            $android.versionCode -lt 1 -or $android.versionCode -gt 999999999 -or
+            ($manifest.version -eq '1.1.0' -and $android.versionCode -ne 10) -or
+            $android.metadataSizeBytes -lt 1 -or $android.metadataSizeBytes -gt 64KB -or
+            $android.metadataSha256 -notmatch '^[a-f0-9]{64}$' -or
             $android.sizeBytes -lt 1 -or $android.sizeBytes -gt 512MB -or
             $android.sha256 -notmatch '^[a-f0-9]{64}$' -or
             $android.signingCertificateSha256 -notmatch '^[a-f0-9]{64}$' -or
             $android.v4SignatureSizeBytes -lt 1 -or
             $android.v4SignatureSizeBytes -gt 16MB -or
             $android.v4SignatureSha256 -notmatch '^[a-f0-9]{64}$' -or
+            $android.toolchainReceiptSizeBytes -lt 1 -or
+            $android.toolchainReceiptSizeBytes -gt 32KB -or
+            $android.toolchainReceiptSha256 -notmatch '^[a-f0-9]{64}$' -or
             @($android.verifiedSignatureSchemes).Count -ne 3 -or
             $android.verifiedSignatureSchemes[0] -ne 'v2' -or
             $android.verifiedSignatureSchemes[1] -ne 'v3' -or
@@ -837,23 +1062,57 @@ try {
         $androidApkPath = Resolve-ReleaseFile -RelativePath $android.path
         $androidV4SignaturePath = Resolve-ReleaseFile -RelativePath $android.v4SignaturePath
         $androidMetadataPath = Resolve-ReleaseFile -RelativePath $android.metadataPath
-        $androidMetadata = Get-Content -LiteralPath $androidMetadataPath -Raw | ConvertFrom-Json
+        $androidToolchainReceiptPath = Resolve-ReleaseFile `
+            -RelativePath $android.toolchainReceiptPath
+        try {
+            $androidMetadata = Get-Content -LiteralPath $androidMetadataPath -Raw |
+                ConvertFrom-Json -Depth 8
+        } catch {
+            throw "Android release metadata is invalid JSON: $($_.Exception.Message)"
+        }
+        Assert-ExactJsonProperties -Object $androidMetadata `
+            -Expected @(
+                'schemaVersion', 'productId', 'packageId', 'version', 'versionCode',
+                'sizeBytes', 'sha256', 'signingCertificateSha256',
+                'v4SignatureFileName', 'v4SignatureSizeBytes', 'v4SignatureSha256',
+                'verifiedSignatureSchemes', 'toolchainReceiptFileName',
+                'toolchainReceiptSizeBytes', 'toolchainReceiptSha256'
+            ) `
+            -Label 'Android release metadata'
+        $androidToolchainReceipt = Assert-AndroidToolchainReceipt `
+            -Path $androidToolchainReceiptPath
         if ((Get-Item -LiteralPath $androidApkPath).Length -ne $android.sizeBytes -or
             (Get-Sha256Hex -Path $androidApkPath) -ne $android.sha256 -or
             (Get-Item -LiteralPath $androidV4SignaturePath).Length -ne
                 $android.v4SignatureSizeBytes -or
             (Get-Sha256Hex -Path $androidV4SignaturePath) -ne
                 $android.v4SignatureSha256 -or
-            $androidMetadata.schemaVersion -ne 2 -or
+            (Get-Item -LiteralPath $androidMetadataPath).Length -ne
+                $android.metadataSizeBytes -or
+            (Get-Sha256Hex -Path $androidMetadataPath) -ne $android.metadataSha256 -or
+            (Get-Item -LiteralPath $androidToolchainReceiptPath).Length -ne
+                $android.toolchainReceiptSizeBytes -or
+            (Get-Sha256Hex -Path $androidToolchainReceiptPath) -ne
+                $android.toolchainReceiptSha256 -or
+            -not ($androidMetadata.schemaVersion -is [long]) -or
+            $androidMetadata.schemaVersion -ne 3 -or
             $androidMetadata.productId -ne 'muhun.mcsv.manager' -or
             $androidMetadata.packageId -ne $android.packageId -or
             $androidMetadata.version -ne $android.version -or
+            -not ($androidMetadata.versionCode -is [long]) -or
+            $androidMetadata.versionCode -ne $android.versionCode -or
+            $androidMetadata.versionCode -lt 1 -or
             $androidMetadata.sizeBytes -ne $android.sizeBytes -or
             $androidMetadata.sha256 -ne $android.sha256 -or
             $androidMetadata.signingCertificateSha256 -ne $android.signingCertificateSha256 -or
             $androidMetadata.v4SignatureFileName -ne 'Muhun-MCSV-Remote.apk.idsig' -or
             $androidMetadata.v4SignatureSizeBytes -ne $android.v4SignatureSizeBytes -or
             $androidMetadata.v4SignatureSha256 -ne $android.v4SignatureSha256 -or
+            $androidMetadata.toolchainReceiptFileName -cne 'android-toolchain.v1.json' -or
+            $androidMetadata.toolchainReceiptSizeBytes -ne
+                $androidToolchainReceipt.SizeBytes -or
+            $androidMetadata.toolchainReceiptSha256 -cne
+                $androidToolchainReceipt.Sha256 -or
             @($androidMetadata.verifiedSignatureSchemes).Count -ne 3 -or
             $androidMetadata.verifiedSignatureSchemes[0] -ne 'v2' -or
             $androidMetadata.verifiedSignatureSchemes[1] -ne 'v3' -or
@@ -862,15 +1121,9 @@ try {
         }
 
         if (-not [string]::IsNullOrWhiteSpace($AndroidApkSignerPath)) {
-            $apkSigner = [IO.Path]::GetFullPath($AndroidApkSignerPath)
-            $aapt2 = [IO.Path]::GetFullPath($AndroidAapt2Path)
-            foreach ($tool in @($apkSigner, $aapt2)) {
-                if (-not (Test-Path -LiteralPath $tool -PathType Leaf) -or
-                    (((Get-Item -LiteralPath $tool -Force).Attributes -band
-                        [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                    throw 'Pinned Android release verifier is missing or unsafe.'
-                }
-            }
+            $pinnedAndroidTools = Get-PinnedAndroidBuildTools
+            $apkSigner = $pinnedAndroidTools.ApkSigner
+            $aapt2 = $pinnedAndroidTools.Aapt2
 
             $apkVerification = @(& $apkSigner @(
                 'verify', '--verbose', '--print-certs',
@@ -905,8 +1158,9 @@ try {
             }
             $apkBadgingText = $apkBadging -join "`n"
             if ($apkBadgingText -notmatch "package: name='com\.muhun\.mcsv\.remote'" -or
+                $apkBadgingText -notmatch "versionCode='$($android.versionCode)'" -or
                 $apkBadgingText -notmatch "versionName='$([regex]::Escape([string]$manifest.version))'") {
-                throw 'Android APK package or version identity is invalid.'
+                throw 'Android APK package, versionName or versionCode identity is invalid.'
             }
         }
     } finally {

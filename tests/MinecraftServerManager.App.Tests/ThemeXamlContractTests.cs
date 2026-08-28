@@ -48,12 +48,6 @@ public sealed class ThemeXamlContractTests
             && setter.Value?.StartsWith('#') == true);
     }
 
-    private static string GetAppXamlPath([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            "App.xaml"));
+    private static string GetAppXamlPath()
+        => TestRepositoryPaths.AppSource("App.xaml");
 }

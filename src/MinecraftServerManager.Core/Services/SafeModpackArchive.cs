@@ -64,11 +64,19 @@ public sealed record SafeModpackArchivePlan(
     IReadOnlyList<SafeModpackOptionalFile> OptionalFiles,
     int SkippedUnsupportedFiles,
     IReadOnlyList<SafeModpackOverrideEntry> Overrides,
-    IReadOnlyList<SafeModpackOverrideEntry> ServerOverrides);
+    IReadOnlyList<SafeModpackOverrideEntry> ServerOverrides)
+{
+    /// <summary>
+    /// Entries from <c>client-overrides/</c>. Server installers deliberately ignore this layer;
+    /// client installers apply it after the shared <c>overrides/</c> layer.
+    /// </summary>
+    public IReadOnlyList<SafeModpackOverrideEntry> ClientOverrides { get; init; } = [];
+}
 
 /// <summary>
-/// Performs a non-extracting validation pass over a Modrinth format-1 archive, then exposes only
-/// prevalidated server-relevant entries. Client overrides are deliberately never returned.
+/// Performs a non-extracting validation pass over a Modrinth format-1 archive. The server and
+/// client inspection entry points select their corresponding manifest environment while exposing
+/// separately validated shared, server-only, and client-only override layers.
 /// </summary>
 public static class SafeModpackArchive
 {
@@ -86,6 +94,37 @@ public static class SafeModpackArchive
         IModrinthModpackUriPolicy? uriPolicy = null,
         SafeModpackArchiveLimits? limits = null,
         CancellationToken cancellationToken = default)
+        => await InspectForEnvironmentAsync(
+                archivePath,
+                SafeModpackTargetEnvironment.Server,
+                uriPolicy,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Performs the same strict archive validation as <see cref="InspectAsync"/>, but selects
+    /// manifest files using <c>env.client</c> and exposes the client-only override layer.
+    /// </summary>
+    public static async Task<SafeModpackArchivePlan> InspectClientAsync(
+        string archivePath,
+        IModrinthModpackUriPolicy? uriPolicy = null,
+        SafeModpackArchiveLimits? limits = null,
+        CancellationToken cancellationToken = default)
+        => await InspectForEnvironmentAsync(
+                archivePath,
+                SafeModpackTargetEnvironment.Client,
+                uriPolicy,
+                limits,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private static async Task<SafeModpackArchivePlan> InspectForEnvironmentAsync(
+        string archivePath,
+        SafeModpackTargetEnvironment targetEnvironment,
+        IModrinthModpackUriPolicy? uriPolicy,
+        SafeModpackArchiveLimits? limits,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
         limits ??= new SafeModpackArchiveLimits();
@@ -174,7 +213,7 @@ public static class SafeModpackArchive
         using (document)
         {
             RejectDuplicateJsonProperties(document.RootElement);
-            return ParseManifest(document.RootElement, archive, uriPolicy, limits);
+            return ParseManifest(document.RootElement, archive, uriPolicy, limits, targetEnvironment);
         }
     }
 
@@ -286,7 +325,8 @@ public static class SafeModpackArchive
         JsonElement root,
         ZipArchive archive,
         IModrinthModpackUriPolicy uriPolicy,
-        SafeModpackArchiveLimits limits)
+        SafeModpackArchiveLimits limits,
+        SafeModpackTargetEnvironment targetEnvironment)
     {
         if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Modrinth manifest 根節點必須是物件。");
         if (!root.TryGetProperty("formatVersion", out var format) || !format.TryGetInt32(out var formatVersion) || formatVersion != 1)
@@ -351,22 +391,26 @@ public static class SafeModpackArchive
                 downloads.Add(uri);
             }
 
-            var server = ReadServerEnvironment(item, path);
-            if (server == "unsupported")
+            var environment = ReadEnvironment(item, path, targetEnvironment);
+            if (environment == "unsupported")
             {
                 unsupported++;
                 continue;
             }
 
-            var isOptional = server == "optional";
+            var isOptional = environment == "optional";
             files.Add(new SafeModpackContentFile(path, downloads, size, sha512, sha1, isOptional));
             if (isOptional) optional.Add(new SafeModpackOptionalFile(path, size));
         }
 
         var overrides = CollectLayer(archive, "overrides/");
         var serverOverrides = CollectLayer(archive, "server-overrides/");
+        var clientOverrides = CollectLayer(archive, "client-overrides/");
         return new SafeModpackArchivePlan(
-            name, versionId, loader.MinecraftVersion, loader, files, optional, unsupported, overrides, serverOverrides);
+            name, versionId, loader.MinecraftVersion, loader, files, optional, unsupported, overrides, serverOverrides)
+        {
+            ClientOverrides = clientOverrides,
+        };
     }
 
     private static ModrinthModpackLoaderInstallRequest ParseDependencies(JsonElement root)
@@ -404,7 +448,10 @@ public static class SafeModpackArchive
         return new ModrinthModpackLoaderInstallRequest(loaderKind, minecraft, loaderVersion);
     }
 
-    private static string ReadServerEnvironment(JsonElement item, string path)
+    private static string ReadEnvironment(
+        JsonElement item,
+        string path,
+        SafeModpackTargetEnvironment targetEnvironment)
     {
         if (!item.TryGetProperty("env", out var env)) return "required";
         if (env.ValueKind != JsonValueKind.Object) throw new InvalidDataException($"Manifest env 必須是物件：{path}");
@@ -418,7 +465,12 @@ public static class SafeModpackArchive
             }
         }
 
-        return env.TryGetProperty("server", out var server) ? server.GetString()! : "required";
+        var propertyName = targetEnvironment == SafeModpackTargetEnvironment.Client
+            ? "client"
+            : "server";
+        return env.TryGetProperty(propertyName, out var selected)
+            ? selected.GetString()!
+            : "required";
     }
 
     private static IReadOnlyList<SafeModpackOverrideEntry> CollectLayer(ZipArchive archive, string prefix)
@@ -583,5 +635,11 @@ public static class SafeModpackArchive
 
             _files.Add(path);
         }
+    }
+
+    private enum SafeModpackTargetEnvironment
+    {
+        Server,
+        Client,
     }
 }

@@ -98,6 +98,9 @@ public sealed class OnlineModpackArtworkCache : IOnlineModpackArtworkCache, IDis
     public const int MaximumConcurrentDownloads = 3;
     public const int MaximumImageDimension = 8192;
     public const long MaximumImagePixels = 32L * 1024 * 1024;
+    public const int MaximumCacheFiles = 2_048;
+    public const long MaximumCacheBytes = 256L * 1024 * 1024;
+    private const int MaximumTrimCandidates = 4_096;
 
     private static readonly IReadOnlySet<string> CacheExtensions =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".webp", ".gif" };
@@ -110,6 +113,7 @@ public sealed class OnlineModpackArtworkCache : IOnlineModpackArtworkCache, IDis
     private readonly ConcurrentDictionary<string, Lazy<Task<string?>>> _inflight =
         new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly object _cacheMaintenanceGate = new();
     private readonly bool _ownsHttpClient;
     private bool _disposed;
 
@@ -233,6 +237,7 @@ public sealed class OnlineModpackArtworkCache : IOnlineModpackArtworkCache, IDis
                     .ConfigureAwait(false);
                 if (cached is not null)
                 {
+                    TryTouch(cached);
                     return cached;
                 }
 
@@ -379,9 +384,11 @@ public sealed class OnlineModpackArtworkCache : IOnlineModpackArtworkCache, IDis
             }
             catch (IOException) when (IsValidCachedFile(destination))
             {
+                TrimCache(destination);
                 return DownloadOutcome.Success(destination);
             }
 
+            TrimCache(destination);
             return DownloadOutcome.Success(destination);
         }
         finally
@@ -483,6 +490,108 @@ public sealed class OnlineModpackArtworkCache : IOnlineModpackArtworkCache, IDis
         if (File.GetAttributes(_cacheDirectory).HasFlag(FileAttributes.ReparsePoint))
         {
             throw new UnauthorizedAccessException("線上模組包圖片快取不得是符號連結或 junction。");
+        }
+    }
+
+    private void TrimCache(string protectedPath)
+    {
+        lock (_cacheMaintenanceGate)
+        {
+            try
+            {
+                var protectedFullPath = Path.GetFullPath(protectedPath);
+                var candidates = new List<FileInfo>(MaximumTrimCandidates);
+                var staleTemporaryCutoff = DateTime.UtcNow - TimeSpan.FromHours(1);
+                foreach (var file in new DirectoryInfo(_cacheDirectory)
+                             .EnumerateFiles("*", SearchOption.TopDirectoryOnly))
+                {
+                    if (file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        continue;
+                    }
+
+                    if (file.Extension.Equals(".tmp", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (file.LastWriteTimeUtc < staleTemporaryCutoff)
+                        {
+                            TryDelete(file.FullName);
+                        }
+
+                        continue;
+                    }
+
+                    if (!IsOwnedCacheFile(file))
+                    {
+                        continue;
+                    }
+
+                    if (candidates.Count >= MaximumTrimCandidates)
+                    {
+                        if (!PathEquals(file.FullName, protectedFullPath))
+                        {
+                            TryDelete(file.FullName);
+                        }
+
+                        continue;
+                    }
+
+                    candidates.Add(file);
+                }
+
+                candidates.Sort(static (left, right) =>
+                    right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc));
+                long retainedBytes = 0;
+                var retainedFiles = 0;
+                foreach (var file in candidates)
+                {
+                    var isProtected = PathEquals(file.FullName, protectedFullPath);
+                    var length = Math.Max(0, file.Length);
+                    var fits = retainedFiles < MaximumCacheFiles &&
+                               retainedBytes <= MaximumCacheBytes - length;
+                    if (!isProtected && !fits)
+                    {
+                        TryDelete(file.FullName);
+                        continue;
+                    }
+
+                    retainedFiles++;
+                    retainedBytes = retainedBytes > long.MaxValue - length
+                        ? long.MaxValue
+                        : retainedBytes + length;
+                }
+            }
+            catch (Exception exception) when (IsRecoverableFailure(exception))
+            {
+                // Artwork is optional. A failed maintenance pass must not fail a verified install.
+            }
+        }
+    }
+
+    private static bool IsOwnedCacheFile(FileInfo file)
+    {
+        if (!CacheExtensions.Contains(file.Extension))
+        {
+            return false;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(file.Name);
+        return name.Length == 64 && name.All(Uri.IsHexDigit);
+    }
+
+    private static bool PathEquals(string left, string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static void TryTouch(string path)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+        }
+        catch (Exception exception) when (IsRecoverableFailure(exception))
+        {
         }
     }
 

@@ -177,16 +177,8 @@ public sealed class OnlineModpackMainIntegrationTests
         await viewModel.DisposeAsync();
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private sealed class FakeDialogService(ServerInstance? result) : IOnlineModpackDialogService
     {

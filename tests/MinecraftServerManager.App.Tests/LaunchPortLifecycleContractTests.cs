@@ -200,16 +200,10 @@ public sealed class LaunchPortLifecycleContractTests
         return source[start..end];
     }
 
-    private static string ReadMainWindowViewModelSource(
-        [CallerFilePath] string testFilePath = "")
-        => File.ReadAllText(Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
+    private static string ReadMainWindowViewModelSource()
+        => File.ReadAllText(TestRepositoryPaths.AppSource(
             "ViewModels",
-            "MainWindowViewModel.cs")));
+            "MainWindowViewModel.cs"));
 
     private static string ExtractPrivateMethod(string source, string signature)
     {

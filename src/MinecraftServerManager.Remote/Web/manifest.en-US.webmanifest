@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Muhun MCSV Remote Control",
-  "short_name": "MCSV",
-  "description": "Securely manage Muhun MCSV Manager servers from an iPhone or iPad.",
+  "name": "X MCSV Remote Control",
+  "short_name": "X MCSV",
+  "description": "Securely manage X MCSV servers from an iPhone or iPad.",
   "lang": "en-US",
   "dir": "ltr",
   "start_url": "/?culture=en-US",

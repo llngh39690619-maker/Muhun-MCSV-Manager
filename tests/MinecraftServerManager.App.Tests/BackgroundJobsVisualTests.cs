@@ -113,14 +113,8 @@ public sealed class BackgroundJobsVisualTests
         }
     }
 
-    private static string GetSourcePath(string relativePath, [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     public sealed class WorkCenterTestContext
     {

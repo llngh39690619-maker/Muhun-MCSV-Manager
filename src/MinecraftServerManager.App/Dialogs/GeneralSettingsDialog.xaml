@@ -74,6 +74,79 @@
                 <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
                         BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
                     <StackPanel>
+                        <TextBlock Text="{DynamicResource L10n.settings.newClientDefaults}"
+                                   FontSize="18" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.settings.newClientHint}"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,12" />
+
+                        <TextBlock Text="{DynamicResource L10n.settings.clientMemoryMode}"
+                                   Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                        <ComboBox ItemsSource="{Binding ClientMemoryModes}"
+                                  SelectedItem="{Binding SelectedClientMemoryMode}"
+                                  DisplayMemberPath="Name" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="95" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.minimumMemory}"
+                                       VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="512" Maximum="32768"
+                                    TickFrequency="256" IsSnapToTickEnabled="True"
+                                    Value="{Binding ClientMinimumMemoryMb}" Margin="8,0" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding ClientMinimumMemoryMb, StringFormat={}{0:0} MB}"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="95" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.settings.maximumMemory}"
+                                       VerticalAlignment="Center" />
+                            <Slider Grid.Column="1" Minimum="512" Maximum="32768"
+                                    TickFrequency="256" IsSnapToTickEnabled="True"
+                                    Value="{Binding ClientMaximumMemoryMb}" Margin="8,0" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding ClientMaximumMemoryMb, StringFormat={}{0:0} MB}"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+
+                        <TextBlock Text="{DynamicResource L10n.settings.clientResolution}"
+                                   Style="{StaticResource MutedText}" Margin="0,13,0,5" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding ClientWindowWidth, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Column="2"
+                                     Text="{Binding ClientWindowHeight, UpdateSourceTrigger=PropertyChanged}" />
+                        </Grid>
+
+                        <WrapPanel Margin="0,12,0,0">
+                            <CheckBox Content="{DynamicResource L10n.settings.clientFullScreen}"
+                                      IsChecked="{Binding ClientFullScreen}" Margin="0,4,20,4" />
+                            <CheckBox Content="{DynamicResource L10n.settings.clientQuickLaunch}"
+                                      IsChecked="{Binding ClientQuickLaunch}" Margin="0,4,20,4" />
+                            <CheckBox Content="{DynamicResource L10n.settings.clientHideLauncher}"
+                                      IsChecked="{Binding ClientHideLauncherAfterGameStarts}" Margin="0,4,20,4" />
+                            <CheckBox Content="{DynamicResource L10n.settings.clientShowLog}"
+                                      IsChecked="{Binding ClientShowGameLog}" Margin="0,4,20,4" />
+                            <CheckBox Content="{DynamicResource L10n.settings.clientDedicatedGpu}"
+                                      IsChecked="{Binding ClientEnableDedicatedGpu}" Margin="0,4,20,4" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9" Padding="16" Margin="0,0,0,12">
+                    <StackPanel>
                         <TextBlock Text="{DynamicResource L10n.settings.newServerDefaults}" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock Text="{DynamicResource L10n.settings.newServerHint}"
                                    Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,12" />

@@ -182,16 +182,8 @@ public sealed class CoreServerCreationMainIntegrationTests
             JavaMajorVersion = 21
         };
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private sealed class FakeCoreCreationDialogService(params ServerInstance?[] results)
         : ICoreServerCreationDialogService

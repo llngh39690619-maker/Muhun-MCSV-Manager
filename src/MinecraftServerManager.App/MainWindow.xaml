@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:views="clr-namespace:MinecraftServerManager.App.Views"
         mc:Ignorable="d"
         Title="{DynamicResource L10n.main.window.title}"
         Width="{Binding WindowWidth, Mode=OneWay}" Height="{Binding WindowHeight, Mode=OneWay}" MinWidth="1120" MinHeight="700"
@@ -135,7 +136,7 @@
         <Image Source="{Binding SelectedServer.BackgroundImagePath}" Stretch="UniformToFill"
                Opacity="{Binding SelectedServer.BackgroundImageOpacity}" IsHitTestVisible="False" />
 
-        <Grid>
+        <Grid Visibility="{Binding IsServerWorkspace, Converter={StaticResource BoolToVisibility}}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="68" />
                 <RowDefinition Height="*" />
@@ -150,10 +151,12 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                        <TextBlock Text="MUHUN" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold" FontSize="11" />
-                        <TextBlock Text="MCSV Manager" FontWeight="SemiBold" FontSize="21" />
+                        <TextBlock Text="{DynamicResource L10n.app.brand.mark}" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold" FontSize="11" />
+                        <TextBlock Text="{DynamicResource L10n.app.brand.name}" FontWeight="SemiBold" FontSize="21" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="{DynamicResource L10n.main.workspace.server}" Style="{StaticResource PrimaryButton}" Margin="0,0,8,0" MinWidth="102" />
+                        <Button Content="{DynamicResource L10n.main.workspace.client}" Command="{Binding ShowClientWorkspaceCommand}" Margin="0,0,12,0" MinWidth="102" />
                         <Button x:Name="ToggleBulkSelectionButton"
                                 Content="{DynamicResource L10n.main.select}"
                                 Command="{Binding ToggleBulkSelectionModeCommand}"
@@ -836,5 +839,7 @@
                 </Grid>
             </Border>
         </Grid>
+        <views:ClientWorkspaceView DataContext="{Binding ClientWorkspace}"
+                                   Visibility="{Binding IsClientWorkspace, Converter={StaticResource BoolToVisibility}}" />
     </Grid>
 </Window>

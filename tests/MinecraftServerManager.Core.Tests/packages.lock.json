@@ -100,6 +100,12 @@
         }
       },
       "minecraftservermanager.core": {
+        "type": "Project",
+        "dependencies": {
+          "MinecraftServerManager.GameClient.Contracts": "[1.1.0, )"
+        }
+      },
+      "minecraftservermanager.gameclient.contracts": {
         "type": "Project"
       }
     }

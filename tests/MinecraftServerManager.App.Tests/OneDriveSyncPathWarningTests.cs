@@ -165,9 +165,6 @@ public sealed class OneDriveSyncPathWarningTests
         Dispatcher.PushFrame(frame);
     }
 
-    private static string FindProjectRoot([CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            ".."));
+    private static string FindProjectRoot()
+        => TestRepositoryPaths.RepositoryRoot;
 }

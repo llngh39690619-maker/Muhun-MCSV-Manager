@@ -26,8 +26,13 @@ $installerOperatorSidRelativePath = 'data\installer-operator-sid.v1'
 $activationStateDirectoryName = 'activation-state'
 $stableLauncherDirectoryName = 'launcher'
 $stableLauncherFileName = 'Muhun MCSV Updater.exe'
-$startMenuShortcutName = 'Muhun MCSV Manager.lnk'
+$productId = 'muhun.mcsv.manager'
+$expectedPublisherCertificateSha256 = '1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71'
+$startMenuShortcutName = 'X MCSV.lnk'
+$legacyStartMenuShortcutName = 'Muhun MCSV Manager.lnk'
 $startupShortcutName = 'Muhun MCSV GUI Activation Broker.lnk'
+$installedUninstallerRelativePath = 'tools\Uninstall-MuhunMcsv.ps1'
+$arpRegistrySubKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuhunMCSV'
 $serviceStopTimeoutSeconds = 120
 
 function Assert-Administrator {
@@ -470,6 +475,364 @@ function Assert-FormalProductVersion {
     if (([string]$versionInfo.ProductVersion).Trim() -cne $ExpectedVersion -or
         ([string]$versionInfo.FileVersion).Trim() -cne $expectedNumericVersion) {
         throw "$Label 的 ProductVersion/FileVersion 與已簽署版本不一致。"
+    }
+}
+
+function Get-OptionalProductServiceSid {
+    try {
+        return ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate(
+            [Security.Principal.SecurityIdentifier])
+    } catch [Security.Principal.IdentityNotMappedException] {
+        return $null
+    }
+}
+
+function New-InstallAclGrants {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Security.Principal.SecurityIdentifier]$InstallerSid,
+
+        [AllowNull()]
+        [Security.Principal.SecurityIdentifier]$ServiceSid,
+
+        [ValidateSet('None', 'ReadAndExecute', 'Modify')]
+        [string]$ServiceRights = 'None'
+    )
+
+    $systemSid = [Security.Principal.SecurityIdentifier]::new(
+        [Security.Principal.WellKnownSidType]::LocalSystemSid,
+        $null)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+        [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+        $null)
+    $grants = [Collections.Generic.List[object]]::new()
+    $grants.Add([pscustomobject]@{
+        Sid = $systemSid
+        Rights = [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    $grants.Add([pscustomobject]@{
+        Sid = $administratorsSid
+        Rights = [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    $grants.Add([pscustomobject]@{
+        Sid = $InstallerSid
+        Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    })
+    if ($null -ne $ServiceSid -and $ServiceRights -cne 'None') {
+        $rights = if ($ServiceRights -ceq 'Modify') {
+            [Security.AccessControl.FileSystemRights]::Modify
+        } else {
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute
+        }
+        $grants.Add([pscustomobject]@{
+            Sid = $ServiceSid
+            Rights = $rights
+        })
+    }
+    return ,$grants.ToArray()
+}
+
+function Set-ExactProtectedPathAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][object[]]$Grants,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    Assert-NoExistingReparsePoints $Path $Label
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label 不可是 reparse point。"
+    }
+    $isDirectory = $item -is [IO.DirectoryInfo]
+    $security = if ($isDirectory) {
+        [Security.AccessControl.DirectorySecurity]::new()
+    } elseif ($item -is [IO.FileInfo]) {
+        [Security.AccessControl.FileSecurity]::new()
+    } else {
+        throw "$Label 不是一般檔案或目錄。"
+    }
+    $security.SetAccessRuleProtection($true, $false)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+        [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+        $null)
+    $security.SetOwner($administratorsSid)
+    foreach ($grant in $Grants) {
+        $rule = if ($isDirectory) {
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]$grant.Sid,
+                [Security.AccessControl.FileSystemRights]$grant.Rights,
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                    [Security.AccessControl.InheritanceFlags]::ObjectInherit,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow)
+        } else {
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]$grant.Sid,
+                [Security.AccessControl.FileSystemRights]$grant.Rights,
+                [Security.AccessControl.AccessControlType]::Allow)
+        }
+        [void]$security.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $item.FullName -AclObject $security -ErrorAction Stop
+}
+
+function Assert-ExactProtectedPathAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][object[]]$Grants,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    Assert-NoExistingReparsePoints $Path $Label
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label 驗證時發現 reparse point。"
+    }
+    $isDirectory = $item -is [IO.DirectoryInfo]
+    $security = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    if (-not $security.AreAccessRulesProtected) {
+        throw "$Label 仍繼承不受信任的 ACL。"
+    }
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+        [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+        $null)
+    $ownerSid = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    if (-not $ownerSid.Equals($administratorsSid)) {
+        throw "$Label 的 owner 不是 BUILTIN\Administrators。"
+    }
+
+    $expected = [Collections.Generic.Dictionary[string, object]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($grant in $Grants) {
+        $sidValue = ([Security.Principal.SecurityIdentifier]$grant.Sid).Value
+        if ($expected.ContainsKey($sidValue)) {
+            throw "$Label 的預期 ACL 含有重複 SID。"
+        }
+        $expected.Add($sidValue, $grant)
+    }
+    $actualRules = @($security.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]))
+    if ($actualRules.Count -ne $expected.Count) {
+        throw "$Label 的明確 ACL 數量不符。"
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($rule in $actualRules) {
+        $sidValue = ([Security.Principal.SecurityIdentifier]$rule.IdentityReference).Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            -not $expected.ContainsKey($sidValue) -or
+            -not $seen.Add($sidValue)) {
+            throw "$Label 含有繼承、拒絕、重複或非預期 ACL：$sidValue"
+        }
+        if ([int64]$rule.FileSystemRights -ne
+            [int64]([Security.AccessControl.FileSystemRights]$expected[$sidValue].Rights)) {
+            throw "$Label 的 $sidValue 權限超出或少於必要範圍。"
+        }
+        $expectedInheritance = if ($isDirectory) {
+            [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        } else {
+            [Security.AccessControl.InheritanceFlags]::None
+        }
+        if ($rule.InheritanceFlags -ne $expectedInheritance -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+            throw "$Label 的 $sidValue ACL 傳播範圍不符。"
+        }
+    }
+    foreach ($sidValue in $expected.Keys) {
+        if (-not $seen.Contains($sidValue)) {
+            throw "$Label 缺少必要 ACL：$sidValue"
+        }
+    }
+}
+
+function Get-InstallTreeServiceRights {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$VersionsRoot,
+        [Parameter(Mandatory = $true)][string]$ActivationStateRoot,
+        [Parameter(Mandatory = $true)][string]$StableLauncherRoot,
+        [Parameter(Mandatory = $true)][string]$ActivePointerPath
+    )
+
+    $normalized = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $normalizedVersions = [IO.Path]::GetFullPath($VersionsRoot).TrimEnd('\', '/')
+    $normalizedActivation = [IO.Path]::GetFullPath($ActivationStateRoot).TrimEnd('\', '/')
+    $normalizedLauncher = [IO.Path]::GetFullPath($StableLauncherRoot).TrimEnd('\', '/')
+    $normalizedPointer = [IO.Path]::GetFullPath($ActivePointerPath).TrimEnd('\', '/')
+    if ([string]::Equals($normalized, $normalizedPointer, [StringComparison]::OrdinalIgnoreCase) -or
+        (Test-IsUnderRoot $normalized $normalizedActivation)) {
+        return 'Modify'
+    }
+    if ([string]::Equals($normalized, $normalizedVersions, [StringComparison]::OrdinalIgnoreCase)) {
+        # The service needs delete-child/create rights here for signed side-by-side updates;
+        # every already provisioned executable below it is reset to read/execute only.
+        return 'Modify'
+    }
+    if (Test-IsUnderRoot $normalized $normalizedLauncher) {
+        return 'None'
+    }
+    return 'ReadAndExecute'
+}
+
+function Set-AndAssertInstallExecutableTreeAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$VersionsRoot,
+        [Parameter(Mandatory = $true)][string]$ActivationStateRoot,
+        [Parameter(Mandatory = $true)][string]$StableLauncherRoot,
+        [Parameter(Mandatory = $true)][string]$ActivePointerPath,
+        [Parameter(Mandatory = $true)]
+        [Security.Principal.SecurityIdentifier]$InstallerSid,
+        [AllowNull()]
+        [Security.Principal.SecurityIdentifier]$ServiceSid
+    )
+
+    Assert-NoExistingReparsePoints $InstallRoot '程式安裝根目錄'
+    $rootRights = Get-InstallTreeServiceRights $InstallRoot $VersionsRoot `
+        $ActivationStateRoot $StableLauncherRoot $ActivePointerPath
+    $rootGrants = @(New-InstallAclGrants $InstallerSid $ServiceSid $rootRights)
+    Set-ExactProtectedPathAcl $InstallRoot $rootGrants '程式安裝根目錄'
+
+    $items = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop)
+    if (@($items | Where-Object {
+        ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    }).Count -ne 0) {
+        throw '程式安裝可執行樹含有 reparse point。'
+    }
+    foreach ($item in $items) {
+        $rights = Get-InstallTreeServiceRights $item.FullName $VersionsRoot `
+            $ActivationStateRoot $StableLauncherRoot $ActivePointerPath
+        $grants = @(New-InstallAclGrants $InstallerSid $ServiceSid $rights)
+        Set-ExactProtectedPathAcl $item.FullName $grants "程式安裝可執行樹：$($item.FullName)"
+    }
+
+    # Re-enumerate after the writes so a concurrent replacement or newly introduced object
+    # cannot escape the final fail-closed ACL and reparse validation.
+    $verifiedItems = @(
+        Get-Item -LiteralPath $InstallRoot -Force -ErrorAction Stop
+        Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+    )
+    foreach ($item in $verifiedItems) {
+        $rights = Get-InstallTreeServiceRights $item.FullName $VersionsRoot `
+            $ActivationStateRoot $StableLauncherRoot $ActivePointerPath
+        $grants = @(New-InstallAclGrants $InstallerSid $ServiceSid $rights)
+        Assert-ExactProtectedPathAcl $item.FullName $grants `
+            "程式安裝可執行樹最終驗證：$($item.FullName)"
+    }
+}
+
+function Get-SignedReleaseManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)]$VerifiedRelease,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $matches = @($VerifiedRelease.Manifest.files | Where-Object {
+        [string]::Equals(
+            [string]$_.path,
+            $RelativePath,
+            [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matches.Count -ne 1 -or
+        $matches[0].sizeBytes -lt 1 -or
+        $matches[0].sizeBytes -gt 2GB -or
+        $matches[0].sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw "已簽署 release manifest 缺少唯一且有效的檔案：$RelativePath"
+    }
+    return $matches[0]
+}
+
+function Remove-TrustedVerifierStaging {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $StagingRoot)) {
+        return
+    }
+    $normalizedStage = [IO.Path]::GetFullPath($StagingRoot).TrimEnd('\', '/')
+    $normalizedInstall = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/')
+    if (-not (Test-IsUnderRoot $normalizedStage $normalizedInstall) -or
+        -not [string]::Equals(
+            [IO.Path]::GetDirectoryName($normalizedStage),
+            $normalizedInstall,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not [IO.Path]::GetFileName($normalizedStage).StartsWith(
+            '.verification-',
+            [StringComparison]::Ordinal)) {
+        throw '拒絕清除不在程式安裝根目錄正下方的 verifier staging。'
+    }
+    Assert-NoExistingReparsePoints $normalizedStage 'verifier staging cleanup'
+    if (@(Get-ChildItem -LiteralPath $normalizedStage -Recurse -Force -ErrorAction Stop |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -ne 0) {
+        throw 'verifier staging 含有 reparse point，拒絕遞迴清除。'
+    }
+    [IO.Directory]::Delete($normalizedStage, $true)
+}
+
+function Invoke-TrustedReleaseVerifier {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)]$VerifiedRelease,
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$InstallRoot
+    )
+
+    $verifierRelativePath = 'Test-MuhunMcsvRelease.ps1'
+    $verifierEntry = Get-SignedReleaseManifestEntry $VerifiedRelease $verifierRelativePath
+    $sourceVerifier = Resolve-SafeSourceFile $Source $verifierRelativePath
+    $publisherSha256 = ([string]$VerifiedRelease.Manifest.publisherCertificateSha256).ToLowerInvariant()
+    if (Test-Path -LiteralPath $StagingRoot) {
+        throw '本次 verifier staging 已存在，拒絕覆寫。'
+    }
+    [IO.Directory]::CreateDirectory($StagingRoot) | Out-Null
+    try {
+        $systemSid = [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::LocalSystemSid,
+            $null)
+        $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+            [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+            $null)
+        $trustedGrants = @(
+            [pscustomobject]@{
+                Sid = $systemSid
+                Rights = [Security.AccessControl.FileSystemRights]::FullControl
+            },
+            [pscustomobject]@{
+                Sid = $administratorsSid
+                Rights = [Security.AccessControl.FileSystemRights]::FullControl
+            }
+        )
+        Set-ExactProtectedPathAcl $StagingRoot $trustedGrants 'verifier staging'
+        Assert-ExactProtectedPathAcl $StagingRoot $trustedGrants 'verifier staging'
+
+        $trustedVerifier = Join-Path $StagingRoot $verifierRelativePath
+        [IO.File]::Copy($sourceVerifier, $trustedVerifier, $false)
+        Set-ExactProtectedPathAcl $trustedVerifier $trustedGrants 'staged release verifier'
+        Assert-ExactProtectedPathAcl $trustedVerifier $trustedGrants 'staged release verifier'
+        $trustedVerifierItem = Get-Item -LiteralPath $trustedVerifier -Force
+        if ($trustedVerifierItem.Length -ne [long]$verifierEntry.sizeBytes -or
+            (Get-Sha256Hex $trustedVerifier) -cne ([string]$verifierEntry.sha256).ToLowerInvariant()) {
+            throw 'staged release verifier 未通過已簽署 manifest 的大小與 SHA-256 驗證。'
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $trustedVerifier
+        if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+            $null -eq $signature.SignerCertificate -or
+            $null -eq $signature.TimeStamperCertificate -or
+            (Get-CertificateSha256 $signature.SignerCertificate) -cne $publisherSha256) {
+            throw 'staged release verifier 未通過相同發布者的可信 Authenticode 與時間戳驗證。'
+        }
+
+        # The call target is now administrator-owned and non-reparse.  SourceDirectory is
+        # passed only as verifier input; it is never used as the executable script path.
+        & $trustedVerifier -ReleaseDirectory $Source | Out-Null
+    } finally {
+        Remove-TrustedVerifierStaging $StagingRoot $InstallRoot
     }
 }
 
@@ -1287,7 +1650,7 @@ function New-ProductShortcut {
         $shortcut.Arguments = $Arguments
         $shortcut.WorkingDirectory = [IO.Path]::GetDirectoryName($TargetPath)
         $shortcut.WindowStyle = $WindowStyle
-        $shortcut.Description = 'Muhun MCSV Manager stable A/B launcher'
+        $shortcut.Description = 'X MCSV stable A/B launcher'
         $shortcut.Save()
     } finally {
         if ($null -ne $shortcut) { [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut) | Out-Null }
@@ -1295,6 +1658,272 @@ function New-ProductShortcut {
     }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "無法建立穩定 GUI 快捷方式：$Path"
+    }
+}
+
+function Assert-TrustedPowerShellHost {
+    $powerShellPath = [IO.Path]::GetFullPath([Environment]::ProcessPath)
+    if ([IO.Path]::GetFileName($powerShellPath) -cne 'pwsh.exe' -or
+        $PSVersionTable.PSVersion -lt [Version]'7.4' -or
+        -not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+        throw 'Apps & Features 解除安裝入口必須由目前可信的 PowerShell 7.4+ pwsh.exe 建立。'
+    }
+    Assert-NoExistingReparsePoints $powerShellPath 'PowerShell 7 host'
+    $trustedHostRoots = @($env:ProgramFiles, ${env:ProgramW6432}) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\', '/') } |
+        Select-Object -Unique
+    if (@($trustedHostRoots | Where-Object {
+        Test-IsUnderRoot $powerShellPath $_
+    }).Count -eq 0) {
+        throw 'PowerShell 7 host 不在受保護的 Program Files 目錄內。'
+    }
+    $hostSignature = Get-AuthenticodeSignature -LiteralPath $powerShellPath
+    if ($hostSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $hostSignature.SignerCertificate) {
+        throw 'PowerShell 7 host 未通過 Windows Authenticode 驗證。'
+    }
+
+    $privilegedWriterSids = @(
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    )
+    $writeMask =
+        [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::FullControl -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $hostAcl = Get-Acl -LiteralPath $powerShellPath -ErrorAction Stop
+    foreach ($rule in @($hostAcl.Access)) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            (([int64]$rule.FileSystemRights -band [int64]$writeMask) -eq 0)) {
+            continue
+        }
+        try {
+            $ruleSid = $rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            throw '無法驗證 PowerShell 7 host 的 ACL 身分。'
+        }
+        if ($ruleSid -notin $privilegedWriterSids) {
+            throw 'PowerShell 7 host 可由非系統身分修改，拒絕建立系統解除安裝入口。'
+        }
+    }
+
+    return $powerShellPath
+}
+
+function Get-ArpRegistrationSnapshot {
+    param([Parameter(Mandatory = $true)][string]$InstallRoot)
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $key = $baseKey.OpenSubKey($arpRegistrySubKey, $false)
+        if ($null -eq $key) {
+            return [pscustomobject]@{ Existed = $false; Values = @() }
+        }
+        try {
+            if ($key.SubKeyCount -ne 0 -or
+                [string]$key.GetValue('ProductId', $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne $productId -or
+                [string]$key.GetValue('PublisherCertificateSha256', $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne
+                    $expectedPublisherCertificateSha256) {
+                throw '現有 Apps & Features 登錄鍵不是 X MCSV 擁有，拒絕覆寫。'
+            }
+            $registeredInstallRoot = [string]$key.GetValue(
+                'InstallLocation',
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ([string]::IsNullOrWhiteSpace($registeredInstallRoot) -or
+                -not [string]::Equals(
+                    [IO.Path]::GetFullPath($registeredInstallRoot).TrimEnd('\', '/'),
+                    [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/'),
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                throw '現有 X MCSV Apps & Features 項目屬於不同安裝目錄。'
+            }
+
+            $values = [Collections.Generic.List[object]]::new()
+            foreach ($valueName in @($key.GetValueNames())) {
+                $values.Add([pscustomobject]@{
+                    Name = $valueName
+                    Kind = $key.GetValueKind($valueName)
+                    Value = $key.GetValue(
+                        $valueName,
+                        $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                })
+            }
+            return [pscustomobject]@{ Existed = $true; Values = @($values) }
+        } finally {
+            $key.Dispose()
+        }
+    } finally {
+        $baseKey.Dispose()
+    }
+}
+
+function Set-ArpRegistrationTransactionally {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Snapshot,
+        [Parameter(Mandatory = $true)][pscustomobject]$Mutation,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][string]$DataRoot,
+        [Parameter(Mandatory = $true)][string]$UninstallerPath,
+        [Parameter(Mandatory = $true)][string]$PowerShellPath
+    )
+
+    Assert-NoExistingReparsePoints $UninstallerPath 'installed X MCSV uninstaller'
+    if (-not (Test-Path -LiteralPath $UninstallerPath -PathType Leaf)) {
+        throw '安裝版本缺少可信解除安裝器。'
+    }
+    $uninstallerSignature = Get-AuthenticodeSignature -LiteralPath $UninstallerPath
+    if ($uninstallerSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $uninstallerSignature.SignerCertificate -or
+        $null -eq $uninstallerSignature.TimeStamperCertificate -or
+        (Get-CertificateSha256 $uninstallerSignature.SignerCertificate) -cne
+            $expectedPublisherCertificateSha256) {
+        throw '安裝版本的解除安裝器未通過固定正式發布者 Authenticode 與時間戳驗證。'
+    }
+    foreach ($commandPath in @($PowerShellPath, $UninstallerPath, $InstallRoot, $DataRoot)) {
+        if ($commandPath.IndexOf('"') -ge 0 -or $commandPath.IndexOf("`r") -ge 0 -or
+            $commandPath.IndexOf("`n") -ge 0) {
+            throw '解除安裝命令含有不安全的路徑字元。'
+        }
+    }
+    $uninstallString = '"' + $PowerShellPath +
+        '" -NoProfile -ExecutionPolicy AllSigned -File "' +
+        $UninstallerPath + '" -InstallRoot "' + $InstallRoot + '" -DataRoot "' + $DataRoot + '"'
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        [Microsoft.Win32.RegistryView]::Registry64)
+    $key = $null
+    try {
+        if ($Snapshot.Existed) {
+            $key = $baseKey.OpenSubKey($arpRegistrySubKey, $true)
+        } else {
+            $unexpectedKey = $baseKey.OpenSubKey($arpRegistrySubKey, $false)
+            if ($null -ne $unexpectedKey) {
+                $unexpectedKey.Dispose()
+                throw 'Apps & Features 登錄鍵在快照後意外出現，拒絕覆寫。'
+            }
+            $key = $baseKey.CreateSubKey(
+                $arpRegistrySubKey,
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree)
+            $Mutation.Created = $true
+        }
+        if ($null -eq $key) {
+            throw '無法開啟或建立 X MCSV Apps & Features 登錄鍵。'
+        }
+        if ($Snapshot.Existed -and
+            ($key.SubKeyCount -ne 0 -or
+                [string]$key.GetValue('ProductId', $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne $productId -or
+                [string]$key.GetValue('PublisherCertificateSha256', $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne
+                    $expectedPublisherCertificateSha256)) {
+            throw 'Apps & Features 登錄鍵在快照後失去 X MCSV 所有權標記。'
+        }
+        $Mutation.Touched = $true
+        if ($Mutation.Created -and $key.SubKeyCount -ne 0) {
+            throw '本次建立的 Apps & Features 登錄鍵含有非預期子鍵。'
+        }
+        $key.SetValue('ProductId', $productId, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue(
+            'PublisherCertificateSha256',
+            $expectedPublisherCertificateSha256,
+            [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('DisplayName', 'X MCSV', [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('DisplayVersion', $Version, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('Publisher', 'Muhun', [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('InstallLocation', $InstallRoot, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('UninstallString', $uninstallString, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('NoModify', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue('NoRepair', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue('WindowsInstaller', 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.Flush()
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
+function Restore-ArpRegistrationTransaction {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Snapshot,
+        [Parameter(Mandatory = $true)][pscustomobject]$Mutation
+    )
+    if (-not $Mutation.Touched) { return }
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $key = $baseKey.OpenSubKey($arpRegistrySubKey, $true)
+        if ($null -eq $key) {
+            if ($Snapshot.Existed) {
+                throw 'X MCSV Apps & Features 舊登錄鍵已消失，無法回復。'
+            }
+            return
+        }
+        try {
+            if ($Snapshot.Existed) {
+                if ($key.SubKeyCount -ne 0 -or
+                    [string]$key.GetValue('ProductId', $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne $productId -or
+                    [string]$key.GetValue('PublisherCertificateSha256', $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne
+                        $expectedPublisherCertificateSha256) {
+                    throw 'Apps & Features 登錄鍵的所有權標記已變更，拒絕回復。'
+                }
+                foreach ($valueName in @($key.GetValueNames())) {
+                    $key.DeleteValue($valueName, $false)
+                }
+                foreach ($value in @($Snapshot.Values)) {
+                    $key.SetValue($value.Name, $value.Value, $value.Kind)
+                }
+                $key.Flush()
+                return
+            }
+            if (-not $Mutation.Created -or $key.SubKeyCount -ne 0) {
+                throw 'Apps & Features 登錄鍵不是本次安裝新建，拒絕刪除。'
+            }
+            $knownNewValues = @(
+                'ProductId', 'PublisherCertificateSha256', 'DisplayName', 'DisplayVersion',
+                'Publisher', 'InstallLocation', 'UninstallString',
+                'NoModify', 'NoRepair', 'WindowsInstaller'
+            )
+            foreach ($valueName in @($key.GetValueNames())) {
+                if ($valueName -notin $knownNewValues) {
+                    throw '本次新建的 Apps & Features 登錄鍵出現非預期值，拒絕刪除。'
+                }
+            }
+            $partialProductId = [string]$key.GetValue(
+                'ProductId', $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $partialPublisher = [string]$key.GetValue(
+                'PublisherCertificateSha256', $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ((-not [string]::IsNullOrEmpty($partialProductId) -and
+                    $partialProductId -cne $productId) -or
+                (-not [string]::IsNullOrEmpty($partialPublisher) -and
+                    $partialPublisher -cne $expectedPublisherCertificateSha256)) {
+                throw '本次新建的 Apps & Features 登錄鍵含有不同所有權標記。'
+            }
+        } finally {
+            $key.Dispose()
+        }
+        $baseKey.DeleteSubKey($arpRegistrySubKey, $false)
+    } finally {
+        $baseKey.Dispose()
     }
 }
 
@@ -1378,7 +2007,7 @@ function Invoke-PostInstallGuiActivation {
     } catch {
         Write-Warning `
             (("Windows Service 已安裝並通過健康驗證，但桌面管理器無法自動開啟：{0} " +
-              "請從開始功能表開啟『Muhun MCSV Manager』；下次登入也會自動啟動 broker。") -f
+              "請從開始功能表開啟『X MCSV』；下次登入也會自動啟動 broker。") -f
                 $_.Exception.Message) `
             -WarningAction Continue
         return $false
@@ -1442,7 +2071,7 @@ function Assert-ReleasePayload {
     }
     $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
     if ($manifest.schemaVersion -ne 1 -or
-        $manifest.productId -ne 'muhun.mcsv.manager' -or
+        $manifest.productId -ne $productId -or
         $manifest.installable -ne $true -or
         $manifest.runtimeIdentifier -ne 'win-x64' -or
         $manifest.version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$' -or
@@ -1450,6 +2079,7 @@ function Assert-ReleasePayload {
         $manifest.signatureAlgorithm -ne 'rsa-pss-sha256' -or
         $manifest.publisherTrustMode -notin @('self-signed-local', 'public-ca') -or
         $manifest.publisherCertificateSha256 -notmatch '^[a-f0-9]{64}$' -or
+        $manifest.publisherCertificateSha256 -cne $expectedPublisherCertificateSha256 -or
         $manifest.serviceEntryPoint -ne 'service-win-x64/Muhun MCSV Service.exe' -or
         $manifest.entryPoint -ne 'gui-win-x64/Muhun MCSV Manager.exe' -or
         $manifest.updaterEntryPoint -ne 'updater-win-x64/Muhun MCSV Updater.exe') {
@@ -1547,7 +2177,8 @@ function Assert-ReleasePayload {
                 'updater-win-x64/Muhun MCSV Updater.exe',
                 'Install-MuhunMcsv.ps1',
                 'Uninstall-MuhunMcsv.ps1',
-                'Test-MuhunMcsvRelease.ps1'
+                'Test-MuhunMcsvRelease.ps1',
+                'tools/Uninstall-MuhunMcsv.ps1'
             )
             $listedAuthenticode = @($manifest.authenticodeFiles)
             if ($listedAuthenticode.Count -ne $requiredAuthenticode.Count -or
@@ -1566,6 +2197,10 @@ function Assert-ReleasePayload {
                     (Get-CertificateSha256 $signature.SignerCertificate) -ne $certificateSha256) {
                     throw "$relative 尚未通過相同發布者的可信 Authenticode 與時間戳驗證。"
                 }
+            }
+            if ((Get-Sha256Hex (Resolve-SafeSourceFile $Source 'Uninstall-MuhunMcsv.ps1')) -cne
+                (Get-Sha256Hex (Resolve-SafeSourceFile $Source 'tools/Uninstall-MuhunMcsv.ps1'))) {
+                throw '發行根目錄與版本樹的解除安裝器不是相同的已簽署檔案。'
             }
 
             $updateManifestPath = Resolve-SafeSourceFile $Source $manifest.updateManifest.path
@@ -1617,6 +2252,7 @@ function Assert-ReleasePayload {
                 'service-win-x64/Muhun MCSV Service.exe',
                 'gui-win-x64/Muhun MCSV Manager.exe',
                 'updater-win-x64/Muhun MCSV Updater.exe',
+                'tools/Uninstall-MuhunMcsv.ps1',
                 'service-win-x64/update-signing-public-key.json',
                 'providers/muhun.catalog/deployment.v1.json',
                 'providers/muhun.catalog/muhun.catalog.mcsvp',
@@ -1832,10 +2468,6 @@ if (-not [string]::Equals($scriptDirectory, $source, [StringComparison]::Ordinal
 }
 
 $verifiedRelease = Assert-ReleasePayload $source
-# The independently Authenticode-signed verifier also validates the embedded provider's
-# domain-separated ECDSA signature, payload digest table/entry point, and the Android artifact
-# metadata. Installation remains fail-closed before any managed directory or Service is changed.
-& (Join-Path $source 'Test-MuhunMcsvRelease.ps1') -ReleaseDirectory $source | Out-Null
 $manifest = $verifiedRelease.Manifest
 $installExistedBefore = Test-Path -LiteralPath $install -PathType Container
 $dataExistedBefore = Test-Path -LiteralPath $data -PathType Container
@@ -1844,7 +2476,10 @@ Assert-ManagedRootOrEmpty $data $dataMarker
 $versionsRoot = Join-Path $install 'versions'
 $versionRoot = Join-Path $versionsRoot $manifest.version
 $stagingRoot = Join-Path $install ".staging-$([guid]::NewGuid().ToString('N'))"
-if (-not (Test-IsUnderRoot $versionRoot $install) -or -not (Test-IsUnderRoot $stagingRoot $install)) {
+$verifierStagingRoot = Join-Path $install ".verification-$([guid]::NewGuid().ToString('N'))"
+if (-not (Test-IsUnderRoot $versionRoot $install) -or
+    -not (Test-IsUnderRoot $stagingRoot $install) -or
+    -not (Test-IsUnderRoot $verifierStagingRoot $install)) {
     throw '解析後的安裝目標超出程式安裝目錄。'
 }
 
@@ -1866,6 +2501,7 @@ $previousInstallerSidBinding = $null
 $installerSidBindingExisted = $false
 $installationApplied = $false
 $postInstallBootstrapperPath = $null
+$arpMutation = [pscustomobject]@{ Touched = $false; Created = $false }
 $ownedParentDirectories = [Collections.Generic.Dictionary[string, object]]::new(
     [StringComparer]::OrdinalIgnoreCase)
 $activePointerPath = Join-Path $install 'active-version.v1'
@@ -1879,6 +2515,7 @@ $stableLauncherMutation = [pscustomobject]@{
     PreviousSha256 = $null
 }
 $targetGuiExecutable = Join-Path $versionRoot 'gui-win-x64\Muhun MCSV Manager.exe'
+$installedUninstallerPath = Join-Path $versionRoot $installedUninstallerRelativePath
 $programsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
 $startupDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
 if ([string]::IsNullOrWhiteSpace($programsDirectory) -or
@@ -1886,6 +2523,7 @@ if ([string]::IsNullOrWhiteSpace($programsDirectory) -or
     throw '無法解析目前安裝帳號的 Start Menu/Startup 目錄。'
 }
 $startMenuShortcutPath = Join-Path $programsDirectory $startMenuShortcutName
+$legacyStartMenuShortcutPath = Join-Path $programsDirectory $legacyStartMenuShortcutName
 $startupShortcutPath = Join-Path $startupDirectory $startupShortcutName
 $installerIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($null -eq $installerIdentity.User -or
@@ -1894,6 +2532,10 @@ if ($null -eq $installerIdentity.User -or
     throw '正式安裝必須由一個可辨識的互動式 Windows 使用者帳號執行。'
 }
 $installerSidValue = $installerIdentity.User.Value
+$installerSid = $installerIdentity.User
+$trustedPowerShellPath = Assert-TrustedPowerShellHost
+$arpSnapshot = Get-ArpRegistrationSnapshot -InstallRoot $install
+$installTreeServiceSid = Get-OptionalProductServiceSid
 $operatorsGroupMutation = [pscustomobject]@{
     GroupCreated = $false
     MemberAdded = $false
@@ -1962,13 +2604,32 @@ if (Test-Path -LiteralPath $installerSidBindingPath -PathType Leaf) {
 }
 
 try {
-    if ($PSCmdlet.ShouldProcess($install, "安裝 Muhun MCSV Manager $($manifest.version)")) {
+    if ($PSCmdlet.ShouldProcess($install, "安裝 X MCSV $($manifest.version)")) {
         Add-OwnedImmediateParentDirectory $install $ownedParentDirectories
         Add-OwnedImmediateParentDirectory $data $ownedParentDirectories
         New-Item -ItemType Directory -Path $install -Force | Out-Null
         New-Item -ItemType Directory -Path $versionsRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $activationStateRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $stableLauncherRoot -Force | Out-Null
+        # Before any release script is invoked, remove inherited/custom-user write access from
+        # a custom InstallRoot.  Existing service access is retained only when its virtual SID
+        # can already be resolved during an upgrade.
+        Set-AndAssertInstallExecutableTreeAcl `
+            -InstallRoot $install `
+            -VersionsRoot $versionsRoot `
+            -ActivationStateRoot $activationStateRoot `
+            -StableLauncherRoot $stableLauncherRoot `
+            -ActivePointerPath $activePointerPath `
+            -InstallerSid $installerSid `
+            -ServiceSid $installTreeServiceSid
+        # The independently signed verifier runs only from this administrator-owned staging.
+        # It validates the provider signature/digests and the Android metadata before any
+        # Service or data-root mutation takes place.
+        Invoke-TrustedReleaseVerifier `
+            -Source $source `
+            -VerifiedRelease $verifiedRelease `
+            -StagingRoot $verifierStagingRoot `
+            -InstallRoot $install
         New-Item -ItemType Directory -Path $data -Force | Out-Null
         $serviceDataDirectories = @(
             'data', 'secrets', 'operations', 'imports', 'servers', 'runtimes',
@@ -2018,11 +2679,15 @@ try {
                 }
             }
             $installedMetadataSource = Resolve-SafeSourceFile $source 'installed-version.v1.json'
+            $installedMetadataEntry = Get-SignedReleaseManifestEntry `
+                $verifiedRelease 'installed-version.v1.json'
             $installedMetadataDestination = Join-Path $stagingRoot 'installed-version.v1.json'
             [IO.File]::Copy($installedMetadataSource, $installedMetadataDestination, $false)
-            if ((Get-Sha256Hex $installedMetadataDestination) -ne
-                (Get-Sha256Hex $installedMetadataSource)) {
-                throw '初次安裝版本 metadata 複製後雜湊不符。'
+            if ((Get-Item -LiteralPath $installedMetadataDestination -Force).Length -ne
+                    [long]$installedMetadataEntry.sizeBytes -or
+                (Get-Sha256Hex $installedMetadataDestination) -cne
+                    ([string]$installedMetadataEntry.sha256).ToLowerInvariant()) {
+                throw '初次安裝版本 metadata 未通過已簽署 manifest 驗證。'
             }
             Move-Item -LiteralPath $stagingRoot -Destination $versionRoot
             $versionProvisioned = $true
@@ -2059,8 +2724,10 @@ try {
         }
 
         Invoke-Sc sidtype $serviceName 'unrestricted' | Out-Null
-        $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate(
-            [Security.Principal.SecurityIdentifier]).Value
+        $installTreeServiceSid = ([Security.Principal.NTAccount]::new(
+            'NT SERVICE',
+            $serviceName)).Translate([Security.Principal.SecurityIdentifier])
+        $serviceSid = $installTreeServiceSid.Value
         if ($null -eq $previousServiceSddl -and -not $serviceCreated) {
             $previousServiceSddl = Get-ServiceSecurityDescriptor
         }
@@ -2118,32 +2785,17 @@ try {
         }
 
 
-        $installerReadExecuteAcl = '*' + $installerSidValue + ':(OI)(CI)RX'
-        $installAclOutput = & "$env:SystemRoot\System32\icacls.exe" $install `
-            '/grant:r' 'NT SERVICE\MuhunMCSV:(RX)' $installerReadExecuteAcl 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "程式安裝根目錄 ACL 建立失敗：$($installAclOutput -join ' ')"
-        }
-        foreach ($serviceWritableDirectory in @($versionsRoot, $activationStateRoot)) {
-            $writableAclOutput = & "$env:SystemRoot\System32\icacls.exe" $serviceWritableDirectory `
-                '/grant:r' 'NT SERVICE\MuhunMCSV:(OI)(CI)M' $installerReadExecuteAcl 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "Updater scoped ACL 建立失敗：$($writableAclOutput -join ' ')"
-            }
-        }
-        $launcherAclOutput = & "$env:SystemRoot\System32\icacls.exe" $stableLauncherRoot `
-            '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' `
-            'BUILTIN\Administrators:(OI)(CI)F' $installerReadExecuteAcl 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "穩定 GUI launcher ACL 建立失敗：$($launcherAclOutput -join ' ')"
-        }
-
         Write-AtomicText $activePointerPath $manifest.version
-        $activePointerAclOutput = & "$env:SystemRoot\System32\icacls.exe" $activePointerPath `
-            '/grant:r' 'NT SERVICE\MuhunMCSV:(M)' ('*' + $installerSidValue + ':(R)') 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "active-version.v1 scoped ACL 建立失敗：$($activePointerAclOutput -join ' ')"
-        }
+        # Finalize and recursively attest the executable tree after every installed file and
+        # mutable pointer exists, but before the service or GUI launcher can execute it.
+        Set-AndAssertInstallExecutableTreeAcl `
+            -InstallRoot $install `
+            -VersionsRoot $versionsRoot `
+            -ActivationStateRoot $activationStateRoot `
+            -StableLauncherRoot $stableLauncherRoot `
+            -ActivePointerPath $activePointerPath `
+            -InstallerSid $installerSid `
+            -ServiceSid $installTreeServiceSid
 
         $quotedInstallRoot = '"' + $install.Replace('"', '') + '"'
         if (-not (Test-Path -LiteralPath $startMenuShortcutPath -PathType Leaf)) {
@@ -2166,6 +2818,14 @@ try {
             -ExpectedVersion $manifest.version `
              -ExpectedInstallationId $previousInstallationId `
              -TimeoutSeconds 90)
+        Set-ArpRegistrationTransactionally `
+            -Snapshot $arpSnapshot `
+            -Mutation $arpMutation `
+            -Version $manifest.version `
+            -InstallRoot $install `
+            -DataRoot $data `
+            -UninstallerPath $installedUninstallerPath `
+            -PowerShellPath $trustedPowerShellPath
         $postInstallBootstrapperPath = $sourceStableLauncher
         Complete-OwnedImmediateParentDirectories $ownedParentDirectories
         Complete-StableLauncherTransaction `
@@ -2176,6 +2836,9 @@ try {
 } catch {
     $installationFailure = $_
     $rollbackErrors = [Collections.Generic.List[string]]::new()
+    try {
+        Restore-ArpRegistrationTransaction -Snapshot $arpSnapshot -Mutation $arpMutation
+    } catch { $rollbackErrors.Add($_.Exception.Message) }
     try {
         $current = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($null -ne $current -and $current.Status -ne 'Stopped') {
@@ -2193,11 +2856,12 @@ try {
             }
         } else {
             Write-AtomicText $activePointerPath $previousActiveVersion
-            $restorePointerAclOutput = & "$env:SystemRoot\System32\icacls.exe" $activePointerPath `
-                '/grant:r' 'NT SERVICE\MuhunMCSV:(M)' ('*' + $installerSidValue + ':(R)') 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "active-version.v1 回復 ACL 失敗：$($restorePointerAclOutput -join ' ')"
-            }
+            $restoredPointerGrants = @(New-InstallAclGrants `
+                $installerSid $installTreeServiceSid 'Modify')
+            Set-ExactProtectedPathAcl `
+                $activePointerPath $restoredPointerGrants 'active-version.v1 回復 ACL'
+            Assert-ExactProtectedPathAcl `
+                $activePointerPath $restoredPointerGrants 'active-version.v1 回復 ACL'
         }
     } catch { $rollbackErrors.Add($_.Exception.Message) }
 
@@ -2277,6 +2941,9 @@ try {
                 -Version $manifest.version
         } catch { $rollbackErrors.Add($_.Exception.Message) }
     }
+    try {
+        Remove-TrustedVerifierStaging $verifierStagingRoot $install
+    } catch { $rollbackErrors.Add($_.Exception.Message) }
     $temporaryPaths = @($stagingRoot)
     if (-not [string]::IsNullOrWhiteSpace($failedVersionQuarantine)) {
         $temporaryPaths += $failedVersionQuarantine
@@ -2302,6 +2969,18 @@ try {
             -PublisherCertificateSha256 $manifest.publisherCertificateSha256 `
             -Mutation $stableLauncherMutation
     } catch { $rollbackErrors.Add($_.Exception.Message) }
+    if ($installExistedBefore -and (Test-Path -LiteralPath $install -PathType Container)) {
+        try {
+            Set-AndAssertInstallExecutableTreeAcl `
+                -InstallRoot $install `
+                -VersionsRoot $versionsRoot `
+                -ActivationStateRoot $activationStateRoot `
+                -StableLauncherRoot $stableLauncherRoot `
+                -ActivePointerPath $activePointerPath `
+                -InstallerSid $installerSid `
+                -ServiceSid $installTreeServiceSid
+        } catch { $rollbackErrors.Add($_.Exception.Message) }
+    }
     if (-not $installExistedBefore -and (Test-Path -LiteralPath $install -PathType Container)) {
         try {
             $remaining = @(Get-ChildItem -LiteralPath $install -Recurse -Force)
@@ -2368,6 +3047,13 @@ if ($installationApplied -and
 }
 
 if ($installationApplied) {
+    if (Test-Path -LiteralPath $legacyStartMenuShortcutPath -PathType Leaf) {
+        try {
+            Remove-Item -LiteralPath $legacyStartMenuShortcutPath -Force
+        } catch {
+            Write-Warning "X MCSV 已安裝，但無法移除舊版開始功能表捷徑：$($_.Exception.Message)"
+        }
+    }
     $guiActivated = Invoke-PostInstallGuiActivation `
         -BootstrapperPath $postInstallBootstrapperPath `
         -LauncherPath $stableLauncherPath `
@@ -2375,5 +3061,5 @@ if ($installationApplied) {
     if ($guiActivated) {
         Write-Host '桌面管理器已在目前的互動式 Windows 工作階段安全開啟。'
     }
-    Write-Host "Muhun MCSV Manager $($manifest.version) 安裝完成；舊版本已保留供回復。"
+    Write-Host "X MCSV $($manifest.version) 安裝完成；舊版本已保留供回復。"
 }

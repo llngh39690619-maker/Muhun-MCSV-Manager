@@ -213,14 +213,6 @@ public sealed class ExistingServerImportChoiceDialogLifecycleTests
         Assert.InRange(Math.Abs(first.ActualWidth - second.ActualWidth), 0, 0.75);
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 }

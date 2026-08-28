@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using MinecraftServerManager.Contracts.Localization;
 
 namespace MinecraftServerManager.Contracts.Tests;
@@ -79,5 +80,31 @@ public sealed class ProductLocalizationCatalogTests
 
         Assert.Equal(ProductLocalizationCatalog.FallbackCulture, document.Culture);
         Assert.Equal("繁體中文", document.Strings["language.zh-TW"]);
+    }
+
+    [Fact]
+    public void ClientWorkspaceContract_IsCompleteAndEnglishValuesContainNoHanText()
+    {
+        var clientKeys = ProductLocalizationCatalog.Keys
+            .Where(key => key.StartsWith("client.", StringComparison.Ordinal))
+            .ToArray();
+        Assert.True(clientKeys.Length >= 200);
+
+        var chinese = ProductLocalizationCatalog.GetDocument("zh-TW").Strings;
+        var english = ProductLocalizationCatalog.GetDocument("en-US").Strings;
+        var han = new Regex(@"[\u3400-\u9fff]", RegexOptions.CultureInvariant);
+        Assert.All(clientKeys, key =>
+        {
+            Assert.True(chinese.ContainsKey(key), $"zh-TW is missing {key}.");
+            Assert.True(english.ContainsKey(key), $"en-US is missing {key}.");
+            Assert.DoesNotMatch(han, english[key]);
+        });
+
+        Assert.Equal(
+            "Showing 20 of 100 results",
+            ProductLocalizationCatalog.Format("en-US", "client.vm.catalog.resultsSummary", 20, 100));
+        Assert.Equal(
+            "已顯示 20 / 100 個結果",
+            ProductLocalizationCatalog.Format("zh-TW", "client.vm.catalog.resultsSummary", 20, 100));
     }
 }

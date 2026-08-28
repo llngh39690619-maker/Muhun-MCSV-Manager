@@ -275,6 +275,33 @@ public sealed class OnlineModpackArtworkCacheTests
     }
 
     [Fact]
+    public async Task GetOrCacheAsync_TrimsOwnedCacheFilesToTheBoundedLimit()
+    {
+        using var directory = new TemporaryDirectory();
+        var paths = new ApplicationPaths(directory.Path);
+        Directory.CreateDirectory(paths.OnlineModpackArtworkCache);
+        for (var index = 0; index < OnlineModpackArtworkCache.MaximumCacheFiles + 20; index++)
+        {
+            var name = index.ToString("x64", System.Globalization.CultureInfo.InvariantCulture);
+            var path = Path.Combine(paths.OnlineModpackArtworkCache, name + ".png");
+            await File.WriteAllBytesAsync(path, PngBytes());
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-index - 1));
+        }
+
+        using var client = new HttpClient(new StubHandler((_, _) =>
+            Task.FromResult(ImageResponse(PngBytes(), "image/png"))));
+        using var cache = CreateCache(directory.Path, client);
+
+        var result = await cache.GetOrCacheAsync(OnlineModpackProvider.Modrinth, ApprovedUri);
+
+        Assert.NotNull(result);
+        Assert.InRange(
+            Directory.EnumerateFiles(paths.OnlineModpackArtworkCache, "*.*").Count(),
+            1,
+            OnlineModpackArtworkCache.MaximumCacheFiles);
+    }
+
+    [Fact]
     public async Task GetOrCacheAsync_TransientServerFailureRetriesExactlyOnce()
     {
         using var directory = new TemporaryDirectory();

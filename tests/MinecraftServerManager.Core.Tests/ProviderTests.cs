@@ -77,7 +77,7 @@ public sealed class ProviderTests
                     "image_type": "jdk",
                     "package": {
                       "name": "OpenJDK16U-jdk.zip",
-                      "link": "https://example.test/java16.zip",
+                      "link": "https://github.com/adoptium/temurin16-binaries/releases/download/jdk-16.0.2%2B7/OpenJDK16U-jdk.zip",
                       "size": 123,
                       "checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     }
@@ -112,7 +112,7 @@ public sealed class ProviderTests
                     "image_type": "jdk",
                     "package": {
                       "name": "OpenJDK21U-jdk.zip",
-                      "link": "https://example.test/jdk21.zip",
+                      "link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk.zip",
                       "size": 123,
                       "checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     }
@@ -153,7 +153,7 @@ public sealed class ProviderTests
                         "image_type": "jdk",
                         "package": {
                           "name": "OpenJDK21U-jdk.zip",
-                          "link": "https://example.test/jdk21.zip",
+                          "link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.9%2B10/OpenJDK21U-jdk.zip",
                           "size": {{archive.Length}},
                           "checksum": "{{sha}}"
                         }
@@ -230,7 +230,7 @@ public sealed class ProviderTests
                 "image_type": "jre",
                 "package": {
                   "name": "OpenJDK21U-jre.zip",
-                  "link": "https://example.test/java21.zip",
+                  "link": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.1%2B1/OpenJDK21U-jre.zip",
                   "size": 1,
                   "checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 }

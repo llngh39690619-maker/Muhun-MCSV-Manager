@@ -232,16 +232,8 @@ public sealed class RemoteAccountProvisioningServiceTests
         Assert.DoesNotContain("AcceptAll", source, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string GetAppSourcePath(
-        string relativePath,
-        [System.Runtime.CompilerServices.CallerFilePath] string testFilePath = "")
-        => Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(testFilePath)!,
-            "..",
-            "..",
-            "src",
-            "MinecraftServerManager.App",
-            relativePath));
+    private static string GetAppSourcePath(string relativePath)
+        => TestRepositoryPaths.AppSource(relativePath);
 
     private sealed class CapturingSender : IVerificationEmailSender
     {

@@ -1,24 +1,29 @@
-# Muhun MCSV Manager
+# X MCSV
 
-Muhun MCSV Manager 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器管理工具。目前公開的來源快照版本為 **1.0.8**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前公開的來源快照版本為 **1.1.0**。
 
-產品採用「Windows Service 唯一寫入者」架構：Minecraft 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。
+Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：** 本 repository 目前提供原始碼與技術文件。若 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 尚未出現完整的 1.0.8 發行資產，表示公開安裝包尚未發布；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
+> **發行狀態：** 1.1.0 正式位元、簽章、2,510 項測試及獨立磁碟驗證已完成；本 repository 目前提供原始碼與技術文件，但不表示 GitHub Release 已發布。只有 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 中完整列出的 1.1.0 發行資產才是公開安裝包；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
 
 ## English summary
 
-Muhun MCSV Manager is a self-hosted Windows desktop and web-based Minecraft server manager. It combines a least-privilege Windows Service, WPF desktop GUI, responsive Web/PWA panel, role-based access control, backups, modpack workflows, notifications, provider isolation, and secure HTTPS remote administration.
+X MCSV is a self-hosted Windows desktop and web-based Minecraft server and client manager. It combines a least-privilege Windows Service, WPF desktop GUI, responsive Web/PWA panel, role-based access control, backups, modpack workflows, notifications, provider isolation, and secure HTTPS remote administration.
 
-The CurseForge integration is designed to use the official API, respect each author's third-party distribution setting, attribute projects and authors, avoid rehosting files, and limit requests through caching and bounded queries. No CurseForge API key or other production credential is committed to this repository.
+The server-side CurseForge catalog uses the official API with a user-supplied, in-memory API key, respects each author's third-party distribution setting, attributes projects and authors, avoids rehosting files, and bounds requests through caching and query limits. The Java client workspace does not scrape CurseForge or embed a CurseForge API key. No production credential is committed to this repository.
 
 ## 主要功能
 
 - 建立、匯入、啟動、停止、重新啟動及批次管理多個 Minecraft Server。
+- 建立與啟動隔離的 Minecraft Java 客戶端；只列 Mojang 正式 release，支援 Vanilla、Fabric、Forge、NeoForge、Quilt。OptiFine／LabyMod 僅交給各自的官方外部安裝流程，不靜默下載或鏡像檔案。
+- 基岩版不建立受管理 Java 實例；介面只交給固定的 Microsoft 官方 Minecraft Launcher／Store 入口。
+- Microsoft OAuth 與 Minecraft Java 擁有權檢查；token 僅以目前 Windows 使用者的 DPAPI vault 保存，不要求 Microsoft 密碼。
+- 客戶端 Java 自動準備、全域／自動／手動記憶體、解析度、全螢幕、快速啟動、系統匣、GPU 偏好及有界即時日誌。
+- 客戶端模組、資源包、光影、地圖與截圖管理；Modrinth 安全安裝及 FTB 官方 App 協定交接。客戶端不爬取 CurseForge 網頁，也不把 API Key 寫入 EXE。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時從 `25565` 起選擇最低可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
-- Modrinth、FTB 與 CurseForge 模組包目錄，支援搜尋、排序、遊戲版本、Loader、分類、預覽圖及背景安裝。
+- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；客戶端目錄支援 Modrinth 驗證安裝、FTB 官方 App 交接，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
 - Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載與完整性驗證。
 - 多帳號、角色、全域與逐 Server 權限、記住裝置、最後 Owner 防護及 SQLite 稽核。
@@ -31,9 +36,11 @@ The CurseForge integration is designed to use the official API, respect each aut
 
 ```text
 Windows WPF GUI
-       │ ACL 保護的 Named Pipe IPC API 1.5
-       ▼
-MuhunMCSV Windows Service
+       ├─ 目前 Windows 使用者 Session：隔離 Java 客戶端／DPAPI 帳號 Vault
+       │
+       └─ ACL 保護的 Named Pipe IPC API 1.5
+                         ▼
+               MuhunMCSV Windows Service
        ├─ Server Runtime／Port／Console
        ├─ Backup／Modpack Update／Rollback
        ├─ Account／RBAC／Audit
@@ -63,6 +70,8 @@ src/
 ├─ MinecraftServerManager.BuiltinProvider/  內建來源 Provider
 ├─ MinecraftServerManager.ProviderHost/     隔離 Provider Host
 ├─ MinecraftServerManager.Client/           GUI IPC Client
+├─ MinecraftServerManager.GameClient/       Minecraft Java 客戶端安裝、登入、啟動與內容管理
+├─ MinecraftServerManager.GameClient.Contracts/ 客戶端持久化與目錄契約
 ├─ MinecraftServerManager.Contracts/        版本化契約
 └─ MinecraftServerManager.Updater/          A/B 更新協調器
 
@@ -85,7 +94,9 @@ docs/                                       架構、操作、安全與驗收文
 
 - 安裝／升級 Windows Service 時需要系統管理員權限。
 - 正式 Windows 執行檔為 self-contained，不需另行安裝 .NET Runtime。
+- 正式發行目錄不是 portable 版；必須執行其中已簽署的 `Install-MuhunMcsv.ps1`，不能把 ZIP 解壓後只雙擊某一個 EXE 當成完整安裝。
 - Minecraft Server 仍須使用符合其版本與 Loader 要求的 Java。
+- Minecraft 客戶端可由 X MCSV 按遊戲版本自動下載並驗證 Eclipse Adoptium Java；也可在實例設定中指定既有 Java。
 
 ## 從來源建置與測試
 
@@ -106,7 +117,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-正式可散發成品必須再經過 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、封裝及獨立磁碟驗證。詳細流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+1.1.0 正式成品已完成 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、29 個檔案的逐檔 SHA-256、封裝及獨立磁碟驗證。詳細結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -120,12 +131,13 @@ dotnet test .\MinecraftServerManager.sln `
 
 ## CurseForge 與第三方內容
 
-- CurseForge 查詢／下載使用官方 API，並遵守專案作者的 Distribution 設定。
-- API Key 不會寫入原始碼、repository、設定或日誌；目前由使用者在需要該次操作時提供並只在記憶體中暫存。
-- MCSV 不重新託管第三方模組包，並在介面顯示來源、專案與作者資訊。
+- Server 端 CurseForge 查詢／下載使用官方 API，並遵守專案作者的 Distribution 設定。
+- CurseForge API Key 不會寫入原始碼、repository、設定或日誌；由使用者在需要該次 Server 端操作時提供，並只在該次流程的記憶體中暫存。
+- 客戶端工作區不把 CurseForge API Key 寫入 EXE，也不爬取網頁；免金鑰安裝使用 Modrinth，FTB 模組包交給官方 FTB App。
+- X MCSV 不重新託管第三方模組包，並在介面顯示來源、專案與作者資訊。
 - 使用者仍須遵守 Minecraft EULA、平台服務條款及各模組／模組包授權。
 
-Muhun MCSV Manager 是獨立開發的專案，不隸屬於、未獲 Microsoft、Mojang Studios、Modrinth、CurseForge、Feed The Beast、Eclipse Adoptium、Tailscale、Cloudflare 或 Discord 背書。
+X MCSV 是獨立開發的專案，不隸屬於、未獲 Microsoft、Mojang Studios、Modrinth、CurseForge、Feed The Beast、Eclipse Adoptium、Tailscale、Cloudflare 或 Discord 背書。
 
 ## 安全
 
@@ -141,13 +153,14 @@ Muhun MCSV Manager 是獨立開發的專案，不隸屬於、未獲 Microsoft、
 - 公開的 GitHub 更新 feed 尚未部署前，GUI 自動下載更新不可使用。
 - iOS 版本是可加入主畫面的 PWA，不是 App Store 原生 IPA。
 - Android 版本是 HTTPS WebView shell，目前不是 Google Play 發行。
+- 基岩版只提供 Microsoft 官方 Minecraft Launcher／Store 交接，不由 X MCSV 下載、安裝或管理為本機實例。
 - 尚未提供「玩家連線時喚醒、無人時自動關閉」功能。
 - 模組包更新可保護檔案並回復，但無法保證任意第三方模組跨版本的語意相容性。
 
 ## 文件
 
-- [1.0.8 使用說明](docs/使用說明-1.0.8.md)
-- [1.0.8 測試報告](docs/測試報告-1.0.8.md)
+- [1.1.0 使用說明](docs/使用說明-1.1.0.md)
+- [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)
 - [正式產品架構](docs/正式產品-架構-1.0.md)
 - [線上模組包目錄](docs/正式產品-線上模組包目錄.md)
 - [第三最終階段驗收矩陣](docs/正式產品-第三階段-Roadmap.md)
