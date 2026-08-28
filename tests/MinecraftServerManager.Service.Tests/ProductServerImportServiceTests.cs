@@ -267,6 +267,207 @@ public sealed class ProductServerImportServiceTests
     }
 
     [Fact]
+    public async Task Initialize_RecoversMoveSucceededBeforePromotionFlagWasPersisted()
+    {
+        await using var fixture = await ImportFixture.CreateAsync(initialize: false);
+        fixture.Layout.EnsureCreated();
+        var importId = Guid.NewGuid();
+        var staging = Path.Combine(fixture.Layout.Imports, importId.ToString("N"));
+        Directory.CreateDirectory(Path.Combine(staging, "payload", "server"));
+        Directory.CreateDirectory(Path.Combine(staging, "payload", "runtime"));
+        var status = new ProductServerImportStatus(
+            importId,
+            fixture.Definition.ServerId,
+            ProductServerImportState.Staging,
+            staging,
+            0,
+            0,
+            0,
+            0,
+            null,
+            null,
+            DateTimeOffset.UtcNow);
+        var manifestHash = await WritePayloadAsync(
+            status,
+            new Dictionary<string, byte[]>
+            {
+                ["server/server.jar"] = [1, 2, 3],
+                ["server/world/level.dat"] = [4, 5, 6],
+                ["runtime/bin/java.exe"] = [7, 8, 9],
+            });
+        var manifest = JsonSerializer.Deserialize<ProductServerImportManifest>(
+            await File.ReadAllTextAsync(Path.Combine(staging, ProductServerImportService.ManifestFileName)),
+            JsonOptions)!;
+
+        var serverFinal = Path.Combine(
+            fixture.Layout.Servers,
+            fixture.Definition.ServerId.ToString("N"));
+        var runtimeWork = Path.Combine(fixture.Layout.Runtimes, $".import-{importId:N}");
+        CopyPayloadTree(Path.Combine(staging, "payload", "server"), serverFinal);
+        CopyPayloadTree(Path.Combine(staging, "payload", "runtime"), runtimeWork);
+
+        var journalDirectory = Path.Combine(fixture.Layout.Operations, "imports");
+        Directory.CreateDirectory(Path.Combine(journalDirectory, "receipts"));
+        var journalPath = Path.Combine(journalDirectory, $"{importId:N}.json");
+        await File.WriteAllTextAsync(
+            journalPath,
+            JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                importId,
+                server = fixture.Definition,
+                migrationKey = "move-before-flag-crash",
+                state = ProductServerImportState.Promoting,
+                manifestSha256 = manifestHash,
+                totalBytes = manifest.Files.Sum(file => file.Length),
+                completedBytes = manifest.Files.Sum(file => file.Length),
+                totalFiles = manifest.Files.Count,
+                completedFiles = manifest.Files.Count,
+                serverPromoted = false,
+                runtimePromoted = false,
+                errorCode = (string?)null,
+                errorMessage = (string?)null,
+                createdAtUtc = DateTimeOffset.UtcNow,
+                updatedAtUtc = DateTimeOffset.UtcNow,
+            }, JsonOptions));
+
+        await fixture.Service.InitializeAsync();
+        var completed = await WaitForTerminalAsync(fixture.Service, importId);
+
+        Assert.Equal(ProductServerImportState.Completed, completed.State);
+        Assert.Single(fixture.Registry.GetAll());
+        Assert.True(File.Exists(Path.Combine(serverFinal, "world", "level.dat")));
+        Assert.True(File.Exists(Path.Combine(
+            fixture.Layout.Runtimes,
+            fixture.Definition.ServerId.ToString("N"),
+            "bin",
+            "java.exe")));
+        Assert.False(Directory.Exists(runtimeWork));
+        using var durableJournal = JsonDocument.Parse(await File.ReadAllTextAsync(journalPath));
+        Assert.True(durableJournal.RootElement.GetProperty("serverPromoted").GetBoolean());
+        Assert.True(durableJournal.RootElement.GetProperty("runtimePromoted").GetBoolean());
+        Assert.Single(Directory.EnumerateFiles(
+            Path.Combine(journalDirectory, "receipts"),
+            "*.json"));
+    }
+
+    [Fact]
+    public async Task Initialize_PersistsDetectedPromotionBeforeTransientPreflightFailure()
+    {
+        var recoveryDelayStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRecoveryDelay = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task ControlledDelay(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            if (delay >= TimeSpan.FromSeconds(1))
+            {
+                recoveryDelayStarted.TrySetResult(true);
+                await releaseRecoveryDelay.Task.WaitAsync(cancellationToken);
+            }
+        }
+
+        await using var fixture = await ImportFixture.CreateAsync(
+            initialize: false,
+            diskSpace: new AlwaysFailDiskSpaceProbe(),
+            delayAsync: ControlledDelay);
+        fixture.Layout.EnsureCreated();
+        var importId = Guid.NewGuid();
+        var staging = Path.Combine(fixture.Layout.Imports, importId.ToString("N"));
+        Directory.CreateDirectory(Path.Combine(staging, "payload", "server"));
+        Directory.CreateDirectory(Path.Combine(staging, "payload", "runtime"));
+        var status = new ProductServerImportStatus(
+            importId,
+            fixture.Definition.ServerId,
+            ProductServerImportState.Staging,
+            staging,
+            0,
+            0,
+            0,
+            0,
+            null,
+            null,
+            DateTimeOffset.UtcNow);
+        var manifestHash = await WritePayloadAsync(
+            status,
+            new Dictionary<string, byte[]>
+            {
+                ["server/server.jar"] = [1, 2, 3],
+                ["runtime/bin/java.exe"] = [4, 5, 6],
+            });
+        var manifest = JsonSerializer.Deserialize<ProductServerImportManifest>(
+            await File.ReadAllTextAsync(Path.Combine(staging, ProductServerImportService.ManifestFileName)),
+            JsonOptions)!;
+        var serverFinal = Path.Combine(
+            fixture.Layout.Servers,
+            fixture.Definition.ServerId.ToString("N"));
+        var runtimeWork = Path.Combine(fixture.Layout.Runtimes, $".import-{importId:N}");
+        CopyPayloadTree(Path.Combine(staging, "payload", "server"), serverFinal);
+        CopyPayloadTree(Path.Combine(staging, "payload", "runtime"), runtimeWork);
+
+        var journalDirectory = Path.Combine(fixture.Layout.Operations, "imports");
+        Directory.CreateDirectory(Path.Combine(journalDirectory, "receipts"));
+        var journalPath = Path.Combine(journalDirectory, $"{importId:N}.json");
+        await File.WriteAllTextAsync(
+            journalPath,
+            JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                importId,
+                server = fixture.Definition,
+                migrationKey = "detect-before-preflight",
+                state = ProductServerImportState.Promoting,
+                manifestSha256 = manifestHash,
+                totalBytes = manifest.Files.Sum(file => file.Length),
+                completedBytes = manifest.Files.Sum(file => file.Length),
+                totalFiles = manifest.Files.Count,
+                completedFiles = manifest.Files.Count,
+                serverPromoted = false,
+                runtimePromoted = false,
+                errorCode = (string?)null,
+                errorMessage = (string?)null,
+                createdAtUtc = DateTimeOffset.UtcNow,
+                updatedAtUtc = DateTimeOffset.UtcNow,
+            }, JsonOptions));
+
+        await fixture.Service.InitializeAsync();
+        try
+        {
+            await recoveryDelayStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var waiting = fixture.Service.GetStatus(importId);
+            Assert.Equal(ProductServerImportState.Registering, waiting.State);
+            Assert.Equal("import.resume_required", waiting.ErrorCode);
+            Assert.True(Directory.Exists(staging));
+            Assert.True(Directory.Exists(runtimeWork));
+            Assert.True(Directory.Exists(serverFinal));
+            Assert.Empty(fixture.Registry.GetAll());
+            using (var durableJournal = JsonDocument.Parse(await File.ReadAllTextAsync(journalPath)))
+            {
+                Assert.True(durableJournal.RootElement.GetProperty("serverPromoted").GetBoolean());
+                Assert.False(durableJournal.RootElement.GetProperty("runtimePromoted").GetBoolean());
+            }
+
+            await fixture.Service.DisposeAsync();
+            await using var resumedService = new ProductServerImportService(
+                fixture.Layout,
+                fixture.Registry,
+                fixture.Runtime,
+                new FixedDiskSpaceProbe(long.MaxValue));
+            await resumedService.InitializeAsync();
+            var completed = await WaitForTerminalAsync(resumedService, importId);
+            await WaitForConditionAsync(() => !Directory.Exists(staging));
+
+            Assert.Equal(ProductServerImportState.Completed, completed.State);
+            Assert.Single(fixture.Registry.GetAll());
+            Assert.False(Directory.Exists(runtimeWork));
+        }
+        finally
+        {
+            releaseRecoveryDelay.TrySetResult(true);
+        }
+    }
+
+    [Fact]
     public async Task PreexistingFinalDirectoryFailsWithoutDeletingUnknownContent()
     {
         await using var fixture = await ImportFixture.CreateAsync();
@@ -310,6 +511,242 @@ public sealed class ProductServerImportServiceTests
 
         Assert.Equal(ProductServerImportState.Staging, fixture.Service.GetStatus(begin.ImportId).State);
         Assert.Empty(fixture.Registry.GetAll());
+    }
+
+    [Fact]
+    public async Task PromotionMove_RetriesTransientFailuresWithinBound()
+    {
+        var moveCalls = 0;
+        var delays = new List<TimeSpan>();
+        void MoveDirectory(string source, string destination)
+        {
+            var attempt = Interlocked.Increment(ref moveCalls);
+            if (attempt == 1)
+            {
+                throw new IOException("The directory is temporarily busy.");
+            }
+
+            if (attempt == 2)
+            {
+                throw new UnauthorizedAccessException("A scanner temporarily holds the directory.");
+            }
+
+            Directory.Move(source, destination);
+        }
+
+        Task RecordDelay(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            delays.Add(delay);
+            return Task.CompletedTask;
+        }
+
+        await using var fixture = await ImportFixture.CreateAsync(
+            moveDirectory: MoveDirectory,
+            delayAsync: RecordDelay);
+        var begin = await fixture.Service.BeginAsync(new ProductServerImportBeginRequest(fixture.Definition));
+        var manifestHash = await WritePayloadAsync(
+            begin,
+            new Dictionary<string, byte[]>
+            {
+                ["server/server.jar"] = [1, 2, 3],
+                ["runtime/bin/java.exe"] = [4, 5, 6],
+            });
+
+        _ = await fixture.Service.CommitAsync(begin.ImportId, manifestHash);
+        var completed = await WaitForTerminalAsync(fixture.Service, begin.ImportId);
+
+        Assert.Equal(ProductServerImportState.Completed, completed.State);
+        Assert.Equal(4, moveCalls);
+        Assert.Equal(
+            [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(250)],
+            delays);
+    }
+
+    [Fact]
+    public async Task PartialPromotion_RetainsValidatedWorkAcrossPostPromotionFailure()
+    {
+        ProductDataLayout? layout = null;
+        var runtimeMoveCalls = 0;
+        var recoveryDelayCalls = 0;
+        var recoveryDelayStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRecoveryDelay = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryPreflightStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseRecoveryPreflight = new ManualResetEventSlim();
+        var diskSpace = new ThrowOnceDiskSpaceProbe(
+            throwOnCall: 5,
+            beforeThrow: () =>
+            {
+                recoveryPreflightStarted.TrySetResult(true);
+                releaseRecoveryPreflight.Wait(TimeSpan.FromSeconds(10));
+            });
+
+        void MoveDirectory(string source, string destination)
+        {
+            if (source.StartsWith(layout!.Runtimes, StringComparison.OrdinalIgnoreCase))
+            {
+                var attempt = Interlocked.Increment(ref runtimeMoveCalls);
+                if (attempt <= ProductServerImportService.DirectoryMoveMaximumAttempts)
+                {
+                    throw new IOException("The runtime directory is temporarily busy.");
+                }
+            }
+
+            Directory.Move(source, destination);
+        }
+
+        async Task ControlledDelay(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            if (delay >= TimeSpan.FromSeconds(1) &&
+                Interlocked.Increment(ref recoveryDelayCalls) == 1)
+            {
+                recoveryDelayStarted.TrySetResult(true);
+                await releaseRecoveryDelay.Task.WaitAsync(cancellationToken);
+            }
+        }
+
+        await using var fixture = await ImportFixture.CreateAsync(
+            diskSpace: diskSpace,
+            moveDirectory: MoveDirectory,
+            delayAsync: ControlledDelay);
+        layout = fixture.Layout;
+        var begin = await fixture.Service.BeginAsync(new ProductServerImportBeginRequest(
+            fixture.Definition,
+            "partial-promotion-retain-work"));
+        var manifestHash = await WritePayloadAsync(
+            begin,
+            new Dictionary<string, byte[]>
+            {
+                ["server/server.jar"] = [1, 2, 3],
+                ["runtime/bin/java.exe"] = [4, 5, 6],
+            });
+
+        _ = await fixture.Service.CommitAsync(begin.ImportId, manifestHash);
+        try
+        {
+            await recoveryDelayStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var waiting = fixture.Service.GetStatus(begin.ImportId);
+            Assert.Equal(ProductServerImportState.Registering, waiting.State);
+            Assert.Equal("import.resume_required", waiting.ErrorCode);
+
+            var runtimeWork = Path.Combine(
+                fixture.Layout.Runtimes,
+                $".import-{begin.ImportId:N}");
+            var runtimeWorkJava = Path.Combine(runtimeWork, "bin", "java.exe");
+            Assert.True(Directory.Exists(Path.Combine(
+                fixture.Layout.Servers,
+                fixture.Definition.ServerId.ToString("N"))));
+            Assert.True(File.Exists(runtimeWorkJava));
+            var retainedTimestamp = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(runtimeWorkJava, retainedTimestamp);
+
+            releaseRecoveryDelay.TrySetResult(true);
+            await recoveryPreflightStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var recovering = fixture.Service.GetStatus(begin.ImportId);
+            Assert.Equal(ProductServerImportState.Verifying, recovering.State);
+            Assert.Null(recovering.ErrorCode);
+            Assert.Null(recovering.ErrorMessage);
+            releaseRecoveryPreflight.Set();
+
+            var completed = await WaitForTerminalAsync(fixture.Service, begin.ImportId);
+            Assert.Equal(ProductServerImportState.Completed, completed.State);
+            Assert.Equal(1, diskSpace.Failures);
+            Assert.Equal(ProductServerImportService.DirectoryMoveMaximumAttempts + 1, runtimeMoveCalls);
+            Assert.Equal(
+                retainedTimestamp,
+                File.GetLastWriteTimeUtc(Path.Combine(
+                    fixture.Layout.Runtimes,
+                    fixture.Definition.ServerId.ToString("N"),
+                    "bin",
+                    "java.exe")));
+            Assert.Single(fixture.Registry.GetAll());
+        }
+        finally
+        {
+            releaseRecoveryDelay.TrySetResult(true);
+            releaseRecoveryPreflight.Set();
+        }
+    }
+
+    [Fact]
+    public async Task ExhaustedSameProcessRecovery_IsTerminalButRestartsDurably()
+    {
+        ProductDataLayout? layout = null;
+        var runtimeMoveCalls = 0;
+        void MoveDirectory(string source, string destination)
+        {
+            if (source.StartsWith(layout!.Runtimes, StringComparison.OrdinalIgnoreCase))
+            {
+                Interlocked.Increment(ref runtimeMoveCalls);
+                throw new IOException("The runtime destination remains busy.");
+            }
+
+            Directory.Move(source, destination);
+        }
+
+        static Task NoDelay(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        await using var fixture = await ImportFixture.CreateAsync(
+            moveDirectory: MoveDirectory,
+            delayAsync: NoDelay);
+        layout = fixture.Layout;
+        var begin = await fixture.Service.BeginAsync(new ProductServerImportBeginRequest(
+            fixture.Definition,
+            "exhausted-recovery-restart"));
+        var manifestHash = await WritePayloadAsync(
+            begin,
+            new Dictionary<string, byte[]>
+            {
+                ["server/server.jar"] = [1, 2, 3],
+                ["runtime/bin/java.exe"] = [4, 5, 6],
+            });
+
+        _ = await fixture.Service.CommitAsync(begin.ImportId, manifestHash);
+        var exhausted = await WaitForTerminalAsync(fixture.Service, begin.ImportId);
+
+        Assert.Equal(ProductServerImportState.Failed, exhausted.State);
+        Assert.Equal("import.resume_required", exhausted.ErrorCode);
+        Assert.Equal(
+            ProductServerImportService.DirectoryMoveMaximumAttempts *
+            (ProductServerImportService.SameProcessResumeMaximumAttempts + 1),
+            runtimeMoveCalls);
+        Assert.True(Directory.Exists(begin.StagingDirectory));
+        Assert.True(Directory.Exists(Path.Combine(
+            fixture.Layout.Runtimes,
+            $".import-{begin.ImportId:N}")));
+        Assert.True(Directory.Exists(Path.Combine(
+            fixture.Layout.Servers,
+            fixture.Definition.ServerId.ToString("N"))));
+        Assert.Empty(fixture.Registry.GetAll());
+
+        var repeated = await fixture.Service.BeginAsync(new ProductServerImportBeginRequest(
+            fixture.Definition,
+            "exhausted-recovery-restart"));
+        Assert.Equal(begin.ImportId, repeated.ImportId);
+        Assert.Equal(ProductServerImportState.Failed, repeated.State);
+
+        await fixture.Service.DisposeAsync();
+        await using var resumedService = new ProductServerImportService(
+            fixture.Layout,
+            fixture.Registry,
+            fixture.Runtime,
+            new FixedDiskSpaceProbe(long.MaxValue),
+            Directory.Move,
+            NoDelay);
+        await resumedService.InitializeAsync();
+        var completed = await WaitForTerminalAsync(resumedService, begin.ImportId);
+        await WaitForConditionAsync(() => !Directory.Exists(begin.StagingDirectory));
+
+        Assert.Equal(ProductServerImportState.Completed, completed.State);
+        Assert.Single(fixture.Registry.GetAll());
+        Assert.False(Directory.Exists(begin.StagingDirectory));
     }
 
     [Fact]
@@ -361,6 +798,22 @@ public sealed class ProductServerImportServiceTests
         File.WriteAllBytes(destination, bytes);
     }
 
+    private static void CopyPayloadTree(string source, string destination)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+        }
+
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+        }
+    }
+
     private static async Task<string> WriteManifestAsync(
         ProductServerImportStatus status,
         IReadOnlyList<ProductServerImportManifestEntry> entries)
@@ -387,6 +840,15 @@ public sealed class ProductServerImportServiceTests
                 return status;
             }
 
+            await Task.Delay(25, deadline.Token);
+        }
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!condition())
+        {
             await Task.Delay(25, deadline.Token);
         }
     }
@@ -424,6 +886,33 @@ public sealed class ProductServerImportServiceTests
         public long GetAvailableBytes(string path) => availableBytes;
     }
 
+    private sealed class AlwaysFailDiskSpaceProbe : IProductImportDiskSpaceProbe
+    {
+        public long GetAvailableBytes(string path)
+            => throw new IOException("The disk-space probe failed during recovery.");
+    }
+
+    private sealed class ThrowOnceDiskSpaceProbe(int throwOnCall, Action beforeThrow)
+        : IProductImportDiskSpaceProbe
+    {
+        private int _calls;
+        private int _failures;
+
+        public int Failures => Volatile.Read(ref _failures);
+
+        public long GetAvailableBytes(string path)
+        {
+            if (Interlocked.Increment(ref _calls) == throwOnCall)
+            {
+                beforeThrow();
+                Interlocked.Increment(ref _failures);
+                throw new IOException("The disk-space probe failed transiently after promotion.");
+            }
+
+            return long.MaxValue;
+        }
+    }
+
     private sealed class ImportFixture : IAsyncDisposable
     {
         private ImportFixture(
@@ -448,7 +937,9 @@ public sealed class ProductServerImportServiceTests
 
         public static async Task<ImportFixture> CreateAsync(
             bool initialize = true,
-            IProductImportDiskSpaceProbe? diskSpace = null)
+            IProductImportDiskSpaceProbe? diskSpace = null,
+            Action<string, string>? moveDirectory = null,
+            Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
         {
             var layout = ProductServerRegistryTests.CreateLayout();
             var registry = new ProductServerRegistry(layout);
@@ -461,9 +952,15 @@ public sealed class ProductServerImportServiceTests
                 layout,
                 processManager,
                 new ProductDesiredRunIntentStore(layout));
-            var service = diskSpace is null
+            var service = diskSpace is null && moveDirectory is null && delayAsync is null
                 ? new ProductServerImportService(layout, registry, runtime)
-                : new ProductServerImportService(layout, registry, runtime, diskSpace);
+                : new ProductServerImportService(
+                    layout,
+                    registry,
+                    runtime,
+                    diskSpace ?? new FixedDiskSpaceProbe(long.MaxValue),
+                    moveDirectory,
+                    delayAsync);
             if (initialize)
             {
                 await service.InitializeAsync();

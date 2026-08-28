@@ -37,6 +37,20 @@ public sealed class ProductServerImportService : IAsyncDisposable
     internal const long MaximumManifestBytes = 32L * 1024 * 1024;
     internal const long MaximumImportBytes = 1024L * 1024 * 1024 * 1024;
     private const long DiskSafetyMarginBytes = 64L * 1024 * 1024;
+    internal const int DirectoryMoveMaximumAttempts = 4;
+    internal const int SameProcessResumeMaximumAttempts = 3;
+    private static readonly TimeSpan[] DirectoryMoveRetryDelays =
+    [
+        TimeSpan.FromMilliseconds(100),
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500),
+    ];
+    private static readonly TimeSpan[] SameProcessResumeRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(10),
+    ];
     private readonly ProductDataLayout _layout;
     private readonly ProductServerRegistry _registry;
     private readonly ProductServerRuntime _runtime;
@@ -47,6 +61,8 @@ public sealed class ProductServerImportService : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, Task> _operations = [];
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _operationCancellation = [];
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly Action<string, string> _moveDirectory;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private int _initialized;
     private int _disposed;
 
@@ -62,12 +78,16 @@ public sealed class ProductServerImportService : IAsyncDisposable
         ProductDataLayout layout,
         ProductServerRegistry registry,
         ProductServerRuntime runtime,
-        IProductImportDiskSpaceProbe diskSpace)
+        IProductImportDiskSpaceProbe diskSpace,
+        Action<string, string>? moveDirectory = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _diskSpace = diskSpace ?? throw new ArgumentNullException(nameof(diskSpace));
+        _moveDirectory = moveDirectory ?? Directory.Move;
+        _delayAsync = delayAsync ?? Task.Delay;
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -98,12 +118,13 @@ public sealed class ProductServerImportService : IAsyncDisposable
 
         foreach (var journal in _journals.Values)
         {
-            if (journal.State is ProductServerImportState.Queued
-                or ProductServerImportState.Verifying
-                or ProductServerImportState.Copying
-                or ProductServerImportState.Promoting
-                or ProductServerImportState.Registering)
+            if (IsResumable(journal))
             {
+                if (journal.State == ProductServerImportState.Failed && IsResumeRequired(journal))
+                {
+                    await MarkRecoveryStartedAsync(journal.ImportId).ConfigureAwait(false);
+                }
+
                 Schedule(journal.ImportId);
             }
         }
@@ -134,7 +155,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
                         StringComparison.Ordinal))
                     .OrderByDescending(value => value.UpdatedAtUtc)
                     .FirstOrDefault(value => value.State is not ProductServerImportState.Cancelled
-                        and not ProductServerImportState.Failed);
+                        && (value.State != ProductServerImportState.Failed || IsResumeRequired(value)));
                 if (existing is not null)
                 {
                     return ToStatus(existing);
@@ -159,7 +180,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
 
             if (_journals.Values.Any(value => value.Server.ServerId == request.Server.ServerId &&
                 value.State is not ProductServerImportState.Cancelled
-                    and not ProductServerImportState.Failed))
+                    && (value.State != ProductServerImportState.Failed || IsResumeRequired(value))))
             {
                 throw new InvalidOperationException("An import for this server id already exists.");
             }
@@ -277,8 +298,9 @@ public sealed class ProductServerImportService : IAsyncDisposable
                 return ToStatus(journal);
             }
 
-            if (journal.State is ProductServerImportState.Promoting
-                or ProductServerImportState.Registering)
+            if (journal.ServerPromoted || journal.RuntimePromoted ||
+                journal.State is ProductServerImportState.Promoting
+                    or ProductServerImportState.Registering)
             {
                 throw new InvalidOperationException(
                     "The import has crossed its atomic promotion boundary and can no longer be cancelled.");
@@ -389,29 +411,70 @@ public sealed class ProductServerImportService : IAsyncDisposable
             _shutdown.Token);
         try
         {
-            await _copyConcurrency.WaitAsync(linked.Token).ConfigureAwait(false);
-            try
+            Exception? lastRecoveryError = null;
+            for (var resumeAttempt = 0; ; resumeAttempt++)
             {
-                await ProcessAsync(importId, linked.Token).ConfigureAwait(false);
+                var operationToken = resumeAttempt == 0 ? linked.Token : _shutdown.Token;
+                try
+                {
+                    if (IsResumeRequired(GetJournal(importId)))
+                    {
+                        await MarkRecoveryStartedAsync(importId).ConfigureAwait(false);
+                    }
+
+                    await _copyConcurrency.WaitAsync(operationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await ProcessAsync(importId, operationToken).ConfigureAwait(false);
+                        return;
+                    }
+                    finally
+                    {
+                        _copyConcurrency.Release();
+                    }
+                }
+                catch (OperationCanceledException) when (_shutdown.IsCancellationRequested &&
+                                                           !operationCancellation.IsCancellationRequested)
+                {
+                    // Service shutdown is a recoverable interruption. The durable non-terminal journal
+                    // is intentionally retained and InitializeAsync resumes it next start.
+                    return;
+                }
+                catch (OperationCanceledException error) when (operationCancellation.IsCancellationRequested)
+                {
+                    lastRecoveryError = error;
+                    await MarkCancelledAsync(importId).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    lastRecoveryError = error;
+                    await MarkFailedAsync(importId, error).ConfigureAwait(false);
+                }
+
+                var journal = GetJournal(importId);
+                if (!IsResumeRequired(journal))
+                {
+                    return;
+                }
+
+                if (resumeAttempt >= SameProcessResumeMaximumAttempts)
+                {
+                    await MarkRecoveryExhaustedAsync(importId, lastRecoveryError).ConfigureAwait(false);
+                    return;
+                }
+
+                try
+                {
+                    await _delayAsync(
+                            SameProcessResumeRetryDelays[resumeAttempt],
+                            _shutdown.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+                {
+                    return;
+                }
             }
-            finally
-            {
-                _copyConcurrency.Release();
-            }
-        }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested &&
-                                                  !operationCancellation.IsCancellationRequested)
-        {
-            // Service shutdown is a recoverable interruption. The durable non-terminal journal
-            // is intentionally retained and InitializeAsync resumes it next start.
-        }
-        catch (OperationCanceledException) when (operationCancellation.IsCancellationRequested)
-        {
-            await MarkCancelledAsync(importId).ConfigureAwait(false);
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            await MarkFailedAsync(importId, error).ConfigureAwait(false);
         }
         finally
         {
@@ -424,7 +487,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
         var journal = GetJournal(importId);
         if (journal.State is ProductServerImportState.Completed
             or ProductServerImportState.Cancelled
-            or ProductServerImportState.Failed)
+            || journal.State == ProductServerImportState.Failed && !IsResumeRequired(journal))
         {
             return;
         }
@@ -448,44 +511,74 @@ public sealed class ProductServerImportService : IAsyncDisposable
             throw new InvalidDataException("Import manifest totals changed after commit.");
         }
 
+        var serverWork = ServerWorkingDirectory(importId);
+        var runtimeWork = RuntimeWorkingDirectory(importId);
+        var serverFinal = ServerFinalDirectory(journal.Server.ServerId);
+        var runtimeFinal = RuntimeFinalDirectory(journal.Server.ServerId);
+        var mayRecoverOwnedPromotion = journal.ServerPromoted || journal.RuntimePromoted ||
+                                       journal.State is ProductServerImportState.Promoting
+                                           or ProductServerImportState.Registering;
+        var promoted = DetectOwnedPromotions(
+            journal,
+            manifest,
+            serverFinal,
+            runtimeFinal,
+            mayRecoverOwnedPromotion);
+        if (promoted.Journal.ServerPromoted != journal.ServerPromoted ||
+            promoted.Journal.RuntimePromoted != journal.RuntimePromoted)
+        {
+            journal = promoted.Journal with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+            await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            journal = promoted.Journal;
+        }
+
         journal = await TransitionAsync(journal, ProductServerImportState.Verifying)
             .ConfigureAwait(false);
         await VerifyStagingAsync(importId, manifest, cancellationToken).ConfigureAwait(false);
         PreflightDiskSpace(totals.TotalBytes);
 
-        var serverWork = ServerWorkingDirectory(importId);
-        var runtimeWork = RuntimeWorkingDirectory(importId);
-        var serverFinal = ServerFinalDirectory(journal.Server.ServerId);
-        var runtimeFinal = RuntimeFinalDirectory(journal.Server.ServerId);
-        var promoted = DetectOwnedPromotions(journal, manifest, serverFinal, runtimeFinal);
-        journal = promoted.Journal;
         if (!journal.ServerPromoted || !journal.RuntimePromoted)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await DeleteIfExistsAsync(_layout.Servers, serverWork).ConfigureAwait(false);
-            await DeleteIfExistsAsync(_layout.Runtimes, runtimeWork).ConfigureAwait(false);
-            if (!journal.ServerPromoted)
-            {
-                EnsurePathDoesNotExist(serverFinal);
-                Directory.CreateDirectory(serverWork);
-            }
-
-            if (!journal.RuntimePromoted)
-            {
-                EnsurePathDoesNotExist(runtimeFinal);
-                Directory.CreateDirectory(runtimeWork);
-            }
+            var serverWorkReady = await PrepareWorkingTreeAsync(
+                    _layout.Servers,
+                    serverWork,
+                    manifest,
+                    "server/",
+                    journal.ServerPromoted)
+                .ConfigureAwait(false);
+            var runtimeWorkReady = await PrepareWorkingTreeAsync(
+                    _layout.Runtimes,
+                    runtimeWork,
+                    manifest,
+                    "runtime/",
+                    journal.RuntimePromoted)
+                .ConfigureAwait(false);
 
             journal = await TransitionAsync(journal, ProductServerImportState.Copying)
                 .ConfigureAwait(false);
+            var retainedEntries = manifest.Files.Where(entry =>
+                entry.Path.StartsWith("server/", StringComparison.Ordinal)
+                    ? journal.ServerPromoted || serverWorkReady
+                    : journal.RuntimePromoted || runtimeWorkReady).ToArray();
+            journal = journal with
+            {
+                CompletedBytes = retainedEntries.Sum(entry => entry.Length),
+                CompletedFiles = retainedEntries.Length,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            await PersistJournalAsync(journal, cancellationToken).ConfigureAwait(false);
             await CopyManifestAsync(
                     importId,
                     manifest,
                     serverWork,
                     runtimeWork,
                     journal,
-                    copyServer: !journal.ServerPromoted,
-                    copyRuntime: !journal.RuntimePromoted,
+                    copyServer: !journal.ServerPromoted && !serverWorkReady,
+                    copyRuntime: !journal.RuntimePromoted && !runtimeWorkReady,
                     cancellationToken)
                 .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
@@ -495,7 +588,8 @@ public sealed class ProductServerImportService : IAsyncDisposable
             if (!journal.ServerPromoted)
             {
                 EnsurePathDoesNotExist(serverFinal);
-                Directory.Move(serverWork, serverFinal);
+                await MoveDirectoryWithRetryAsync(serverWork, serverFinal, CancellationToken.None)
+                    .ConfigureAwait(false);
                 journal = journal with { ServerPromoted = true, UpdatedAtUtc = DateTimeOffset.UtcNow };
                 _journals[importId] = journal;
                 await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
@@ -504,7 +598,8 @@ public sealed class ProductServerImportService : IAsyncDisposable
             if (!journal.RuntimePromoted)
             {
                 EnsurePathDoesNotExist(runtimeFinal);
-                Directory.Move(runtimeWork, runtimeFinal);
+                await MoveDirectoryWithRetryAsync(runtimeWork, runtimeFinal, CancellationToken.None)
+                    .ConfigureAwait(false);
                 journal = journal with { RuntimePromoted = true, UpdatedAtUtc = DateTimeOffset.UtcNow };
                 _journals[importId] = journal;
                 await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
@@ -561,8 +656,8 @@ public sealed class ProductServerImportService : IAsyncDisposable
         bool copyRuntime,
         CancellationToken cancellationToken)
     {
-        long completedBytes = 0;
-        var completedFiles = 0;
+        var completedBytes = journal.CompletedBytes;
+        var completedFiles = journal.CompletedFiles;
         foreach (var entry in manifest.Files.OrderBy(value => value.Path, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -662,17 +757,66 @@ public sealed class ProductServerImportService : IAsyncDisposable
         }
     }
 
+    private async Task<bool> PrepareWorkingTreeAsync(
+        string ownedRoot,
+        string workingDirectory,
+        ProductServerImportManifest manifest,
+        string manifestPrefix,
+        bool alreadyPromoted)
+    {
+        if (alreadyPromoted)
+        {
+            await DeleteIfExistsAsync(ownedRoot, workingDirectory).ConfigureAwait(false);
+            return false;
+        }
+
+        if (Directory.Exists(workingDirectory) &&
+            TreeMatchesManifest(workingDirectory, manifest, manifestPrefix))
+        {
+            return true;
+        }
+
+        await DeleteIfExistsAsync(ownedRoot, workingDirectory).ConfigureAwait(false);
+        Directory.CreateDirectory(workingDirectory);
+        SafePath.EnsureNoReparsePointsUnderRoot(ownedRoot, workingDirectory);
+        return false;
+    }
+
+    private async Task MoveDirectoryWithRetryAsync(
+        string source,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                _moveDirectory(source, destination);
+                return;
+            }
+            catch (Exception error) when (
+                (error is IOException or UnauthorizedAccessException) &&
+                attempt < DirectoryMoveMaximumAttempts - 1)
+            {
+                await _delayAsync(DirectoryMoveRetryDelays[attempt], cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
     private PromotionDetection DetectOwnedPromotions(
         ImportJournal journal,
         ProductServerImportManifest manifest,
         string serverFinal,
-        string runtimeFinal)
+        string runtimeFinal,
+        bool mayRecoverOwnedPromotion)
     {
         var serverExists = Directory.Exists(serverFinal);
         var runtimeExists = Directory.Exists(runtimeFinal);
         if (serverExists && !journal.ServerPromoted)
         {
-            if (journal.State is not (ProductServerImportState.Promoting or ProductServerImportState.Registering) ||
+            if (!mayRecoverOwnedPromotion ||
                 !TreeMatchesManifest(serverFinal, manifest, "server/"))
             {
                 throw new IOException("The final server directory already exists.");
@@ -683,7 +827,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
 
         if (runtimeExists && !journal.RuntimePromoted)
         {
-            if (journal.State is not (ProductServerImportState.Promoting or ProductServerImportState.Registering) ||
+            if (!mayRecoverOwnedPromotion ||
                 !TreeMatchesManifest(runtimeFinal, manifest, "runtime/"))
             {
                 throw new IOException("The final runtime directory already exists.");
@@ -926,11 +1070,21 @@ public sealed class ProductServerImportService : IAsyncDisposable
     private async Task MarkCancelledAsync(Guid importId)
     {
         var journal = GetJournal(importId);
-        if (journal.State is ProductServerImportState.Promoting
-            or ProductServerImportState.Registering
-            or ProductServerImportState.Completed)
+        if (journal.State == ProductServerImportState.Completed)
         {
-            Schedule(importId);
+            return;
+        }
+
+        if (journal.ServerPromoted || journal.RuntimePromoted)
+        {
+            journal = journal with
+            {
+                State = ProductServerImportState.Registering,
+                ErrorCode = "import.resume_required",
+                ErrorMessage = "Cancellation arrived after the atomic promotion boundary.",
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
             return;
         }
 
@@ -952,9 +1106,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
         {
             return;
         }
-        if (journal.State is (ProductServerImportState.Promoting
-                or ProductServerImportState.Registering) &&
-            (journal.ServerPromoted || journal.RuntimePromoted))
+        if (journal.ServerPromoted || journal.RuntimePromoted)
         {
             // A transient failure after promotion remains resumable; do not strand an unregistered
             // final tree by turning the journal terminal.
@@ -984,6 +1136,44 @@ public sealed class ProductServerImportService : IAsyncDisposable
         }
     }
 
+    private async Task MarkRecoveryStartedAsync(Guid importId)
+    {
+        var journal = GetJournal(importId);
+        if (!IsResumeRequired(journal))
+        {
+            return;
+        }
+
+        journal = journal with
+        {
+            State = ProductServerImportState.Registering,
+            ErrorCode = null,
+            ErrorMessage = null,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task MarkRecoveryExhaustedAsync(Guid importId, Exception? error)
+    {
+        var journal = GetJournal(importId);
+        if (!IsResumeRequired(journal))
+        {
+            return;
+        }
+
+        journal = journal with
+        {
+            State = ProductServerImportState.Failed,
+            ErrorCode = "import.resume_required",
+            ErrorMessage = Truncate(
+                $"Automatic recovery was exhausted; restart the Service to resume. {error?.Message}",
+                512),
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        await PersistJournalAsync(journal, CancellationToken.None).ConfigureAwait(false);
+    }
+
     private async Task CleanupPrePromotionAsync(Guid importId)
     {
         await DeleteIfExistsAsync(_layout.Imports, StagingDirectory(importId)).ConfigureAwait(false);
@@ -1004,7 +1194,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
 
             var known = Guid.TryParseExact(name, "N", out var id) &&
                         _journals.TryGetValue(id, out var journal) &&
-                        !IsTerminal(journal.State);
+                        (!IsTerminal(journal.State) || IsResumeRequired(journal));
             if (!known)
             {
                 await DeleteIfExistsAsync(_layout.Imports, staging).ConfigureAwait(false);
@@ -1024,7 +1214,7 @@ public sealed class ProductServerImportService : IAsyncDisposable
                 var idText = name[".import-".Length..];
                 var known = Guid.TryParseExact(idText, "N", out var id) &&
                             _journals.TryGetValue(id, out var journal) &&
-                            !IsTerminal(journal.State);
+                            (!IsTerminal(journal.State) || IsResumeRequired(journal));
                 if (!known)
                 {
                     await DeleteIfExistsAsync(root, working).ConfigureAwait(false);
@@ -1048,6 +1238,18 @@ public sealed class ProductServerImportService : IAsyncDisposable
         => state is ProductServerImportState.Completed
             or ProductServerImportState.Cancelled
             or ProductServerImportState.Failed;
+
+    private static bool IsResumeRequired(ImportJournal journal)
+        => string.Equals(journal.ErrorCode, "import.resume_required", StringComparison.Ordinal) &&
+           (journal.ServerPromoted || journal.RuntimePromoted);
+
+    private static bool IsResumable(ImportJournal journal)
+        => journal.State is ProductServerImportState.Queued
+            or ProductServerImportState.Verifying
+            or ProductServerImportState.Copying
+            or ProductServerImportState.Promoting
+            or ProductServerImportState.Registering ||
+           journal.State == ProductServerImportState.Failed && IsResumeRequired(journal);
 
     private async Task<ManifestRead> ReadUntrustedManifestAsync(
         string path,

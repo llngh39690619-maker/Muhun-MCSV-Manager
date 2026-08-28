@@ -12,12 +12,22 @@ internal sealed class ProductServerImportStagingClient
     private const int MaximumFiles = 100_000;
     private const long MaximumBytes = 1024L * 1024 * 1024 * 1024;
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DefaultNoProgressTimeout = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan DefaultResumeRequiredTimeout = TimeSpan.FromSeconds(30);
     private readonly IProductServiceClient _client;
     private readonly string _authorizedImportsRoot;
+    private readonly TimeSpan _noProgressTimeout;
+    private readonly TimeSpan _resumeRequiredTimeout;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
+    private readonly Func<DateTimeOffset> _utcNow;
 
     public ProductServerImportStagingClient(
         IProductServiceClient client,
-        string? authorizedImportsRoot = null)
+        string? authorizedImportsRoot = null,
+        TimeSpan? noProgressTimeout = null,
+        TimeSpan? resumeRequiredTimeout = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _authorizedImportsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
@@ -26,6 +36,20 @@ internal sealed class ProductServerImportStagingClient
                 "Muhun",
                 "MCSV",
                 "imports")));
+        _noProgressTimeout = noProgressTimeout ?? DefaultNoProgressTimeout;
+        _resumeRequiredTimeout = resumeRequiredTimeout ?? DefaultResumeRequiredTimeout;
+        if (_noProgressTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(noProgressTimeout));
+        }
+        if (_resumeRequiredTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(resumeRequiredTimeout));
+        }
+
+        _delayAsync = delayAsync ?? ((delay, cancellationToken) =>
+            Task.Delay(delay, cancellationToken));
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
 
     public async Task<ProductServerImportStatus> ImportAsync(
@@ -109,11 +133,59 @@ internal sealed class ProductServerImportStagingClient
         ProductServerImportStatus status,
         CancellationToken cancellationToken)
     {
+        var lastObserved = ImportProgressObservation.From(status);
+        var lastProgressAt = _utcNow();
+        DateTimeOffset? resumeRequiredSince = null;
         while (!status.IsTerminal)
         {
-            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
-            status = await _client.GetImportStatusAsync(status.ImportId, cancellationToken)
+            var now = _utcNow();
+            if (IsResumeRequired(status))
+            {
+                resumeRequiredSince ??= now;
+                if (ElapsedSince(resumeRequiredSince.Value, now) >= _resumeRequiredTimeout)
+                {
+                    throw new ProductServiceClientException(
+                        "import.resume_required",
+                        "The Windows Service could not finish registering the imported server " +
+                        "(import.resume_required). Restart Muhun MCSV Service and retry; the " +
+                        "promoted server data was preserved.");
+                }
+            }
+            else
+            {
+                resumeRequiredSince = null;
+            }
+
+            if (ElapsedSince(lastProgressAt, now) >= _noProgressTimeout)
+            {
+                throw new ProductServiceClientException(
+                    "import.stalled",
+                    $"The Windows Service import made no observable progress while it was " +
+                    $"{status.State} for {FormatDuration(_noProgressTimeout)}. The background " +
+                    "job was stopped instead of waiting forever; retry after checking or " +
+                    "restarting Muhun MCSV Service.");
+            }
+
+            var delay = PollInterval;
+            delay = MinPositive(delay, _noProgressTimeout - ElapsedSince(lastProgressAt, now));
+            if (resumeRequiredSince is { } resumeStarted)
+            {
+                delay = MinPositive(
+                    delay,
+                    _resumeRequiredTimeout - ElapsedSince(resumeStarted, now));
+            }
+
+            await _delayAsync(delay, cancellationToken).ConfigureAwait(false);
+            var next = await _client.GetImportStatusAsync(status.ImportId, cancellationToken)
                 .ConfigureAwait(false);
+            var observed = ImportProgressObservation.From(next);
+            if (observed.HasProgressBeyond(lastObserved))
+            {
+                lastObserved = observed;
+                lastProgressAt = _utcNow();
+            }
+
+            status = next;
         }
 
         return status.State switch
@@ -125,6 +197,50 @@ internal sealed class ProductServerImportStagingClient
                 $"Service-owned server import failed ({status.ErrorCode ?? "import.failed"}): " +
                 (status.ErrorMessage ?? "No diagnostic detail was returned.")),
         };
+    }
+
+    private static bool IsResumeRequired(ProductServerImportStatus status)
+        => string.Equals(
+            status.ErrorCode,
+            "import.resume_required",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static TimeSpan ElapsedSince(DateTimeOffset startedAt, DateTimeOffset now)
+        => now > startedAt ? now - startedAt : TimeSpan.Zero;
+
+    private static TimeSpan MinPositive(TimeSpan first, TimeSpan second)
+    {
+        if (second <= TimeSpan.Zero)
+        {
+            return TimeSpan.FromTicks(1);
+        }
+
+        return first <= second ? first : second;
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+        => duration.TotalMinutes >= 1
+            ? $"{duration.TotalMinutes:0.#} minutes"
+            : $"{Math.Max(1, Math.Ceiling(duration.TotalSeconds)):0} seconds";
+
+    private readonly record struct ImportProgressObservation(
+        ProductServerImportState State,
+        long CompletedBytes,
+        int CompletedFiles,
+        DateTimeOffset UpdatedAtUtc)
+    {
+        public static ImportProgressObservation From(ProductServerImportStatus status)
+            => new(
+                status.State,
+                status.CompletedBytes,
+                status.CompletedFiles,
+                status.UpdatedAtUtc);
+
+        public bool HasProgressBeyond(ImportProgressObservation previous)
+            => State != previous.State
+               || CompletedBytes > previous.CompletedBytes
+               || CompletedFiles > previous.CompletedFiles
+               || UpdatedAtUtc > previous.UpdatedAtUtc;
     }
 
     private async Task TryCancelAsync(Guid importId)
