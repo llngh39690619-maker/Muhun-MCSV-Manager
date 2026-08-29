@@ -59,6 +59,41 @@ public sealed class ClientInstanceSettingsEditorViewModelTests
     }
 
     [Fact]
+    public void ResolutionSelection_WritesWidthAndHeightTogether()
+    {
+        var editor = new ClientInstanceSettingsEditorViewModel(Guid.NewGuid(), CreateSettings());
+        var selected = editor.ResolutionChoices.Single(choice =>
+            choice.Width == 1920 && choice.Height == 1080);
+
+        editor.SelectedResolution = selected;
+
+        Assert.Equal(1920, editor.WindowWidth);
+        Assert.Equal(1080, editor.WindowHeight);
+        Assert.Equal(selected, editor.SelectedResolution);
+        var update = editor.BuildUpdate();
+        Assert.Equal(1920, update.WindowWidth);
+        Assert.Equal(1080, update.WindowHeight);
+    }
+
+    [Fact]
+    public void ResolutionSelection_PreservesAValidNonPresetValue()
+    {
+        var settings = CreateSettings() with
+        {
+            WindowWidth = 1234,
+            WindowHeight = 777,
+        };
+        var editor = new ClientInstanceSettingsEditorViewModel(Guid.NewGuid(), settings);
+
+        Assert.Contains(editor.ResolutionChoices, choice =>
+            choice.Width == 1234 && choice.Height == 777);
+        Assert.Equal("1234 × 777", editor.SelectedResolution?.DisplayName);
+        Assert.False(editor.IsDirty);
+        Assert.Equal(1234, editor.BuildUpdate().WindowWidth);
+        Assert.Equal(777, editor.BuildUpdate().WindowHeight);
+    }
+
+    [Fact]
     public void Editor_ExplainsInvalidNamesAndManagedJvmMemoryArguments()
     {
         var editor = new ClientInstanceSettingsEditorViewModel(Guid.NewGuid(), CreateSettings());

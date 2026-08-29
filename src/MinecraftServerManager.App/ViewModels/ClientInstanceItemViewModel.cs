@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Threading;
 using MinecraftServerManager.App.Infrastructure;
 using MinecraftServerManager.App.Services;
+using MinecraftServerManager.Core.Services;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.ViewModels;
@@ -38,14 +39,28 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
     public string GameVersion => Model.GameVersion;
 
     public string LoaderText => Model.Loader == MinecraftClientLoader.Vanilla
-        ? "Vanilla"
+        ? L("client.vm.loader.vanilla")
         : $"{Model.Loader} {Model.LoaderVersion}";
 
     public string VersionSummary => $"{LoaderText} · {GameVersion}";
 
-    public string? IconImagePath => Model.IconImagePath
-                                    ?? Model.CatalogIconImagePath
-                                    ?? Model.CatalogPreviewImagePath;
+    public string? IconImagePath => ResolveSafeOwnedIconPath(
+        Model,
+        Model.IconImagePath,
+        Model.CatalogIconImagePath,
+        Model.CatalogPreviewImagePath);
+
+    public bool UsesGrassBlockFallback =>
+        Model.Loader == MinecraftClientLoader.Vanilla &&
+        string.IsNullOrWhiteSpace(Model.CatalogProvider);
+
+    public string CatalogSourceBadgeText => Model.CatalogProvider?.ToLowerInvariant() switch
+    {
+        "modrinth" => "M",
+        "curseforge" => "CF",
+        "ftb" => "FTB",
+        _ => string.Empty,
+    };
 
     public string PlayTimeText
     {
@@ -107,6 +122,8 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
         OnPropertyChanged(nameof(LoaderText));
         OnPropertyChanged(nameof(VersionSummary));
         OnPropertyChanged(nameof(IconImagePath));
+        OnPropertyChanged(nameof(UsesGrassBlockFallback));
+        OnPropertyChanged(nameof(CatalogSourceBadgeText));
         OnPropertyChanged(nameof(PlayTimeText));
         OnPropertyChanged(nameof(LastPlayedText));
         OnPropertyChanged(nameof(CanQuickLaunch));
@@ -117,6 +134,55 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         RefreshMetadata();
+    }
+
+    internal static string? ResolveSafeOwnedIconPath(
+        MinecraftClientInstance model,
+        params string?[] candidates)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        if (string.IsNullOrWhiteSpace(model.DirectoryPath) ||
+            !Path.IsPathFullyQualified(model.DirectoryPath))
+        {
+            return null;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) ||
+                !Path.IsPathFullyQualified(candidate) ||
+                candidate.StartsWith("\\\\", StringComparison.Ordinal) ||
+                candidate.StartsWith("\\\\?\\", StringComparison.Ordinal) ||
+                candidate.StartsWith("\\\\.\\", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            try
+            {
+                var fullPath = SafePath.EnsureNoReparsePointsUnderRoot(
+                    model.DirectoryPath,
+                    candidate);
+                var extension = Path.GetExtension(fullPath).ToLowerInvariant();
+                if (extension is not (".png" or ".jpg" or ".jpeg" or ".webp" or ".gif" or ".bmp" or ".ico"))
+                {
+                    continue;
+                }
+
+                var file = new FileInfo(fullPath);
+                if (file.Exists && file.Length is > 0 and <= LocalImageThumbnailLoader.MaximumSourceBytes)
+                {
+                    return fullPath;
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+                                          ArgumentException or NotSupportedException)
+            {
+                // Optional icons never escape the owned instance root or break the instance list.
+            }
+        }
+
+        return null;
     }
 
     public void ClearGameLog()
@@ -205,6 +271,8 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
 
     private void OnCultureChanged(object? sender, EventArgs e)
     {
+        OnPropertyChanged(nameof(LoaderText));
+        OnPropertyChanged(nameof(VersionSummary));
         OnPropertyChanged(nameof(PlayTimeText));
         OnPropertyChanged(nameof(LastPlayedText));
         OnPropertyChanged(nameof(StatusText));

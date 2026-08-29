@@ -346,6 +346,23 @@ public sealed class OnlineModpackDialogContractTests
     }
 
     [Fact]
+    public void ProductionFtbCatalogClient_DisablesAutomaticRedirects()
+    {
+        var code = File.ReadAllText(GetAppSourcePath(
+            Path.Combine("Services", "OnlineModpackWorkflow.cs")));
+        var start = code.IndexOf("_ftbCatalogClient = new HttpClient", StringComparison.Ordinal);
+        var end = code.IndexOf("_modrinthApiClient = new HttpClient", start, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start);
+        var composition = code[start..end];
+        Assert.Contains("new SocketsHttpHandler", composition, StringComparison.Ordinal);
+        Assert.Contains("AllowAutoRedirect = false", composition, StringComparison.Ordinal);
+        Assert.True(
+            code.IndexOf("_ftbCatalog = ftbCatalog ??", StringComparison.Ordinal)
+            > code.IndexOf("AllowAutoRedirect = false", start, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ProductionCurseApiClient_DisablesAutomaticRedirectBeforeApiKeyUse()
     {
         var code = File.ReadAllText(GetAppSourcePath(

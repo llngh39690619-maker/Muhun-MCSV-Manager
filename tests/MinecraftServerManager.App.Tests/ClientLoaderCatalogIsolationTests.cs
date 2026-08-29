@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.GameClient;
@@ -7,6 +8,83 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ClientLoaderCatalogIsolationTests
 {
+    [Fact]
+    public void ClientWorkspace_BindsStableLoaderCardsAndDisablesUnavailableEntries()
+    {
+        var xaml = File.ReadAllText(
+            TestRepositoryPaths.AppSource("Views", "ClientWorkspaceView.xaml"));
+
+        Assert.Contains("ItemsSource=\"{Binding LoaderChoices}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectedItem=\"{Binding SelectedLoader}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Property=\"IsEnabled\" Value=\"{Binding IsAvailable}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding AvailabilityText}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateFixedLoaderChoices_KeepsEveryProductLoaderInStableOrder()
+    {
+        LoaderCatalogQueryResult[] results =
+        [
+            Result(MinecraftClientLoader.Forge, ManagedEntry(MinecraftClientLoader.Forge)),
+            Result(MinecraftClientLoader.Fabric),
+            Result(MinecraftClientLoader.Quilt),
+            Result(MinecraftClientLoader.NeoForge),
+            Result(MinecraftClientLoader.OptiFine, ExternalEntry(MinecraftClientLoader.OptiFine)),
+            Result(MinecraftClientLoader.LabyMod, ExternalEntry(MinecraftClientLoader.LabyMod)),
+        ];
+
+        var choices = ClientWorkspaceViewModel.CreateFixedLoaderChoices(results, isChecking: false);
+
+        Assert.Equal(
+            [
+                MinecraftClientLoader.Vanilla,
+                MinecraftClientLoader.Forge,
+                MinecraftClientLoader.Fabric,
+                MinecraftClientLoader.Quilt,
+                MinecraftClientLoader.NeoForge,
+                MinecraftClientLoader.OptiFine,
+                MinecraftClientLoader.LabyMod,
+            ],
+            choices.Select(static choice => choice.Loader));
+        Assert.True(choices.Single(choice => choice.Loader == MinecraftClientLoader.Vanilla).IsAvailable);
+        Assert.True(choices.Single(choice => choice.Loader == MinecraftClientLoader.Forge).IsAvailable);
+        Assert.False(choices.Single(choice => choice.Loader == MinecraftClientLoader.Fabric).IsAvailable);
+        Assert.False(choices.Single(choice => choice.Loader == MinecraftClientLoader.Quilt).IsAvailable);
+        Assert.False(choices.Single(choice => choice.Loader == MinecraftClientLoader.NeoForge).IsAvailable);
+        Assert.True(choices.Single(choice => choice.Loader == MinecraftClientLoader.OptiFine).IsAvailable);
+        Assert.True(choices.Single(choice => choice.Loader == MinecraftClientLoader.LabyMod).IsAvailable);
+    }
+
+    [Fact]
+    public void CreateFixedLoaderChoices_ExposesCheckingAndQueryFailureInsteadOfRemovingCards()
+    {
+        var checking = ClientWorkspaceViewModel.CreateFixedLoaderChoices(
+            results: null,
+            isChecking: true);
+        Assert.Equal(7, checking.Count);
+        Assert.All(
+            checking.Where(choice => choice.Loader != MinecraftClientLoader.Vanilla),
+            choice =>
+            {
+                Assert.True(choice.IsChecking);
+                Assert.False(choice.IsAvailable);
+            });
+
+        LoaderCatalogQueryResult[] failedResults =
+        [
+            new(MinecraftClientLoader.NeoForge, [], new HttpRequestException("fixture unavailable")),
+        ];
+        var failed = ClientWorkspaceViewModel.CreateFixedLoaderChoices(
+            failedResults,
+            isChecking: false);
+
+        var neoForge = Assert.Single(
+            failed,
+            choice => choice.Loader == MinecraftClientLoader.NeoForge);
+        Assert.True(neoForge.CatalogQueryFailed);
+        Assert.False(neoForge.IsAvailable);
+    }
+
     [Fact]
     public async Task QueryLoaderCatalogsAsync_IsolatesOneFailureAndKeepsManagedAndExternalChoices()
     {
@@ -62,6 +140,29 @@ public sealed class ClientLoaderCatalogIsolationTests
             1);
         return new MinecraftReleaseCatalogSnapshot(version, DateTimeOffset.UtcNow, [release]);
     }
+
+    private static LoaderCatalogQueryResult Result(
+        MinecraftClientLoader loader,
+        params MinecraftLoaderCatalogEntry[] entries) =>
+        new(loader, entries, null);
+
+    private static MinecraftLoaderCatalogEntry ManagedEntry(MinecraftClientLoader loader) =>
+        new(
+            loader,
+            "1.21.1",
+            "1.0.0",
+            MinecraftLoaderReleaseChannel.Stable,
+            MinecraftClientLoaderInstallKind.Managed,
+            new Uri("https://example.com/official/"),
+            new Uri("https://example.com/official/loader.jar"),
+            "fixture");
+
+    private static MinecraftLoaderCatalogEntry ExternalEntry(MinecraftClientLoader loader) =>
+        ManagedEntry(loader) with
+        {
+            InstallKind = MinecraftClientLoaderInstallKind.ExternalInstallerRequired,
+            InstallProfileOrArtifactUri = null,
+        };
 
     private sealed class ThrowingProvider(MinecraftClientLoader loader) : IMinecraftLoaderCatalogProvider
     {

@@ -14,6 +14,8 @@ public sealed class MinecraftClientProcessSession : IAsyncDisposable
     private EventHandler<string>? _outputReceived;
     private int _disposed;
     private bool _logCaptureAvailable;
+    private bool _outputCaptureStarted;
+    private bool _errorCaptureStarted;
 
     internal MinecraftClientProcessSession(Process process, DateTimeOffset startedAtUtc)
     {
@@ -77,10 +79,19 @@ public sealed class MinecraftClientProcessSession : IAsyncDisposable
     internal void BeginLogCapture()
     {
         _logCaptureAvailable = true;
-        _process.OutputDataReceived += HandleOutput;
-        _process.ErrorDataReceived += HandleOutput;
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
+        if (_process.StartInfo.RedirectStandardOutput)
+        {
+            _process.OutputDataReceived += HandleOutput;
+            _process.BeginOutputReadLine();
+            _outputCaptureStarted = true;
+        }
+
+        if (_process.StartInfo.RedirectStandardError)
+        {
+            _process.ErrorDataReceived += HandleOutput;
+            _process.BeginErrorReadLine();
+            _errorCaptureStarted = true;
+        }
     }
 
     public async Task StopAsync(
@@ -151,8 +162,15 @@ public sealed class MinecraftClientProcessSession : IAsyncDisposable
             return;
         }
 
-        _process.OutputDataReceived -= HandleOutput;
-        _process.ErrorDataReceived -= HandleOutput;
+        if (_outputCaptureStarted)
+        {
+            _process.OutputDataReceived -= HandleOutput;
+        }
+
+        if (_errorCaptureStarted)
+        {
+            _process.ErrorDataReceived -= HandleOutput;
+        }
         if (_process.HasExited)
         {
             await Completion.ConfigureAwait(false);

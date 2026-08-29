@@ -78,7 +78,7 @@ public sealed class BedrockOfficialHandoffTests
     }
 
     [Fact]
-    public void ClientCreateSurface_OffersOfficialHandoffWithoutCreatingABedrockInstance()
+    public void ClientCreateSurface_UsesIndependentShortcutAndNeverCreatesABedrockJavaInstance()
     {
         var xaml = File.ReadAllText(TestRepositoryPaths.AppSource(
             Path.Combine("Views", "ClientWorkspaceView.xaml")));
@@ -88,8 +88,13 @@ public sealed class BedrockOfficialHandoffTests
         Assert.Contains("L10n.client.create.bedrockOfficialHeading", xaml, StringComparison.Ordinal);
         Assert.Contains("L10n.client.create.openBedrockOfficial", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding OpenBedrockOfficialCommand}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("_bedrockOfficialHandoff.TryOpen(out var target)", viewModel, StringComparison.Ordinal);
-        Assert.Contains("!IsBusy && IsJavaEdition", viewModel, StringComparison.Ordinal);
+        Assert.Contains("ItemsSource=\"{Binding BedrockChannelChoices}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding NewBedrockShortcutName", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsBedrockShortcutPage", xaml, StringComparison.Ordinal);
+        Assert.Contains("_bedrockOfficialHandoff.TryOpenStore(", viewModel, StringComparison.Ordinal);
+        Assert.Contains("await CreateBedrockShortcutAsync();", viewModel, StringComparison.Ordinal);
+        Assert.Contains("_bedrockShortcutRegistry.AddAsync", viewModel, StringComparison.Ordinal);
+        Assert.Contains("_bedrockShortcutRegistry.RemoveAsync", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "MinecraftClientEdition.Bedrock,",
             viewModel,
@@ -105,6 +110,12 @@ public sealed class BedrockOfficialHandoffTests
                      "client.create.bedrockHint",
                      "client.create.bedrockHandoffHint",
                      "client.create.openBedrockOfficial",
+                     "client.create.bedrockAliasLabel",
+                     "client.create.bedrockChannel",
+                     "client.create.bedrockCreate",
+                     "client.bedrock.channel.stable",
+                     "client.bedrock.channel.preview",
+                     "client.bedrock.remove.confirm",
                      "client.vm.status.bedrockOpened",
                      "client.vm.status.bedrockStoreOpened",
                      "client.vm.validation.bedrockHandoffFailed",

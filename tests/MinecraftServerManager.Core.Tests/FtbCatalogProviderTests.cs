@@ -51,7 +51,7 @@ public sealed class FtbCatalogProviderTests
             requests.Add(request.RequestUri!);
             return request.RequestUri!.AbsolutePath switch
             {
-                "/v1/modpacks/modpack/search/8" => JsonResponse(
+                "/v1/modpacks/public/modpack/search/8" => JsonResponse(
                     """
                     {
                       "status": "success",
@@ -60,7 +60,7 @@ public sealed class FtbCatalogProviderTests
                       "count": 4
                     }
                     """),
-                "/v1/modpacks/modpack/134" => JsonResponse(
+                "/v1/modpacks/public/modpack/134" => JsonResponse(
                     """
                     {
                       "status": "success", "id": 134,
@@ -90,7 +90,7 @@ public sealed class FtbCatalogProviderTests
                       ]
                     }
                     """),
-                "/v1/modpacks/modpack/129" => JsonResponse(
+                "/v1/modpacks/public/modpack/129" => JsonResponse(
                     """
                     {
                       "status": "success", "id": 129,
@@ -182,11 +182,11 @@ public sealed class FtbCatalogProviderTests
             requests.Add(request.RequestUri!);
             return request.RequestUri!.AbsolutePath switch
             {
-                "/v1/modpacks/modpack/search/2" => JsonResponse(
+                "/v1/modpacks/public/modpack/search/2" => JsonResponse(
                     """{ "status": "success", "packs": [1, 2, 3, 4] }"""),
-                "/v1/modpacks/modpack/1" => JsonResponse(
+                "/v1/modpacks/public/modpack/1" => JsonResponse(
                     """{ "status": "success", "id": 1, "name": "One", "private": false, "versions": [] }"""),
-                "/v1/modpacks/modpack/2" => JsonResponse(
+                "/v1/modpacks/public/modpack/2" => JsonResponse(
                     """{ "status": "success", "id": 2, "name": "Two", "private": false, "versions": [] }"""),
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };
@@ -210,11 +210,11 @@ public sealed class FtbCatalogProviderTests
             requests.Add(request.RequestUri!);
             return request.RequestUri!.AbsolutePath switch
             {
-                "/v1/modpacks/modpack/featured/12" => JsonResponse(
+                "/v1/modpacks/public/modpack/featured/12" => JsonResponse(
                     """{ "status": "success", "packs": [134, 127, 134] }"""),
-                "/v1/modpacks/modpack/134" => JsonResponse(
+                "/v1/modpacks/public/modpack/134" => JsonResponse(
                     """{ "status": "success", "id": 134, "name": "FTB Skies 2: Aero", "private": false, "versions": [] }"""),
-                "/v1/modpacks/modpack/127" => JsonResponse(
+                "/v1/modpacks/public/modpack/127" => JsonResponse(
                     """{ "status": "success", "id": 127, "name": "Architect's Exodus", "private": false, "versions": [] }"""),
                 _ => new HttpResponseMessage(HttpStatusCode.NotFound)
             };
@@ -225,6 +225,217 @@ public sealed class FtbCatalogProviderTests
 
         Assert.Equal([134, 127], result.Packs.Select(pack => pack.Id));
         Assert.Equal(3, requests.Count);
+    }
+
+    [Fact]
+    public async Task GetVersionManifestAsync_ParsesPublicClientFilesAndPrefersFtbMirror()
+    {
+        const string emptySha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        const string emptySha256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        const string emptySha512 =
+            "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce" +
+            "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e";
+        using var client = new HttpClient(new FtbCatalogStubHandler(request =>
+        {
+            Assert.Equal(
+                "/v1/modpacks/public/modpack/130/100140",
+                request.RequestUri!.AbsolutePath);
+            return JsonResponse(
+                $$"""
+                {
+                  "status": "success", "parent": 130, "id": 100140,
+                  "name": "Stable", "type": "release", "private": false,
+                  "targets": [
+                    { "type": "game", "name": "minecraft", "version": "1.21.1" },
+                    { "type": "modloader", "name": "neoforge", "version": "21.1.209" },
+                    { "type": "runtime", "name": "java", "version": "21.0.4+7-LTS" }
+                  ],
+                  "specs": { "minimum": 5120, "recommended": 6144 },
+                  "files": [{
+                    "id": 42, "path": "./mods", "name": "placeholder.jar", "size": 0,
+                    "url": "https://edge.forgecdn.net/files/1/2/placeholder.jar",
+                    "mirrors": ["https://files.feed-the-beast.com/blob/abc"],
+                    "clientonly": true, "serveronly": false, "optional": true, "type": "mod",
+                    "sha1": "{{emptySha1}}",
+                    "hashes": {
+                      "sha1": "{{emptySha1}}", "sha256": "{{emptySha256}}", "sha512": "{{emptySha512}}"
+                    }
+                  }]
+                }
+                """);
+        }));
+        var provider = new FtbCatalogProvider(client, "Muhun-MCSV-Manager.Tests/1.0");
+
+        var manifest = await provider.GetVersionManifestAsync(130, 100140);
+
+        Assert.Equal("1.21.1", manifest.MinecraftVersion);
+        Assert.Equal("neoforge", manifest.ModLoaderName);
+        Assert.Equal("21.1.209", manifest.ModLoaderVersion);
+        Assert.Equal("21.0.4+7-LTS", manifest.JavaVersion);
+        Assert.Equal(new FtbPackMemorySpecs(5120, 6144), manifest.Memory);
+        var file = Assert.Single(manifest.Files);
+        Assert.Equal("mods/placeholder.jar", file.Path);
+        Assert.Equal(0, file.Size);
+        Assert.True(file.ClientOnly);
+        Assert.True(file.Optional);
+        Assert.False(file.ServerOnly);
+        Assert.Equal(
+            "https://files.feed-the-beast.com/blob/abc",
+            file.PreferredDownloadUris[0].AbsoluteUri);
+        Assert.Equal(
+            "https://edge.forgecdn.net/files/1/2/placeholder.jar",
+            file.PreferredDownloadUris[1].AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("../mods", "evil.jar")]
+    [InlineData("/mods", "evil.jar")]
+    [InlineData("mods//nested", "evil.jar")]
+    [InlineData("mods", "../evil.jar")]
+    [InlineData("mods", "CON")]
+    public void NormalizeManifestDestination_RejectsTraversalRootingAndWindowsAliases(
+        string path,
+        string name)
+    {
+        Assert.Throws<InvalidDataException>(() =>
+            FtbCatalogProvider.NormalizeManifestDestination(path, name));
+    }
+
+    [Fact]
+    public void OfficialFileUri_RejectsHttpCredentialsPortsAndUnknownHosts()
+    {
+        Assert.True(FtbCatalogProvider.IsOfficialFileUri(
+            new Uri("https://files.feed-the-beast.com/blob/good")));
+        Assert.False(FtbCatalogProvider.IsOfficialFileUri(
+            new Uri("http://files.feed-the-beast.com/blob/no")));
+        Assert.False(FtbCatalogProvider.IsOfficialFileUri(
+            new Uri("https://user@files.feed-the-beast.com/blob/no")));
+        Assert.False(FtbCatalogProvider.IsOfficialFileUri(
+            new Uri("https://files.feed-the-beast.com:444/blob/no")));
+        Assert.False(FtbCatalogProvider.IsOfficialFileUri(
+            new Uri("https://attacker.example/blob/no")));
+    }
+
+    [Fact]
+    public async Task GetVersionManifestAsync_DeduplicatesSameContentCaseOnlyWindowsAlias()
+    {
+        using var client = new HttpClient(new FtbCatalogStubHandler(_ =>
+            JsonResponse(BuildCaseAliasManifestJson(secondSha256: null))));
+        var provider = new FtbCatalogProvider(client, "Muhun-MCSV-Manager.Tests/1.0");
+
+        var manifest = await provider.GetVersionManifestAsync(130, 100140);
+
+        var file = Assert.Single(manifest.Files);
+        Assert.Equal("config/Obscuria/settings.json", file.Path);
+    }
+
+    [Fact]
+    public async Task GetVersionManifestAsync_RejectsDifferentContentCaseOnlyWindowsAlias()
+    {
+        using var client = new HttpClient(new FtbCatalogStubHandler(_ =>
+            JsonResponse(BuildCaseAliasManifestJson(new string('0', 64)))));
+        var provider = new FtbCatalogProvider(client, "Muhun-MCSV-Manager.Tests/1.0");
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            provider.GetVersionManifestAsync(130, 100140));
+
+        Assert.Contains("conflicting destination", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetVersionManifestAsync_AcceptsCurrentFeaturedPackFileCountAboveTenThousand()
+    {
+        const int currentFeaturedPackFileCount = 11_332;
+        using var client = new HttpClient(new FtbCatalogStubHandler(_ =>
+            JsonResponse(BuildManifestJson(currentFeaturedPackFileCount, validEntries: true))));
+        var provider = new FtbCatalogProvider(client, "Muhun-MCSV-Manager.Tests/1.0");
+
+        var manifest = await provider.GetVersionManifestAsync(130, 100140);
+
+        Assert.Equal(currentFeaturedPackFileCount, manifest.Files.Count);
+    }
+
+    [Fact]
+    public async Task GetVersionManifestAsync_RejectsMoreThanTwentyThousandFiles()
+    {
+        using var client = new HttpClient(new FtbCatalogStubHandler(_ =>
+            JsonResponse(BuildManifestJson(20_001, validEntries: false))));
+        var provider = new FtbCatalogProvider(client, "Muhun-MCSV-Manager.Tests/1.0");
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            provider.GetVersionManifestAsync(130, 100140));
+
+        Assert.Contains("20000", error.Message, StringComparison.Ordinal);
+    }
+
+    private static string BuildManifestJson(int fileCount, bool validEntries)
+    {
+        var json = new StringBuilder(
+            "{\"status\":\"success\",\"parent\":130,\"id\":100140," +
+            "\"name\":\"Large stable\",\"type\":\"release\",\"private\":false," +
+            "\"targets\":[{\"type\":\"game\",\"name\":\"minecraft\",\"version\":\"1.21.1\"}]," +
+            "\"specs\":{\"minimum\":512,\"recommended\":1024},\"files\":[");
+        for (var index = 0; index < fileCount; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            if (!validEntries)
+            {
+                json.Append("{}");
+                continue;
+            }
+
+            json.Append(
+                "{\"id\":" + index + ",\"path\":\"config\",\"name\":\"file-" + index +
+                ".txt\",\"size\":0,\"url\":\"https://files.feed-the-beast.com/blob/empty\"," +
+                "\"mirrors\":[],\"clientonly\":false,\"serveronly\":false,\"optional\":false," +
+                "\"type\":\"config\",\"sha1\":\"da39a3ee5e6b4b0d3255bfef95601890afd80709\"," +
+                "\"hashes\":{\"sha1\":\"da39a3ee5e6b4b0d3255bfef95601890afd80709\"," +
+                "\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"," +
+                "\"sha512\":\"cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce" +
+                "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e\"}}");
+        }
+
+        return json.Append("]}").ToString();
+    }
+
+    private static string BuildCaseAliasManifestJson(string? secondSha256)
+    {
+        const string emptySha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        const string emptySha256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        const string emptySha512 =
+            "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce" +
+            "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e";
+        secondSha256 ??= emptySha256;
+        return $$"""
+                 {
+                   "status":"success", "parent":130, "id":100140,
+                   "name":"Case aliases", "type":"release", "private":false,
+                   "targets":[{"type":"game","name":"minecraft","version":"1.21.1"}],
+                   "specs":{"minimum":512,"recommended":1024},
+                   "files":[
+                     {
+                       "id":1, "path":"config/Obscuria", "name":"settings.json", "size":0,
+                       "url":"https://files.feed-the-beast.com/blob/one", "mirrors":[],
+                       "clientonly":true, "serveronly":false, "optional":false, "type":"config",
+                       "sha1":"{{emptySha1}}",
+                       "hashes":{"sha1":"{{emptySha1}}","sha256":"{{emptySha256}}","sha512":"{{emptySha512}}"}
+                     },
+                     {
+                       "id":2, "path":"config/obscuria", "name":"settings.json", "size":0,
+                       "url":"https://files.feed-the-beast.com/blob/two", "mirrors":[],
+                       "clientonly":true, "serveronly":false, "optional":false, "type":"config",
+                       "sha1":"{{emptySha1}}",
+                       "hashes":{"sha1":"{{emptySha1}}","sha256":"{{secondSha256}}","sha512":"{{emptySha512}}"}
+                     }
+                   ]
+                 }
+                 """;
     }
 
     private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)

@@ -107,6 +107,26 @@ public sealed class MinecraftClientLaunchCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task LaunchAsync_DrainsLargeBackgroundOutputWithoutAUiSubscriber()
+    {
+        var instance = CreateInstance();
+        instance.ShowGameLog = false;
+        var coordinator = new MinecraftClientLaunchCoordinator(
+            new MinecraftClientMemoryRecommendationService(
+                new FixedMemoryProbe(new SystemMemorySnapshot(16 * Gibibyte, 12 * Gibibyte))),
+            new LargeOutputProcessBuilder());
+
+        await using var session = await coordinator.LaunchAsync(
+            instance,
+            new NewMinecraftClientDefaultsSettings(),
+            CreateSession("account-a"));
+        var result = await session.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(session.LogCaptureAvailable);
+        Assert.Equal(0, result.ExitCode);
+    }
+
+    [Fact]
     public async Task LaunchAsync_PersistenceFailureTerminatesTheJustStartedJavaProcess()
     {
         var instance = CreateInstance();
@@ -315,6 +335,29 @@ public sealed class MinecraftClientLaunchCoordinatorTests : IDisposable
             startInfo.ArgumentList.Add("/s");
             startInfo.ArgumentList.Add("/c");
             startInfo.ArgumentList.Add("echo EARLY-OUT & echo EARLY-ERR 1>&2 & ping -n 3 127.0.0.1 >nul");
+            return Task.FromResult(new Process { StartInfo = startInfo });
+        }
+    }
+
+    private sealed class LargeOutputProcessBuilder : IMinecraftClientProcessBuilder
+    {
+        public Task<Process> BuildAsync(
+            MinecraftClientInstance instance,
+            AuthenticatedMinecraftSession authenticatedSession,
+            MinecraftClientMemoryResolution memory,
+            CancellationToken cancellationToken = default)
+        {
+            var startInfo = new ProcessStartInfo("cmd.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/s");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add("for /L %i in (1,1,12000) do @echo OUT-%i & @echo ERR-%i 1>&2");
             return Task.FromResult(new Process { StartInfo = startInfo });
         }
     }

@@ -4,7 +4,10 @@ using System.Diagnostics;
 using System.Net;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Microsoft.Win32;
+using MinecraftServerManager.App.Controls;
 using MinecraftServerManager.App.Dialogs;
 using MinecraftServerManager.App.Infrastructure;
 using MinecraftServerManager.App.Services;
@@ -23,6 +26,17 @@ internal sealed record LoaderCatalogQueryResult(
 
 public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposable
 {
+    private static readonly MinecraftClientLoader[] FixedLoaderOrder =
+    [
+        MinecraftClientLoader.Vanilla,
+        MinecraftClientLoader.Forge,
+        MinecraftClientLoader.Fabric,
+        MinecraftClientLoader.Quilt,
+        MinecraftClientLoader.NeoForge,
+        MinecraftClientLoader.OptiFine,
+        MinecraftClientLoader.LabyMod,
+    ];
+
     private static readonly string UserAgent =
         $"XMCSV/{GetRunningProductVersion()} (Windows; client-launcher)";
     private readonly ApplicationPaths _paths;
@@ -32,6 +46,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly HttpClient _gameHttpClient;
     private readonly HttpClient _authenticationHttpClient;
     private readonly MinecraftClientRegistry _registry;
+    private readonly BedrockClientShortcutRegistry _bedrockShortcutRegistry;
     private readonly IMinecraftReleaseCatalog _releaseCatalog;
     private readonly IReadOnlyList<IMinecraftLoaderCatalogProvider> _loaderCatalogs;
     private readonly MinecraftClientInstanceManager _instanceManager;
@@ -44,7 +59,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly MinecraftClientLaunchCoordinator _launchCoordinator;
     private readonly IModrinthClientModpackCatalog _modrinthCatalog;
     private readonly ModrinthMinecraftClientPackInstaller _modrinthInstaller;
+    private readonly IModrinthClientContentCatalog _modrinthContentCatalog;
+    private readonly ModrinthClientContentInstaller _modrinthContentInstaller;
     private readonly FtbClientCatalog _ftbCatalog;
+    private readonly FtbMinecraftClientPackInstaller _ftbInstaller;
     private readonly IOnlineModpackArtworkCache _artworkCache;
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
     private readonly SemaphoreSlim _contentGate = new(1, 1);
@@ -52,7 +70,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly BatchObservableCollection<ClientContentItemViewModel> _contentItems = [];
     private readonly Dictionary<Guid, MinecraftClientProcessSession> _runningSessions = [];
     private readonly HashSet<Task> _sessionObserverTasks = [];
+    private readonly ClientLauncherWindowLifecycle _launcherWindowLifecycle = new();
     private readonly object _runningSessionGate = new();
+    private readonly HashSet<Task> _profileSynchronizationTasks = [];
+    private readonly object _profileSynchronizationGate = new();
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _operationCancellation;
     private CancellationTokenSource? _loaderRefreshCancellation;
@@ -67,15 +88,37 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private ClientLoaderChoiceViewModel? _selectedLoader;
     private MinecraftLoaderCatalogEntry? _selectedLoaderVersion;
     private ClientInstanceItemViewModel? _selectedInstance;
+    private BedrockClientShortcutItemViewModel? _selectedBedrockShortcut;
+    private BedrockChannelChoiceViewModel? _selectedBedrockChannel;
     private MinecraftClientAccountInfo? _selectedAccount;
+    private bool _isAccountPanelOpen;
+    private bool _isAccountLoginChoiceOpen;
+    private bool _isAccountExpiryExpanded;
+    private bool _isDeviceCodePromptVisible;
+    private string _microsoftAccountLoginHint = string.Empty;
+    private string _deviceCode = string.Empty;
+    private Uri? _deviceCodeVerificationUri;
+    private DateTimeOffset? _deviceCodeExpiresAtUtc;
+    private CancellationTokenSource? _accountLoginCancellation;
+    private Task _accountRefreshTask = Task.CompletedTask;
+    private Task _accountLoginTask = Task.CompletedTask;
+    private MinecraftClientSkinVariant _skinPreviewVariant = MinecraftClientSkinVariant.Classic;
+    private string? _selectedSkinFilePath;
+    private MinecraftClientCapeInfo? _selectedCape;
+    private ImageSource? _selectedPlayerSkinTexture;
+    private ImageSource? _selectedPlayerHeadTexture;
+    private CancellationTokenSource? _skinTextureLoadCancellation;
     private bool _isInitialized;
     private bool _isBusy;
-    private bool _isCreatePage = true;
+    private bool _isCreatePage;
     private bool _isSettingsPage;
     private bool _isCatalogPage;
     private bool _isCatalogBusy;
+    private bool _suppressSelectedInstanceNavigation;
+    private bool _changingClientSelection;
     private bool _isJavaEdition = true;
     private string _newInstanceName = "Minecraft";
+    private string _newBedrockShortcutName = string.Empty;
     private string _statusText = string.Empty;
     private string _errorText = string.Empty;
     private double _progressValue;
@@ -83,6 +126,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private int _maximumMemoryMb = 4_096;
     private int _windowWidth = 1280;
     private int _windowHeight = 720;
+    private IReadOnlyList<ClientResolutionChoice> _resolutionChoices =
+        ClientResolutionCatalog.CreateChoices(1280, 720);
     private bool _fullScreen;
     private MinecraftClientMemoryMode _memoryMode = MinecraftClientMemoryMode.Automatic;
     private bool _applyingMemoryPreset;
@@ -90,6 +135,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private ClientContentItemViewModel? _selectedContentItem;
     private bool _showRecycleBin;
     private string _contentStatusText = string.Empty;
+    private bool _isContentDownloadOpen;
+    private MinecraftClientContentKind _contentDownloadKind = MinecraftClientContentKind.Mod;
+    private string _contentDownloadSearchText = string.Empty;
+    private string _contentDownloadStatusText = string.Empty;
+    private ClientContentDownloadProjectItemViewModel? _selectedContentDownloadProject;
+    private ClientContentDownloadLoaderChoice? _selectedContentDownloadLoader;
+    private Uri? _contentDownloadFallbackUri;
     private ClientInstanceSettingsEditorViewModel? _settingsEditor;
     private bool _isClientSettingsClosePromptOpen;
     private string _catalogSourceId = "modrinth";
@@ -110,6 +162,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private IReadOnlyList<ClientCatalogLoaderChoice> _catalogLoaders = [];
     private IReadOnlyList<ClientCatalogCategoryChoice> _catalogCategories = [];
     private IReadOnlyList<ClientCatalogSortChoice> _catalogSortOptions = [];
+    private IReadOnlyList<ClientContentDownloadLoaderChoice> _contentDownloadLoaders = [];
+    private IReadOnlyList<BedrockChannelChoiceViewModel> _bedrockChannelChoices = [];
 
     public ClientWorkspaceViewModel(
         ApplicationPaths paths,
@@ -126,6 +180,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _gameHttpClient = CreateHttpClient(TimeSpan.FromMinutes(30));
         _authenticationHttpClient = CreateHttpClient(TimeSpan.FromMinutes(5));
         _registry = new MinecraftClientRegistry(_paths.ClientRegistryFile);
+        _bedrockShortcutRegistry = new BedrockClientShortcutRegistry(
+            _paths.BedrockShortcutRegistryFile);
         _releaseCatalog = new MojangReleaseCatalog(_catalogHttpClient);
         _loaderCatalogs =
         [
@@ -159,6 +215,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             new CmlMinecraftClientProcessBuilder(),
             _processRecoveryService);
         _modrinthCatalog = new ModrinthClientModpackCatalog(_catalogHttpClient, UserAgent);
+        _modrinthContentCatalog = new ModrinthClientContentCatalog(_catalogHttpClient, UserAgent);
+        _modrinthContentInstaller = new ModrinthClientContentInstaller(
+            Path.Combine(_paths.ClientStaging, "content-downloads"),
+            _modrinthContentCatalog,
+            _gameHttpClient);
         _ftbCatalog = new FtbClientCatalog(new FtbCatalogProvider(_catalogHttpClient, UserAgent));
         _modrinthInstaller = new ModrinthMinecraftClientPackInstaller(
             _paths.Clients,
@@ -168,12 +229,24 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             payloadInstaller,
             _modrinthCatalog,
             _gameHttpClient);
+        _ftbInstaller = new FtbMinecraftClientPackInstaller(
+            _paths.Clients,
+            _paths.ClientStaging,
+            _registry,
+            _releaseCatalog,
+            payloadInstaller,
+            _ftbCatalog,
+            _gameHttpClient);
         _artworkCache = new OnlineModpackArtworkCache(_paths);
         _bedrockOfficialHandoff = new BedrockOfficialHandoffService();
         _statusText = L("client.vm.status.initial");
         _contentStatusText = L("client.vm.content.initial");
+        _contentDownloadStatusText = L("client.vm.contentDownload.initial");
         _catalogStatusText = L("client.vm.catalog.initial");
         RefreshLocalizedCatalogChoices();
+        RefreshLocalizedContentDownloadChoices();
+        RefreshLocalizedBedrockChoices();
+        _newBedrockShortcutName = L("client.create.bedrockDefaultName");
         _selectedCatalogLoader = CatalogLoaders[0];
         _selectedCatalogCategory = CatalogCategories[0];
         _selectedCatalogSort = CatalogSortOptions[0];
@@ -187,7 +260,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         NewInstanceCommand = new RelayCommand(ShowCreatePage);
         OpenCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(OpenCatalogAsync));
-        CloseCatalogCommand = new RelayCommand(ShowSelectedInstance);
+        CloseCatalogCommand = new RelayCommand(ShowSelectedInstance, () => !IsBusy);
         SelectCatalogSourceCommand = new AsyncRelayCommand(
             parameter => RunGuardedAsync(() => SelectCatalogSourceAsync(parameter)));
         SearchCatalogCommand = new AsyncRelayCommand(
@@ -199,7 +272,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         InstallCatalogPackCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(InstallSelectedCatalogPackAsync),
             CanInstallCatalogPack);
-        CloseCreateCommand = new RelayCommand(ShowSelectedInstance, () => SelectedInstance is not null);
+        OpenFtbFallbackCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(OpenSelectedFtbFallbackAsync),
+            CanOpenFtbFallback);
+        CloseCreateCommand = new RelayCommand(ShowSelectedInstance);
         CreateInstanceCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(CreateInstanceAsync),
             CanCreateInstance);
@@ -214,8 +290,41 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             () => RunGuardedAsync(StopSelectedAsync),
             CanStopSelected);
         AddAccountCommand = new AsyncRelayCommand(
-            () => RunGuardedAsync(AddAccountAsync),
+            OpenAccountLoginChoiceAsync,
             () => !IsBusy);
+        ToggleAccountPanelCommand = new RelayCommand(ToggleAccountPanel);
+        ToggleAccountExpiryCommand = new RelayCommand(
+            () => IsAccountExpiryExpanded = !IsAccountExpiryExpanded,
+            () => SelectedAccount is not null);
+        StartBrowserAccountLoginCommand = new AsyncRelayCommand(
+            () => _accountLoginTask = RunGuardedAsync(AddAccountInBrowserAsync),
+            () => !IsBusy && IsValidMicrosoftAccountLoginHint(MicrosoftAccountLoginHint));
+        StartDeviceCodeAccountLoginCommand = new AsyncRelayCommand(
+            () => _accountLoginTask = RunGuardedAsync(AddAccountWithDeviceCodeAsync),
+            () => !IsBusy);
+        CancelAccountLoginCommand = new RelayCommand(CancelAccountLogin);
+        CopyDeviceCodeCommand = new RelayCommand(CopyDeviceCode, () => IsDeviceCodePromptVisible);
+        OpenDeviceLoginPageCommand = new RelayCommand(
+            OpenDeviceLoginPage,
+            () => IsDeviceCodePromptVisible && DeviceCodeVerificationUri is not null);
+        SelectClassicSkinCommand = new RelayCommand(
+            () => SkinPreviewVariant = MinecraftClientSkinVariant.Classic,
+            () => SelectedAccount is not null && !IsBusy);
+        SelectSlimSkinCommand = new RelayCommand(
+            () => SkinPreviewVariant = MinecraftClientSkinVariant.Slim,
+            () => SelectedAccount is not null && !IsBusy);
+        ChooseSkinFileCommand = new RelayCommand(
+            ChooseSkinFile,
+            () => SelectedAccount is not null && !IsBusy);
+        SaveSkinCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(SaveSkinAsync),
+            () => SelectedAccount is not null && !IsBusy);
+        ApplySelectedCapeCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(ApplySelectedCapeAsync),
+            () => SelectedAccount is not null && SelectedCape is not null && !IsBusy);
+        DisableCapeCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(DisableCapeAsync),
+            () => SelectedAccount is not null && SelectedAccount.Capes.Any(cape => cape.IsActive) && !IsBusy);
         RemoveSelectedAccountCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(RemoveSelectedAccountAsync),
             () => SelectedAccount is not null && !IsBusy);
@@ -239,11 +348,33 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OpenContentFolderCommand = new RelayCommand(
             OpenSelectedContentFolder,
             parameter => SelectedInstance is not null && parameter is string folder && IsAllowedContentFolder(folder));
+        OpenContentDownloadCommand = new AsyncRelayCommand(
+            parameter => RunGuardedAsync(() => OpenContentDownloadAsync(parameter)),
+            parameter => CanOpenContentDownload(parameter));
+        CloseContentDownloadCommand = new RelayCommand(CloseContentDownload, () => !IsBusy);
+        SearchContentDownloadCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(SearchContentDownloadAsync),
+            () => IsContentDownloadOpen && SelectedInstance is not null && !IsBusy);
+        InstallContentDownloadCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(InstallSelectedContentDownloadAsync),
+            CanInstallSelectedContentDownload);
+        OpenSelectedContentProjectPageCommand = new RelayCommand(
+            OpenSelectedContentProjectPage,
+            () => SelectedContentDownloadProject is not null);
+        OpenContentFallbackCommand = new RelayCommand(
+            OpenContentFallback,
+            () => ContentDownloadFallbackUri is not null);
         SelectJavaEditionCommand = new RelayCommand(() => IsJavaEdition = true);
         SelectBedrockEditionCommand = new RelayCommand(() => IsJavaEdition = false);
         OpenBedrockOfficialCommand = new RelayCommand(
             OpenBedrockOfficial,
             () => IsBedrockEdition && !IsBusy);
+        OpenSelectedBedrockOfficialCommand = new RelayCommand(
+            OpenSelectedBedrockOfficial,
+            () => SelectedBedrockShortcut is not null && !IsBusy);
+        DeleteBedrockShortcutCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(DeleteSelectedBedrockShortcutAsync),
+            () => SelectedBedrockShortcut is not null && !IsBusy);
         SelectContentKindCommand = new RelayCommand(
             parameter => _ = RunGuardedAsync(() => SelectContentKindAsync(parameter)));
         RefreshContentCommand = new AsyncRelayCommand(
@@ -281,6 +412,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public ObservableCollection<ClientInstanceItemViewModel> Instances { get; } = [];
 
+    public ObservableCollection<BedrockClientShortcutItemViewModel> BedrockShortcuts { get; } = [];
+
     public ObservableCollection<MinecraftReleaseInfo> Releases { get; } = [];
 
     public ObservableCollection<ClientLoaderChoiceViewModel> LoaderChoices { get; } = [];
@@ -290,6 +423,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public ObservableCollection<MinecraftClientAccountInfo> Accounts { get; } = [];
 
     public ObservableCollection<ClientContentItemViewModel> ContentItems => _contentItems;
+
+    public ObservableCollection<ClientContentDownloadProjectItemViewModel> ContentDownloadResults { get; } = [];
+
+    public IReadOnlyList<ClientContentDownloadLoaderChoice> ContentDownloadLoaders =>
+        _contentDownloadLoaders;
 
     public ObservableCollection<ClientModpackProjectItemViewModel> CatalogProjects { get; } = [];
 
@@ -303,6 +441,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public IReadOnlyList<ClientCatalogSortChoice> CatalogSortOptions => _catalogSortOptions;
 
+    public IReadOnlyList<BedrockChannelChoiceViewModel> BedrockChannelChoices =>
+        _bedrockChannelChoices;
+
     public IReadOnlyList<int> CatalogResultLimits { get; } = [20, 40, 60, 80, 100];
 
     public AsyncRelayCommand InitializeCommand { get; }
@@ -314,6 +455,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand SearchCatalogCommand { get; }
     public AsyncRelayCommand LoadMoreCatalogCommand { get; }
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
+    public AsyncRelayCommand OpenFtbFallbackCommand { get; }
     public RelayCommand CloseCreateCommand { get; }
     public AsyncRelayCommand CreateInstanceCommand { get; }
     public RelayCommand CancelOperationCommand { get; }
@@ -321,6 +463,19 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand QuickLaunchCommand { get; }
     public AsyncRelayCommand StopClientCommand { get; }
     public AsyncRelayCommand AddAccountCommand { get; }
+    public RelayCommand ToggleAccountPanelCommand { get; }
+    public RelayCommand ToggleAccountExpiryCommand { get; }
+    public AsyncRelayCommand StartBrowserAccountLoginCommand { get; }
+    public AsyncRelayCommand StartDeviceCodeAccountLoginCommand { get; }
+    public RelayCommand CancelAccountLoginCommand { get; }
+    public RelayCommand CopyDeviceCodeCommand { get; }
+    public RelayCommand OpenDeviceLoginPageCommand { get; }
+    public RelayCommand SelectClassicSkinCommand { get; }
+    public RelayCommand SelectSlimSkinCommand { get; }
+    public RelayCommand ChooseSkinFileCommand { get; }
+    public AsyncRelayCommand SaveSkinCommand { get; }
+    public AsyncRelayCommand ApplySelectedCapeCommand { get; }
+    public AsyncRelayCommand DisableCapeCommand { get; }
     public AsyncRelayCommand RemoveSelectedAccountCommand { get; }
     public AsyncRelayCommand SignOutAllAccountsCommand { get; }
     public RelayCommand OpenInstanceFolderCommand { get; }
@@ -331,9 +486,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand UseManualMemoryCommand { get; }
     public RelayCommand ApplyResolutionPresetCommand { get; }
     public RelayCommand OpenContentFolderCommand { get; }
+    public AsyncRelayCommand OpenContentDownloadCommand { get; }
+    public RelayCommand CloseContentDownloadCommand { get; }
+    public AsyncRelayCommand SearchContentDownloadCommand { get; }
+    public AsyncRelayCommand InstallContentDownloadCommand { get; }
+    public RelayCommand OpenSelectedContentProjectPageCommand { get; }
+    public RelayCommand OpenContentFallbackCommand { get; }
     public RelayCommand SelectJavaEditionCommand { get; }
     public RelayCommand SelectBedrockEditionCommand { get; }
     public RelayCommand OpenBedrockOfficialCommand { get; }
+    public RelayCommand OpenSelectedBedrockOfficialCommand { get; }
+    public AsyncRelayCommand DeleteBedrockShortcutCommand { get; }
     public RelayCommand SelectContentKindCommand { get; }
     public AsyncRelayCommand RefreshContentCommand { get; }
     public AsyncRelayCommand ImportContentCommand { get; }
@@ -425,20 +588,42 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             if (value is not null)
             {
-                IsCreatePage = false;
-                IsSettingsPage = false;
-                IsCatalogPage = false;
+                if (!_changingClientSelection)
+                {
+                    _changingClientSelection = true;
+                    try
+                    {
+                        SelectedBedrockShortcut = null;
+                    }
+                    finally
+                    {
+                        _changingClientSelection = false;
+                    }
+                }
+
+                if (!_suppressSelectedInstanceNavigation)
+                {
+                    IsCreatePage = false;
+                    IsSettingsPage = false;
+                    IsCatalogPage = false;
+                }
             }
 
             SettingsEditor = null;
 
             OnPropertyChanged(nameof(HasSelectedInstance));
+            OnPropertyChanged(nameof(HasAnySelectedClient));
+            OnPropertyChanged(nameof(IsDashboardPage));
+            OnPropertyChanged(nameof(IsBedrockShortcutPage));
             LaunchCommand.NotifyCanExecuteChanged();
             QuickLaunchCommand.NotifyCanExecuteChanged();
             StopClientCommand.NotifyCanExecuteChanged();
             OpenInstanceFolderCommand.NotifyCanExecuteChanged();
             DeleteClientInstanceCommand.NotifyCanExecuteChanged();
             OpenContentFolderCommand.NotifyCanExecuteChanged();
+            OpenContentDownloadCommand.NotifyCanExecuteChanged();
+            SearchContentDownloadCommand.NotifyCanExecuteChanged();
+            InstallContentDownloadCommand.NotifyCanExecuteChanged();
             OpenClientSettingsCommand.NotifyCanExecuteChanged();
             SaveClientSettingsCommand.NotifyCanExecuteChanged();
             RefreshContentCommand.NotifyCanExecuteChanged();
@@ -451,10 +636,57 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _contentRefreshCoordinator.CancelCurrent();
             _contentItems.ReplaceAll([]);
             SelectedContentItem = null;
+            IsContentDownloadOpen = false;
+            ContentDownloadResults.Clear();
+            SelectedContentDownloadProject = null;
+            ContentDownloadFallbackUri = null;
+            OnPropertyChanged(nameof(ContentDownloadDescription));
             if (value is not null)
             {
                 _ = RunGuardedAsync(RefreshContentAsync);
             }
+        }
+    }
+
+    public BedrockClientShortcutItemViewModel? SelectedBedrockShortcut
+    {
+        get => _selectedBedrockShortcut;
+        set
+        {
+            if (!SetProperty(ref _selectedBedrockShortcut, value))
+            {
+                return;
+            }
+
+            if (value is not null)
+            {
+                if (!_changingClientSelection)
+                {
+                    _changingClientSelection = true;
+                    try
+                    {
+                        SelectedInstance = null;
+                    }
+                    finally
+                    {
+                        _changingClientSelection = false;
+                    }
+                }
+
+                if (!_suppressSelectedInstanceNavigation)
+                {
+                    IsCreatePage = false;
+                    IsSettingsPage = false;
+                    IsCatalogPage = false;
+                }
+            }
+
+            OnPropertyChanged(nameof(HasSelectedBedrockShortcut));
+            OnPropertyChanged(nameof(HasAnySelectedClient));
+            OnPropertyChanged(nameof(IsDashboardPage));
+            OnPropertyChanged(nameof(IsBedrockShortcutPage));
+            OpenSelectedBedrockOfficialCommand.NotifyCanExecuteChanged();
+            DeleteBedrockShortcutCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -465,8 +697,188 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedAccount, value))
             {
+                BeginLoadOfficialSkinTexture(value);
+                _skinPreviewVariant = value?.ActiveSkin?.Variant ?? MinecraftClientSkinVariant.Classic;
+                _selectedSkinFilePath = null;
+                _selectedCape = value?.Capes.FirstOrDefault(cape => cape.IsActive)
+                                ?? value?.Capes.FirstOrDefault();
                 LaunchCommand.NotifyCanExecuteChanged();
                 RemoveSelectedAccountCommand.NotifyCanExecuteChanged();
+                ToggleAccountExpiryCommand.NotifyCanExecuteChanged();
+                NotifyAccountCosmeticStateChanged();
+                OnPropertyChanged(nameof(HasSelectedAccount));
+                OnPropertyChanged(nameof(SelectedPlayerName));
+                OnPropertyChanged(nameof(AccountButtonAccessibleName));
+                OnPropertyChanged(nameof(SelectedPlayerUuid));
+                OnPropertyChanged(nameof(SelectedPlayerSkinUri));
+                OnPropertyChanged(nameof(SelectedPlayerSkinTexture));
+                OnPropertyChanged(nameof(SelectedPlayerHeadTexture));
+                OnPropertyChanged(nameof(SelectedAccountExpiresAtUtc));
+                OnPropertyChanged(nameof(SelectedAccountCapes));
+                OnPropertyChanged(nameof(SelectedAccountExpirySummary));
+            }
+        }
+    }
+
+    public bool HasSelectedAccount => SelectedAccount is not null;
+
+    public string SelectedPlayerName => SelectedAccount?.Username
+        ?? L("client.account.none");
+
+    public string AccountButtonAccessibleName =>
+        L("client.account.openPlayerInfo", SelectedPlayerName);
+
+    public string SelectedPlayerUuid => SelectedAccount?.MinecraftUuid ?? string.Empty;
+
+    public Uri? SelectedPlayerSkinUri => SelectedAccount?.ActiveSkin?.TextureUri;
+
+    public ImageSource? SelectedPlayerSkinTexture => _selectedPlayerSkinTexture;
+
+    public ImageSource? SelectedPlayerHeadTexture => _selectedPlayerHeadTexture;
+
+    public DateTimeOffset? SelectedAccountExpiresAtUtc =>
+        SelectedAccount?.AuthenticationExpiresAtUtc?.ToLocalTime();
+
+    public IReadOnlyList<MinecraftClientCapeInfo> SelectedAccountCapes =>
+        SelectedAccount?.Capes ?? [];
+
+    public string SelectedAccountExpirySummary => SelectedAccountExpiresAtUtc is { } expiry
+        ? L("client.account.expiry.value", expiry)
+        : L("client.account.expiry.unknown");
+
+    public bool IsAccountPanelOpen
+    {
+        get => _isAccountPanelOpen;
+        private set => SetProperty(ref _isAccountPanelOpen, value);
+    }
+
+    public bool IsAccountLoginChoiceOpen
+    {
+        get => _isAccountLoginChoiceOpen;
+        private set => SetProperty(ref _isAccountLoginChoiceOpen, value);
+    }
+
+    public bool IsAccountExpiryExpanded
+    {
+        get => _isAccountExpiryExpanded;
+        private set => SetProperty(ref _isAccountExpiryExpanded, value);
+    }
+
+    public bool IsDeviceCodePromptVisible
+    {
+        get => _isDeviceCodePromptVisible;
+        private set
+        {
+            if (SetProperty(ref _isDeviceCodePromptVisible, value))
+            {
+                CopyDeviceCodeCommand.NotifyCanExecuteChanged();
+                OpenDeviceLoginPageCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public string DeviceCode
+    {
+        get => _deviceCode;
+        private set => SetProperty(ref _deviceCode, value);
+    }
+
+    public Uri? DeviceCodeVerificationUri
+    {
+        get => _deviceCodeVerificationUri;
+        private set
+        {
+            if (SetProperty(ref _deviceCodeVerificationUri, value))
+            {
+                OpenDeviceLoginPageCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public DateTimeOffset? DeviceCodeExpiresAtUtc
+    {
+        get => _deviceCodeExpiresAtUtc;
+        private set
+        {
+            if (SetProperty(ref _deviceCodeExpiresAtUtc, value))
+            {
+                OnPropertyChanged(nameof(DeviceCodeExpirySummary));
+            }
+        }
+    }
+
+    public string DeviceCodeExpirySummary => DeviceCodeExpiresAtUtc is { } expiry
+        ? L("client.account.device.expires", expiry.ToLocalTime())
+        : string.Empty;
+
+    /// <summary>
+    /// Ephemeral, non-secret identifier passed to Microsoft's official browser as a login hint.
+    /// It is never written to X MCSV settings or used as a password field.
+    /// </summary>
+    public string MicrosoftAccountLoginHint
+    {
+        get => _microsoftAccountLoginHint;
+        set
+        {
+            if (SetProperty(ref _microsoftAccountLoginHint, value ?? string.Empty))
+            {
+                OnPropertyChanged(nameof(HasValidMicrosoftAccountLoginHint));
+                StartBrowserAccountLoginCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasValidMicrosoftAccountLoginHint =>
+        IsValidMicrosoftAccountLoginHint(MicrosoftAccountLoginHint);
+
+    public MinecraftClientSkinVariant SkinPreviewVariant
+    {
+        get => _skinPreviewVariant;
+        private set
+        {
+            if (SetProperty(ref _skinPreviewVariant, value))
+            {
+                OnPropertyChanged(nameof(IsClassicSkinPreview));
+                OnPropertyChanged(nameof(IsSlimSkinPreview));
+            }
+        }
+    }
+
+    public bool IsClassicSkinPreview => SkinPreviewVariant == MinecraftClientSkinVariant.Classic;
+
+    public bool IsSlimSkinPreview => SkinPreviewVariant == MinecraftClientSkinVariant.Slim;
+
+    public string? SelectedSkinFilePath
+    {
+        get => _selectedSkinFilePath;
+        private set
+        {
+            if (SetProperty(ref _selectedSkinFilePath, value))
+            {
+                OnPropertyChanged(nameof(SelectedSkinFileName));
+                OnPropertyChanged(nameof(SkinPreviewTextureSource));
+            }
+        }
+    }
+
+    public string SelectedSkinFileName => string.IsNullOrWhiteSpace(SelectedSkinFilePath)
+        ? L("client.account.skin.current")
+        : Path.GetFileName(SelectedSkinFilePath);
+
+    // A selected local PNG intentionally suppresses the remote official texture because the
+    // 3D control gives TextureSource precedence over SkinPath. This is preview-only state.
+    public ImageSource? SkinPreviewTextureSource => SelectedSkinFilePath is null
+        ? SelectedPlayerSkinTexture
+        : null;
+
+    public MinecraftClientCapeInfo? SelectedCape
+    {
+        get => _selectedCape;
+        set
+        {
+            if (SetProperty(ref _selectedCape, value))
+            {
+                ApplySelectedCapeCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -485,10 +897,19 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (SetProperty(ref _isBusy, value))
             {
                 CancelOperationCommand.NotifyCanExecuteChanged();
+                CloseCatalogCommand.NotifyCanExecuteChanged();
                 NotifyCreateStateChanged();
                 LaunchCommand.NotifyCanExecuteChanged();
                 QuickLaunchCommand.NotifyCanExecuteChanged();
                 AddAccountCommand.NotifyCanExecuteChanged();
+                StartBrowserAccountLoginCommand.NotifyCanExecuteChanged();
+                StartDeviceCodeAccountLoginCommand.NotifyCanExecuteChanged();
+                SelectClassicSkinCommand.NotifyCanExecuteChanged();
+                SelectSlimSkinCommand.NotifyCanExecuteChanged();
+                ChooseSkinFileCommand.NotifyCanExecuteChanged();
+                SaveSkinCommand.NotifyCanExecuteChanged();
+                ApplySelectedCapeCommand.NotifyCanExecuteChanged();
+                DisableCapeCommand.NotifyCanExecuteChanged();
                 RemoveSelectedAccountCommand.NotifyCanExecuteChanged();
                 SignOutAllAccountsCommand.NotifyCanExecuteChanged();
                 DeleteClientInstanceCommand.NotifyCanExecuteChanged();
@@ -502,6 +923,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 SaveClientSettingsCommand.NotifyCanExecuteChanged();
                 ChooseClientJavaCommand.NotifyCanExecuteChanged();
                 OpenBedrockOfficialCommand.NotifyCanExecuteChanged();
+                OpenSelectedBedrockOfficialCommand.NotifyCanExecuteChanged();
+                DeleteBedrockShortcutCommand.NotifyCanExecuteChanged();
+                OpenContentDownloadCommand.NotifyCanExecuteChanged();
+                CloseContentDownloadCommand.NotifyCanExecuteChanged();
+                SearchContentDownloadCommand.NotifyCanExecuteChanged();
+                InstallContentDownloadCommand.NotifyCanExecuteChanged();
+                InstallCatalogPackCommand.NotifyCanExecuteChanged();
+                OpenFtbFallbackCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -514,6 +943,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (SetProperty(ref _isCreatePage, value))
             {
                 OnPropertyChanged(nameof(IsDashboardPage));
+                OnPropertyChanged(nameof(IsBedrockShortcutPage));
             }
         }
     }
@@ -526,6 +956,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (SetProperty(ref _isSettingsPage, value))
             {
                 OnPropertyChanged(nameof(IsDashboardPage));
+                OnPropertyChanged(nameof(IsBedrockShortcutPage));
             }
         }
     }
@@ -538,11 +969,16 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (SetProperty(ref _isCatalogPage, value))
             {
                 OnPropertyChanged(nameof(IsDashboardPage));
+                OnPropertyChanged(nameof(IsBedrockShortcutPage));
             }
         }
     }
 
-    public bool IsDashboardPage => !IsCreatePage && !IsSettingsPage && !IsCatalogPage;
+    public bool IsDashboardPage =>
+        HasSelectedInstance && !IsCreatePage && !IsSettingsPage && !IsCatalogPage;
+
+    public bool IsBedrockShortcutPage =>
+        HasSelectedBedrockShortcut && !IsCreatePage && !IsSettingsPage && !IsCatalogPage;
 
     public bool IsCatalogBusy
     {
@@ -579,10 +1015,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(CatalogResultsHeading));
             OnPropertyChanged(nameof(CatalogInstallHeading));
             OnPropertyChanged(nameof(CatalogInstallActionText));
+            OnPropertyChanged(nameof(ShowsCatalogInstallOptions));
+#pragma warning disable CS0618
             OnPropertyChanged(nameof(ShowsModrinthInstallOptions));
+#pragma warning restore CS0618
             SearchCatalogCommand.NotifyCanExecuteChanged();
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
+            OpenFtbFallbackCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -598,7 +1038,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool ShowsCatalogCategoryFilter => IsModrinthCatalogSource;
 
-    public bool ShowsModrinthInstallOptions => IsModrinthCatalogSource;
+    public bool ShowsCatalogInstallOptions => IsBrowsableCatalogSource;
+
+    [Obsolete("Use ShowsCatalogInstallOptions.")]
+    public bool ShowsModrinthInstallOptions => ShowsCatalogInstallOptions;
 
     public string CatalogResultsHeading => IsFtbCatalogSource
         ? L("client.catalog.ftbProjects")
@@ -729,6 +1172,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
+            OpenFtbFallbackCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -764,6 +1208,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool HasSelectedInstance => SelectedInstance is not null;
 
+    public bool HasSelectedBedrockShortcut => SelectedBedrockShortcut is not null;
+
+    public bool HasBedrockShortcuts => BedrockShortcuts.Count > 0;
+
+    public bool HasAnySelectedClient => HasSelectedInstance || HasSelectedBedrockShortcut;
+
     public bool IsJavaEdition
     {
         get => _isJavaEdition;
@@ -780,6 +1230,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool IsBedrockEdition => !IsJavaEdition;
 
+    public BedrockChannelChoiceViewModel? SelectedBedrockChannel
+    {
+        get => _selectedBedrockChannel;
+        set
+        {
+            if (SetProperty(ref _selectedBedrockChannel, value))
+            {
+                NotifyCreateStateChanged();
+            }
+        }
+    }
+
     public bool IsExternalLoaderSelected => SelectedLoaderVersion?.InstallKind ==
         MinecraftClientLoaderInstallKind.ExternalInstallerRequired;
 
@@ -789,6 +1251,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         set
         {
             if (SetProperty(ref _newInstanceName, value))
+            {
+                NotifyCreateStateChanged();
+            }
+        }
+    }
+
+    public string NewBedrockShortcutName
+    {
+        get => _newBedrockShortcutName;
+        set
+        {
+            if (SetProperty(ref _newBedrockShortcutName, value ?? string.Empty))
             {
                 NotifyCreateStateChanged();
             }
@@ -816,6 +1290,25 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
 
     public event EventHandler? HideLauncherRequested;
+
+    public event EventHandler? RestoreLauncherRequested;
+
+    internal void PublishLauncherWindowTransition(ClientLauncherWindowTransition transition)
+    {
+        switch (transition)
+        {
+            case ClientLauncherWindowTransition.None:
+                return;
+            case ClientLauncherWindowTransition.Minimize:
+                HideLauncherRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            case ClientLauncherWindowTransition.Restore:
+                RestoreLauncherRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(transition), transition, null);
+        }
+    }
 
     public double ProgressValue
     {
@@ -867,13 +1360,46 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public int WindowWidth
     {
         get => _windowWidth;
-        set => SetProperty(ref _windowWidth, Math.Clamp(value, 640, 16_384));
+        set
+        {
+            if (SetProperty(ref _windowWidth, Math.Clamp(value, 640, 16_384)))
+            {
+                RefreshResolutionChoices();
+            }
+        }
     }
 
     public int WindowHeight
     {
         get => _windowHeight;
-        set => SetProperty(ref _windowHeight, Math.Clamp(value, 360, 16_384));
+        set
+        {
+            if (SetProperty(ref _windowHeight, Math.Clamp(value, 360, 16_384)))
+            {
+                RefreshResolutionChoices();
+            }
+        }
+    }
+
+    public IReadOnlyList<ClientResolutionChoice> ResolutionChoices => _resolutionChoices;
+
+    public ClientResolutionChoice? SelectedResolution
+    {
+        get => ClientResolutionCatalog.Find(ResolutionChoices, WindowWidth, WindowHeight);
+        set
+        {
+            if (value is null || !ClientResolutionCatalog.IsValid(value.Width, value.Height) ||
+                value.Width == _windowWidth && value.Height == _windowHeight)
+            {
+                return;
+            }
+
+            _windowWidth = value.Width;
+            _windowHeight = value.Height;
+            OnPropertyChanged(nameof(WindowWidth));
+            OnPropertyChanged(nameof(WindowHeight));
+            RefreshResolutionChoices();
+        }
     }
 
     public bool FullScreen
@@ -963,6 +1489,93 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         private set => SetProperty(ref _contentStatusText, value);
     }
 
+    public bool IsContentDownloadOpen
+    {
+        get => _isContentDownloadOpen;
+        private set => SetProperty(ref _isContentDownloadOpen, value);
+    }
+
+    public bool IsModContentDownload =>
+        ContentDownloadKind == MinecraftClientContentKind.Mod;
+
+    public MinecraftClientContentKind ContentDownloadKind
+    {
+        get => _contentDownloadKind;
+        private set
+        {
+            if (SetProperty(ref _contentDownloadKind, value))
+            {
+                OnPropertyChanged(nameof(IsModContentDownload));
+                OnPropertyChanged(nameof(ContentDownloadHeading));
+                OnPropertyChanged(nameof(ContentDownloadDescription));
+            }
+        }
+    }
+
+    public string ContentDownloadHeading => ContentDownloadKind switch
+    {
+        MinecraftClientContentKind.Mod => L("client.content.download.heading.mod"),
+        MinecraftClientContentKind.ResourcePack => L("client.content.download.heading.resourcePack"),
+        MinecraftClientContentKind.ShaderPack => L("client.content.download.heading.shaderPack"),
+        _ => L("client.content.download.heading.content"),
+    };
+
+    public string ContentDownloadDescription =>
+        L("client.content.download.description", SelectedInstance?.Model.GameVersion ?? string.Empty);
+
+    public string ContentDownloadSearchText
+    {
+        get => _contentDownloadSearchText;
+        set => SetProperty(ref _contentDownloadSearchText, value ?? string.Empty);
+    }
+
+    public string ContentDownloadStatusText
+    {
+        get => _contentDownloadStatusText;
+        private set => SetProperty(ref _contentDownloadStatusText, value);
+    }
+
+    public ClientContentDownloadLoaderChoice? SelectedContentDownloadLoader
+    {
+        get => _selectedContentDownloadLoader;
+        set
+        {
+            if (SetProperty(ref _selectedContentDownloadLoader, value))
+            {
+                ContentDownloadFallbackUri = null;
+            }
+        }
+    }
+
+    public ClientContentDownloadProjectItemViewModel? SelectedContentDownloadProject
+    {
+        get => _selectedContentDownloadProject;
+        set
+        {
+            if (SetProperty(ref _selectedContentDownloadProject, value))
+            {
+                ContentDownloadFallbackUri = null;
+                InstallContentDownloadCommand.NotifyCanExecuteChanged();
+                OpenSelectedContentProjectPageCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public Uri? ContentDownloadFallbackUri
+    {
+        get => _contentDownloadFallbackUri;
+        private set
+        {
+            if (SetProperty(ref _contentDownloadFallbackUri, value))
+            {
+                OnPropertyChanged(nameof(HasContentDownloadFallback));
+                OpenContentFallbackCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasContentDownloadFallback => ContentDownloadFallbackUri is not null;
+
     public ClientInstanceSettingsEditorViewModel? SettingsEditor
     {
         get => _settingsEditor;
@@ -1032,6 +1645,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 _maximumMemoryMb = Math.Clamp(defaults.MaximumMemoryMb, _minimumMemoryMb, 32_768);
                 _windowWidth = Math.Clamp(defaults.WindowWidth, 640, 16_384);
                 _windowHeight = Math.Clamp(defaults.WindowHeight, 360, 16_384);
+                RefreshResolutionChoices();
                 _fullScreen = defaults.FullScreen;
                 OnPropertyChanged(nameof(MinimumMemoryMb));
                 OnPropertyChanged(nameof(MaximumMemoryMb));
@@ -1045,8 +1659,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             ApplyMemoryMode(defaults.MemoryMode);
+            await _ftbInstaller.RecoverPendingPromotionsAsync(_lifetimeCancellation.Token);
             var document = await _registry.LoadAsync();
+            var bedrockDocument = await _bedrockShortcutRegistry.LoadAsync(
+                _lifetimeCancellation.Token);
             Instances.Clear();
+            BedrockShortcuts.Clear();
             var staleProcessMarkers = new Dictionary<Guid, MinecraftClientProcessIdentity>();
             var recoveredProcessCount = 0;
             foreach (var instance in document.Instances.OrderByDescending(item => item.LastPlayedAtUtc ?? item.CreatedAtUtc))
@@ -1074,6 +1692,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 Instances.Add(item);
             }
 
+            foreach (var shortcut in bedrockDocument.Shortcuts
+                         .OrderByDescending(item => item.CreatedAtUtc))
+            {
+                BedrockShortcuts.Add(new BedrockClientShortcutItemViewModel(shortcut));
+            }
+            OnPropertyChanged(nameof(HasBedrockShortcuts));
+
             if (staleProcessMarkers.Count > 0)
             {
                 await _registry.UpdateAsync(
@@ -1093,21 +1718,62 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             RefreshAccounts();
+            _accountRefreshTask = RefreshAccountsInBackgroundAsync(_lifetimeCancellation.Token);
             await RefreshCatalogCoreAsync();
             if (recoveredProcessCount > 0)
             {
                 StatusText = L("client.vm.status.recovered", recoveredProcessCount);
             }
             IsInitialized = true;
-            SelectedInstance ??= Instances.FirstOrDefault();
+            ApplyInitialInstanceSelection(Instances.FirstOrDefault());
+
             if (SelectedInstance is null)
             {
-                ShowCreatePage();
+                ApplyInitialBedrockSelection(BedrockShortcuts.FirstOrDefault());
+            }
+
+            if (!HasAnySelectedClient)
+            {
+                // Preserve the blank empty state as well as a create/catalog page opened by the
+                // user during initialization. There is no implicit create page.
+                if (!IsCreatePage && !IsCatalogPage && !IsSettingsPage)
+                {
+                    ShowSelectedInstance();
+                }
             }
         }
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    internal void ApplyInitialInstanceSelection(ClientInstanceItemViewModel? initialInstance)
+    {
+        // Initial discovery must not close a page the user explicitly opened while the
+        // asynchronous catalog/registry load was still running.
+        _suppressSelectedInstanceNavigation = true;
+        try
+        {
+            SelectedInstance ??= initialInstance;
+        }
+        finally
+        {
+            _suppressSelectedInstanceNavigation = false;
+        }
+    }
+
+    internal void ApplyInitialBedrockSelection(
+        BedrockClientShortcutItemViewModel? initialShortcut)
+    {
+        _suppressSelectedInstanceNavigation = true;
+        try
+        {
+            SelectedBedrockShortcut ??= initialShortcut;
+        }
+        finally
+        {
+            _suppressSelectedInstanceNavigation = false;
         }
     }
 
@@ -1165,16 +1831,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         var cancellationToken = _loaderRefreshCancellation.Token;
         var selectedRelease = SelectedRelease;
         var snapshot = _releaseSnapshot;
-        LoaderChoices.Clear();
-        LoaderVersions.Clear();
-        SelectedLoaderVersion = null;
+        var preferredLoader = SelectedLoader?.Loader ?? MinecraftClientLoader.Vanilla;
         if (selectedRelease is null || snapshot is null)
         {
+            ReplaceLoaderChoices(CreateFixedLoaderChoices(results: null, isChecking: false));
             return;
         }
 
-        LoaderChoices.Add(new ClientLoaderChoiceViewModel(MinecraftClientLoader.Vanilla, []));
-        SelectedLoader = LoaderChoices[0];
+        // Keep every supported product type in a stable position while its official catalog is
+        // queried. A loader that has no release for this Minecraft version remains visible and is
+        // disabled after the query instead of making the grid jump or falsely disappearing.
+        ReplaceLoaderChoices(CreateFixedLoaderChoices(results: null, isChecking: true));
         StatusText = L("client.vm.status.checkingLoaders", selectedRelease.Id);
         var results = await QueryLoaderCatalogsAsync(
             _loaderCatalogs,
@@ -1187,13 +1854,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             return;
         }
 
-        foreach (var result in results)
-        {
-            if (result.Error is null && result.Versions.Count > 0)
-            {
-                LoaderChoices.Add(new ClientLoaderChoiceViewModel(result.Loader, result.Versions));
-            }
-        }
+        ReplaceLoaderChoices(
+            CreateFixedLoaderChoices(results, isChecking: false),
+            preferredLoader);
 
         var failedLoaders = results
             .Where(static result => result.Error is not null)
@@ -1201,13 +1864,53 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 ? "NeoForge"
                 : result.Loader.ToString())
             .ToArray();
+        var availableLoaderCount = LoaderChoices.Count(static choice => choice.IsAvailable);
         StatusText = failedLoaders.Length == 0
-            ? L("client.vm.status.loaderMethods", selectedRelease.Id, LoaderChoices.Count)
+            ? L("client.vm.status.loaderMethods", selectedRelease.Id, availableLoaderCount)
             : L(
                 "client.vm.status.loaderPartialFailure",
                 selectedRelease.Id,
-                LoaderChoices.Count,
+                availableLoaderCount,
                 string.Join(", ", failedLoaders));
+    }
+
+    internal static IReadOnlyList<ClientLoaderChoiceViewModel> CreateFixedLoaderChoices(
+        IReadOnlyList<LoaderCatalogQueryResult>? results,
+        bool isChecking)
+    {
+        return FixedLoaderOrder
+            .Select(loader =>
+            {
+                var result = results?.FirstOrDefault(item => item.Loader == loader);
+                var queryFailed = loader != MinecraftClientLoader.Vanilla &&
+                                  results is not null &&
+                                  (result is null || result.Error is not null);
+                return new ClientLoaderChoiceViewModel(
+                    loader,
+                    result?.Versions ?? [],
+                    isChecking && loader != MinecraftClientLoader.Vanilla,
+                    queryFailed);
+            })
+            .ToArray();
+    }
+
+    private void ReplaceLoaderChoices(
+        IReadOnlyList<ClientLoaderChoiceViewModel> choices,
+        MinecraftClientLoader preferredLoader = MinecraftClientLoader.Vanilla)
+    {
+        SelectedLoader = null;
+        LoaderVersions.Clear();
+        SelectedLoaderVersion = null;
+        LoaderChoices.Clear();
+        foreach (var choice in choices)
+        {
+            LoaderChoices.Add(choice);
+        }
+
+        SelectedLoader = LoaderChoices.FirstOrDefault(choice =>
+                             choice.Loader == preferredLoader && choice.IsAvailable)
+                         ?? LoaderChoices.FirstOrDefault(choice =>
+                             choice.Loader == MinecraftClientLoader.Vanilla);
     }
 
     internal static async Task<IReadOnlyList<LoaderCatalogQueryResult>> QueryLoaderCatalogsAsync(
@@ -1566,7 +2269,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool CanInstallCatalogPack() =>
         IsBrowsableCatalogSource && !IsBusy && !IsCatalogBusy &&
         SelectedCatalogProject is not null && SelectedCatalogVersion is not null &&
-        (IsFtbCatalogSource || !string.IsNullOrWhiteSpace(CatalogInstanceName));
+        !string.IsNullOrWhiteSpace(CatalogInstanceName);
+
+    private bool CanOpenFtbFallback() =>
+        IsFtbCatalogSource && !IsBusy;
 
     private async Task InstallSelectedCatalogPackAsync()
     {
@@ -1576,7 +2282,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                       ?? throw new InvalidOperationException(L("client.vm.validation.packVersion"));
         if (IsFtbCatalogSource)
         {
-            await OpenSelectedFtbPackAsync(project);
+            await InstallSelectedFtbPackAsync(project, version);
             return;
         }
 
@@ -1655,6 +2361,123 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    private async Task InstallSelectedFtbPackAsync(
+        ClientModpackProjectItemViewModel project,
+        ClientCatalogVersionItemViewModel version)
+    {
+        var ftbProject = project.FtbProject
+                         ?? throw new InvalidOperationException(L("client.vm.validation.ftbProject"));
+        var ftbVersion = version.FtbVersion
+                         ?? throw new InvalidOperationException(L("client.vm.validation.packVersion"));
+        var gameVersion = ftbVersion.GameVersion;
+        if (string.IsNullOrWhiteSpace(gameVersion) ||
+            _releaseSnapshot?.Releases.Any(release =>
+                string.Equals(release.Id, gameVersion, StringComparison.Ordinal)) != true)
+        {
+            throw new InvalidOperationException(L("client.vm.validation.catalogGameVersion"));
+        }
+
+        var operation = BeginOperation();
+        IsBusy = true;
+        ErrorText = string.Empty;
+        try
+        {
+            var defaults = _getGlobalDefaults();
+            var javaMajor = TryParseFtbJavaMajor(ftbVersion.JavaVersion) ??
+                            _javaRecommendation.GetRecommendation(
+                                gameVersion,
+                                CoreType.Unknown).MajorVersion;
+            StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
+            var java = await ResolveJavaAsync(javaMajor, operation.Token);
+            await CacheCatalogArtworkAsync([project], operation.Token);
+            operation.Token.ThrowIfCancellationRequested();
+            var request = new FtbClientPackInstallRequest(
+                Guid.NewGuid(),
+                CatalogInstanceName.Trim(),
+                ftbProject.PackId,
+                ftbVersion.VersionId,
+                MemoryMode,
+                MinimumMemoryMb,
+                MaximumMemoryMb,
+                WindowWidth,
+                WindowHeight,
+                FullScreen,
+                // FTB marks some runtime dependencies as optional even though the official app
+                // includes them in a normal client install. Preserve the complete client pack;
+                // only server-only entries are excluded by the installer.
+                IncludeOptionalFiles: true,
+                EnableQuickLaunch: defaults.EnableQuickLaunch,
+                HideLauncherAfterGameStarts: defaults.HideLauncherAfterGameStarts,
+                ShowGameLog: defaults.ShowGameLog,
+                EnableDedicatedGpu: defaults.EnableDedicatedGpu,
+                EnableDiscordPresence: defaults.EnableDiscordPresence,
+                JavaMajorVersion: javaMajor,
+                CatalogIconImagePath: project.IconImagePath,
+                CatalogPreviewImagePath: project.PreviewImagePath);
+            var progress = new Progress<FtbClientPackInstallProgress>(value =>
+            {
+                StatusText = LocalizeFtbInstallProgress(value);
+                if (value.Fraction is { } fraction)
+                {
+                    ProgressValue = Math.Clamp(fraction, 0d, 1d);
+                }
+                else if (value.TotalItems > 0)
+                {
+                    ProgressValue = Math.Clamp(
+                        value.CompletedItems / (double)value.TotalItems,
+                        0d,
+                        1d);
+                }
+            });
+            var result = await _ftbInstaller.InstallAsync(
+                request,
+                java,
+                progress,
+                operation.Token);
+
+            var item = new ClientInstanceItemViewModel(result.Instance)
+            {
+                State = MinecraftClientInstanceState.Ready,
+            };
+            Instances.Insert(0, item);
+            SelectedInstance = item;
+            ProgressValue = 1d;
+            CatalogStatusText = L("client.vm.catalog.ftb.directInstalled", item.Name);
+            StatusText = CatalogStatusText;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Debug.WriteLine($"FTB direct client-pack installation failed: {error}");
+            ErrorText = L("client.vm.catalog.ftb.directFailed");
+            CatalogStatusText = L("client.vm.catalog.ftb.fallbackAvailable");
+            StatusText = CatalogStatusText;
+        }
+        finally
+        {
+            IsBusy = false;
+            CompleteOperation(operation);
+            InstallCatalogPackCommand.NotifyCanExecuteChanged();
+            OpenFtbFallbackCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private Task OpenSelectedFtbFallbackAsync()
+    {
+        if (SelectedCatalogProject?.FtbProject is not null)
+        {
+            return OpenSelectedFtbPackAsync(SelectedCatalogProject);
+        }
+
+        CatalogStatusText = L("client.vm.catalog.ftb.appPageOpened");
+        StatusText = CatalogStatusText;
+        OpenOfficialFtbDownloadPage();
+        return Task.CompletedTask;
+    }
+
     private Task OpenSelectedFtbPackAsync(ClientModpackProjectItemViewModel project)
     {
         var ftbProject = project.FtbProject
@@ -1689,12 +2512,23 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         CatalogStatusText = L("client.vm.catalog.ftb.appMissing");
         StatusText = CatalogStatusText;
+        OpenOfficialFtbDownloadPage();
+        return Task.CompletedTask;
+    }
+
+    private static void OpenOfficialFtbDownloadPage()
+    {
         try
         {
-            Process.Start(new ProcessStartInfo(FtbAppProtocol.OfficialDownloadPage.AbsoluteUri)
+            using var process = Process.Start(new ProcessStartInfo(
+                FtbAppProtocol.OfficialDownloadPage.AbsoluteUri)
             {
                 UseShellExecute = true,
             });
+            if (process is null)
+            {
+                throw new InvalidOperationException("The shell did not start the official FTB page.");
+            }
         }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception
                                      or InvalidOperationException
@@ -1704,8 +2538,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 L("client.vm.catalog.ftb.downloadPageFailed", FtbAppProtocol.OfficialDownloadPage),
                 error);
         }
-
-        return Task.CompletedTask;
     }
 
     private CancellationTokenSource ReplaceCatalogBrowseCancellation()
@@ -1738,12 +2570,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task CreateInstanceAsync()
     {
+        if (IsBedrockEdition)
+        {
+            await CreateBedrockShortcutAsync();
+            return;
+        }
+
         var release = SelectedRelease ?? throw new InvalidOperationException(L("client.vm.validation.release"));
         var loaderChoice = SelectedLoader ?? throw new InvalidOperationException(L("client.vm.validation.loader"));
-        if (!IsJavaEdition)
-        {
-            throw new NotSupportedException(L("client.vm.validation.bedrockUnsupported"));
-        }
 
         if (!loaderChoice.IsManaged)
         {
@@ -1845,21 +2679,477 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         return installed.JavaExecutablePath;
     }
 
-    private async Task AddAccountAsync()
+    private Task OpenAccountLoginChoiceAsync()
     {
+        IsAccountPanelOpen = true;
+        IsAccountLoginChoiceOpen = true;
+        MicrosoftAccountLoginHint = string.Empty;
+        ClearDeviceCodePrompt();
+        return Task.CompletedTask;
+    }
+
+    private async Task AddAccountInBrowserAsync()
+    {
+        ReplaceAccountLoginCancellation();
         IsBusy = true;
         try
         {
-            StatusText = L("client.vm.status.accountLogin");
-            var session = await _authenticationService.AddAccountInteractivelyAsync();
+            StatusText = L("client.vm.status.accountBrowserLogin");
+            var session = await _authenticationService.AddAccountInteractivelyAsync(
+                MicrosoftAccountLoginHint.Trim(),
+                _accountLoginCancellation!.Token);
             RefreshAccounts();
             SelectedAccount = Accounts.FirstOrDefault(account => account.Id == session.AccountId);
+            IsAccountLoginChoiceOpen = false;
+            MicrosoftAccountLoginHint = string.Empty;
+            ClearDeviceCodePrompt();
             StatusText = L("client.vm.status.accountAdded", session.Username);
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private async Task AddAccountWithDeviceCodeAsync()
+    {
+        ReplaceAccountLoginCancellation();
+        IsBusy = true;
+        try
+        {
+            ClearDeviceCodePrompt();
+            StatusText = L("client.vm.status.accountDeviceCodeStarting");
+            var session = await _authenticationService.AddAccountWithDeviceCodeAsync(
+                PublishDeviceCodePromptAsync,
+                _accountLoginCancellation!.Token);
+            RefreshAccounts();
+            SelectedAccount = Accounts.FirstOrDefault(account => account.Id == session.AccountId);
+            IsAccountLoginChoiceOpen = false;
+            MicrosoftAccountLoginHint = string.Empty;
+            ClearDeviceCodePrompt();
+            StatusText = L("client.vm.status.accountAdded", session.Username);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task PublishDeviceCodePromptAsync(MinecraftDeviceCodePrompt prompt)
+    {
+        async Task PublishAsync()
+        {
+            DeviceCode = prompt.UserCode;
+            DeviceCodeVerificationUri = prompt.VerificationUri;
+            DeviceCodeExpiresAtUtc = prompt.ExpiresAtUtc;
+            IsDeviceCodePromptVisible = true;
+            StatusText = L("client.vm.status.accountDeviceCodeWaiting");
+            await Task.CompletedTask;
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            await dispatcher.InvokeAsync(PublishAsync).Task.Unwrap();
+        }
+        else
+        {
+            await PublishAsync();
+        }
+    }
+
+    private void ToggleAccountPanel()
+    {
+        IsAccountPanelOpen = !IsAccountPanelOpen;
+        if (!IsAccountPanelOpen && !IsBusy)
+        {
+            IsAccountLoginChoiceOpen = false;
+            MicrosoftAccountLoginHint = string.Empty;
+            ClearDeviceCodePrompt();
+        }
+    }
+
+    private void ReplaceAccountLoginCancellation()
+    {
+        _accountLoginCancellation?.Cancel();
+        _accountLoginCancellation?.Dispose();
+        _accountLoginCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _lifetimeCancellation.Token);
+    }
+
+    private void CancelAccountLogin()
+    {
+        _accountLoginCancellation?.Cancel();
+        IsAccountLoginChoiceOpen = false;
+        MicrosoftAccountLoginHint = string.Empty;
+        ClearDeviceCodePrompt();
+    }
+
+    internal static bool IsValidMicrosoftAccountLoginHint(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        return normalized.Length is > 0 and <= 254 &&
+               !normalized.Any(static character =>
+                   char.IsControl(character) || char.IsWhiteSpace(character));
+    }
+
+    private void ClearDeviceCodePrompt()
+    {
+        IsDeviceCodePromptVisible = false;
+        DeviceCode = string.Empty;
+        DeviceCodeVerificationUri = null;
+        DeviceCodeExpiresAtUtc = null;
+    }
+
+    private void CopyDeviceCode()
+    {
+        if (!IsDeviceCodePromptVisible || string.IsNullOrWhiteSpace(DeviceCode))
+        {
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(DeviceCode);
+            StatusText = L("client.vm.status.accountDeviceCodeCopied");
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            ErrorText = error.Message;
+        }
+    }
+
+    private void OpenDeviceLoginPage()
+    {
+        if (!IsDeviceCodePromptVisible || DeviceCodeVerificationUri is null)
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(DeviceCodeVerificationUri.AbsoluteUri)
+        {
+            UseShellExecute = true,
+        });
+    }
+
+    private void ChooseSkinFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = L("client.account.skin.choose"),
+            Filter = L("client.account.skin.fileFilter"),
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false,
+            AddExtension = true,
+            DefaultExt = ".png",
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            if (!MinecraftSkin3DView.TryLoadSkinFileForPreview(dialog.FileName, out _))
+            {
+                ErrorText = L("client.vm.validation.skinFile");
+                StatusText = L("client.vm.status.operationFailed");
+                return;
+            }
+
+            SelectedSkinFilePath = Path.GetFullPath(dialog.FileName);
+            StatusText = L("client.vm.status.skinPreviewReady", Path.GetFileName(dialog.FileName));
+        }
+    }
+
+    private async Task SaveSkinAsync()
+    {
+        var account = SelectedAccount
+            ?? throw new InvalidOperationException(L("client.vm.validation.account"));
+        var selectedAccountId = account.Id;
+        var filePath = SelectedSkinFilePath;
+        var variant = SkinPreviewVariant;
+        var previousSkinId = account.ActiveSkin?.Id;
+        var previousSkinUri = account.ActiveSkin?.TextureUri;
+        IsBusy = true;
+        try
+        {
+            StatusText = L("client.vm.status.skinSaving", account.Username);
+            await _authenticationService.UpdateSkinAsync(
+                selectedAccountId,
+                variant,
+                filePath,
+                _lifetimeCancellation.Token);
+            RefreshAccounts();
+            SelectedAccount = Accounts.FirstOrDefault(item => item.Id == selectedAccountId);
+            StatusText = L("client.vm.status.skinSaved", account.Username);
+        }
+        catch (MinecraftProfileSynchronizationPendingException)
+        {
+            StatusText = L("client.vm.status.profileSynchronizationPending");
+            ScheduleProfileSynchronization(
+                selectedAccountId,
+                profile => profile.ActiveSkin is { } activeSkin
+                    && activeSkin.Variant == variant
+                    && (filePath is null
+                        || previousSkinId is null
+                        || !string.Equals(activeSkin.Id, previousSkinId, StringComparison.Ordinal)
+                        || activeSkin.TextureUri != previousSkinUri));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task ApplySelectedCapeAsync()
+    {
+        var account = SelectedAccount
+            ?? throw new InvalidOperationException(L("client.vm.validation.account"));
+        var cape = SelectedCape
+            ?? throw new InvalidOperationException(L("client.vm.validation.cape"));
+        var selectedAccountId = account.Id;
+        IsBusy = true;
+        try
+        {
+            StatusText = L("client.vm.status.capeSaving", cape.Alias);
+            await _authenticationService.SetActiveCapeAsync(
+                selectedAccountId,
+                cape.Id,
+                _lifetimeCancellation.Token);
+            RefreshAccounts();
+            SelectedAccount = Accounts.FirstOrDefault(item => item.Id == selectedAccountId);
+            StatusText = L("client.vm.status.capeSaved", cape.Alias);
+        }
+        catch (MinecraftProfileSynchronizationPendingException)
+        {
+            StatusText = L("client.vm.status.profileSynchronizationPending");
+            ScheduleProfileSynchronization(
+                selectedAccountId,
+                profile => profile.Capes.Any(candidate =>
+                    candidate.IsActive
+                    && string.Equals(candidate.Id, cape.Id, StringComparison.Ordinal)));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task DisableCapeAsync()
+    {
+        var account = SelectedAccount
+            ?? throw new InvalidOperationException(L("client.vm.validation.account"));
+        var selectedAccountId = account.Id;
+        IsBusy = true;
+        try
+        {
+            StatusText = L("client.vm.status.capeDisabling");
+            await _authenticationService.SetActiveCapeAsync(
+                selectedAccountId,
+                capeId: null,
+                _lifetimeCancellation.Token);
+            RefreshAccounts();
+            SelectedAccount = Accounts.FirstOrDefault(item => item.Id == selectedAccountId);
+            StatusText = L("client.vm.status.capeDisabled");
+        }
+        catch (MinecraftProfileSynchronizationPendingException)
+        {
+            StatusText = L("client.vm.status.profileSynchronizationPending");
+            ScheduleProfileSynchronization(
+                selectedAccountId,
+                profile => profile.Capes.All(candidate => !candidate.IsActive));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void NotifyAccountCosmeticStateChanged()
+    {
+        OnPropertyChanged(nameof(SkinPreviewVariant));
+        OnPropertyChanged(nameof(IsClassicSkinPreview));
+        OnPropertyChanged(nameof(IsSlimSkinPreview));
+        OnPropertyChanged(nameof(SelectedSkinFilePath));
+        OnPropertyChanged(nameof(SelectedSkinFileName));
+        OnPropertyChanged(nameof(SkinPreviewTextureSource));
+        OnPropertyChanged(nameof(SelectedCape));
+        SelectClassicSkinCommand.NotifyCanExecuteChanged();
+        SelectSlimSkinCommand.NotifyCanExecuteChanged();
+        ChooseSkinFileCommand.NotifyCanExecuteChanged();
+        SaveSkinCommand.NotifyCanExecuteChanged();
+        ApplySelectedCapeCommand.NotifyCanExecuteChanged();
+        DisableCapeCommand.NotifyCanExecuteChanged();
+    }
+
+    private void BeginLoadOfficialSkinTexture(MinecraftClientAccountInfo? account)
+    {
+        _skinTextureLoadCancellation?.Cancel();
+        _skinTextureLoadCancellation?.Dispose();
+        _skinTextureLoadCancellation = null;
+        _selectedPlayerSkinTexture = null;
+        _selectedPlayerHeadTexture = null;
+        OnPropertyChanged(nameof(SelectedPlayerSkinTexture));
+        OnPropertyChanged(nameof(SelectedPlayerHeadTexture));
+        OnPropertyChanged(nameof(SkinPreviewTextureSource));
+
+        if (account?.ActiveSkin?.TextureUri is not { } textureUri)
+        {
+            return;
+        }
+
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        _skinTextureLoadCancellation = cancellation;
+        _ = LoadOfficialSkinTextureAsync(account.Id, textureUri, cancellation.Token);
+    }
+
+    private async Task LoadOfficialSkinTextureAsync(
+        string accountId,
+        Uri textureUri,
+        CancellationToken cancellationToken)
+    {
+        const int maximumTextureBytes = 1024 * 1024;
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, textureUri);
+            using var response = await _authenticationHttpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is > maximumTextureBytes)
+            {
+                return;
+            }
+
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var buffer = new MemoryStream();
+            var block = new byte[16 * 1024];
+            while (true)
+            {
+                var read = await source.ReadAsync(block, cancellationToken);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                if (buffer.Length + read > maximumTextureBytes)
+                {
+                    return;
+                }
+
+                await buffer.WriteAsync(block.AsMemory(0, read), cancellationToken);
+            }
+
+            buffer.Position = 0;
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
+            image.StreamSource = buffer;
+            image.EndInit();
+            if (!MinecraftSkin3DView.TryNormalizeSkinForPreview(image, out var normalizedSkin))
+            {
+                return;
+            }
+
+            var dispatcher = Application.Current?.Dispatcher;
+            void Publish()
+            {
+                if (!cancellationToken.IsCancellationRequested &&
+                    SelectedAccount is { Id: var selectedId, ActiveSkin.TextureUri: var selectedUri } &&
+                    string.Equals(selectedId, accountId, StringComparison.Ordinal) &&
+                    selectedUri == textureUri)
+                {
+                    _selectedPlayerSkinTexture = normalizedSkin;
+                    _selectedPlayerHeadTexture = CreatePlayerHeadTexture(normalizedSkin);
+                    OnPropertyChanged(nameof(SelectedPlayerSkinTexture));
+                    OnPropertyChanged(nameof(SelectedPlayerHeadTexture));
+                    OnPropertyChanged(nameof(SkinPreviewTextureSource));
+                }
+            }
+
+            if (dispatcher is not null && !dispatcher.CheckAccess())
+            {
+                await dispatcher.InvokeAsync(Publish);
+            }
+            else
+            {
+                Publish();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception error) when (error is
+            HttpRequestException or
+            IOException or
+            NotSupportedException or
+            InvalidOperationException or
+            ArgumentException or
+            FormatException or
+            System.Runtime.InteropServices.ExternalException)
+        {
+            Debug.WriteLine($"Official Minecraft skin preview deferred: {error.GetType().Name}");
+        }
+    }
+
+    internal static BitmapSource CreatePlayerHeadTexture(BitmapSource normalizedSkin)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedSkin);
+        if (normalizedSkin.PixelWidth != MinecraftSkinLayout.TextureSize ||
+            normalizedSkin.PixelHeight != MinecraftSkinLayout.TextureSize)
+        {
+            throw new ArgumentException("A normalized 64 × 64 Minecraft skin is required.", nameof(normalizedSkin));
+        }
+
+        const int texturePixels = 64;
+        const int bytesPerPixel = 4;
+        const int textureStride = texturePixels * bytesPerPixel;
+        const int headPixels = 8;
+        const int headStride = headPixels * bytesPerPixel;
+        var premultipliedSkin = normalizedSkin.Format == PixelFormats.Pbgra32
+            ? normalizedSkin
+            : new FormatConvertedBitmap(normalizedSkin, PixelFormats.Pbgra32, null, 0);
+        var skinPixels = new byte[textureStride * texturePixels];
+        var composedHead = new byte[headStride * headPixels];
+        premultipliedSkin.CopyPixels(skinPixels, textureStride, 0);
+
+        for (var y = 0; y < headPixels; y++)
+        {
+            for (var x = 0; x < headPixels; x++)
+            {
+                var faceOffset = ((y + 8) * texturePixels + x + 8) * bytesPerPixel;
+                var overlayOffset = ((y + 8) * texturePixels + x + 40) * bytesPerPixel;
+                var destinationOffset = (y * headPixels + x) * bytesPerPixel;
+                var overlayAlpha = skinPixels[overlayOffset + 3];
+                var inverseOverlayAlpha = 255 - overlayAlpha;
+
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    composedHead[destinationOffset + channel] = (byte)Math.Min(
+                        byte.MaxValue,
+                        skinPixels[overlayOffset + channel] +
+                        ((skinPixels[faceOffset + channel] * inverseOverlayAlpha + 127) / 255));
+                }
+
+                composedHead[destinationOffset + 3] = (byte)Math.Min(
+                    byte.MaxValue,
+                    overlayAlpha + ((skinPixels[faceOffset + 3] * inverseOverlayAlpha + 127) / 255));
+            }
+        }
+
+        // Keep the source as the native Minecraft 8 x 8 pixel grid. A 32-DIP Image
+        // maps each texel to an integer number of device pixels at common 100-200%
+        // Windows DPI steps when WPF uses nearest-neighbour scaling.
+        var head = BitmapSource.Create(
+            headPixels,
+            headPixels,
+            96d,
+            96d,
+            PixelFormats.Pbgra32,
+            null,
+            composedHead,
+            headStride);
+        head.Freeze();
+        return head;
     }
 
     private async Task RemoveSelectedAccountAsync()
@@ -1913,10 +3203,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (account is null)
             {
                 StatusText = L("client.vm.status.noAccount");
-                authenticated = await _authenticationService.AddAccountInteractivelyAsync();
-                RefreshAccounts();
-                account = Accounts.FirstOrDefault(candidate => candidate.Id == authenticated.AccountId);
-                SelectedAccount = account;
+                item.State = MinecraftClientInstanceState.Ready;
+                IsAccountPanelOpen = true;
+                IsAccountLoginChoiceOpen = true;
+                return;
             }
             else
             {
@@ -1944,16 +3234,35 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                                "The launch coordinator returned without a recovery identity.");
             MinecraftClientProcessRecoveryService.RecordIdentity(item.Model, identity);
 
-            StartObservingSession(item, session);
-            item.State = MinecraftClientInstanceState.Running;
-            StatusText = L("client.vm.status.launched", item.Name);
-            if (item.Model.HideLauncherAfterGameStarts)
+            var launcherVisibilityReady = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            StartObservingSession(item, session, launcherVisibilityReady.Task);
+            try
             {
-                HideLauncherRequested?.Invoke(this, EventArgs.Empty);
+                item.State = MinecraftClientInstanceState.Running;
+                StatusText = L("client.vm.status.launched", item.Name);
+                if (_launcherWindowLifecycle.CompleteLaunch(
+                        item.Id,
+                        launchSucceeded: true,
+                        item.Model.HideLauncherAfterGameStarts) ==
+                    ClientLauncherWindowTransition.Minimize)
+                {
+                    PublishLauncherWindowTransition(ClientLauncherWindowTransition.Minimize);
+                }
+            }
+            finally
+            {
+                // A process may exit immediately after Process.Start. Do not let its observer
+                // request a restore before this successful launch has issued its minimize request.
+                launcherVisibilityReady.TrySetResult();
             }
         }
         catch
         {
+            _ = _launcherWindowLifecycle.CompleteLaunch(
+                item.Id,
+                launchSucceeded: false,
+                item.Model.HideLauncherAfterGameStarts);
             item.State = MinecraftClientInstanceState.Failed;
             throw;
         }
@@ -1980,11 +3289,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task ObserveSessionAsync(
         ClientInstanceItemViewModel item,
-        MinecraftClientProcessSession session)
+        MinecraftClientProcessSession session,
+        Task launcherVisibilityReady)
     {
+        ArgumentNullException.ThrowIfNull(launcherVisibilityReady);
         await Task.Yield();
         try
         {
+            await launcherVisibilityReady.WaitAsync(_lifetimeCancellation.Token);
             var result = await session.Completion.WaitAsync(_lifetimeCancellation.Token);
             var endedAtUtc = DateTimeOffset.UtcNow;
             var elapsedSeconds = Math.Max(0, (long)result.PlayTime.TotalSeconds);
@@ -2034,12 +3346,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
         finally
         {
+            var launcherTransition = _launcherWindowLifecycle.CompleteSession(item.Id);
             lock (_runningSessionGate)
             {
                 _runningSessions.Remove(item.Id);
             }
 
             await session.DisposeAsync();
+            if (launcherTransition == ClientLauncherWindowTransition.Restore)
+            {
+                PublishLauncherWindowTransition(ClientLauncherWindowTransition.Restore);
+            }
             LaunchCommand.NotifyCanExecuteChanged();
             QuickLaunchCommand.NotifyCanExecuteChanged();
             StopClientCommand.NotifyCanExecuteChanged();
@@ -2051,7 +3368,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private void StartObservingSession(
         ClientInstanceItemViewModel item,
-        MinecraftClientProcessSession session)
+        MinecraftClientProcessSession session,
+        Task? launcherVisibilityReady = null)
     {
         if (item.Model.ShowGameLog)
         {
@@ -2081,7 +3399,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             _runningSessions[item.Id] = session;
-            observer = ObserveSessionAsync(item, session);
+            observer = ObserveSessionAsync(
+                item,
+                session,
+                launcherVisibilityReady ?? Task.CompletedTask);
             _sessionObserverTasks.Add(observer);
         }
 
@@ -2167,7 +3488,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             StatusText = L("client.vm.status.instanceDeleted", instance.Name);
             if (SelectedInstance is null)
             {
-                ShowCreatePage();
+                ShowSelectedInstance();
             }
         }
         finally
@@ -2231,8 +3552,172 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         SelectedAccount = Accounts.FirstOrDefault(account => account.Id == selectedId)
                           ?? Accounts.FirstOrDefault();
+        OnPropertyChanged(nameof(HasSelectedAccount));
+        OnPropertyChanged(nameof(SelectedPlayerName));
+        OnPropertyChanged(nameof(AccountButtonAccessibleName));
+        OnPropertyChanged(nameof(SelectedPlayerUuid));
+        OnPropertyChanged(nameof(SelectedPlayerSkinUri));
+        OnPropertyChanged(nameof(SelectedAccountExpiresAtUtc));
+        OnPropertyChanged(nameof(SelectedAccountCapes));
+        OnPropertyChanged(nameof(SelectedAccountExpirySummary));
         RemoveSelectedAccountCommand.NotifyCanExecuteChanged();
         SignOutAllAccountsCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ScheduleProfileSynchronization(
+        string accountId,
+        Func<MinecraftClientAccountInfo, bool> hasExpectedState)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(accountId);
+        ArgumentNullException.ThrowIfNull(hasExpectedState);
+        if (_disposed || _lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var synchronization = SynchronizeAcceptedProfileAsync(
+            accountId,
+            hasExpectedState,
+            _lifetimeCancellation.Token);
+        lock (_profileSynchronizationGate)
+        {
+            _profileSynchronizationTasks.Add(synchronization);
+        }
+
+        _ = synchronization.ContinueWith(
+            completed =>
+            {
+                lock (_profileSynchronizationGate)
+                {
+                    _profileSynchronizationTasks.Remove(completed);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task SynchronizeAcceptedProfileAsync(
+        string accountId,
+        Func<MinecraftClientAccountInfo, bool> hasExpectedState,
+        CancellationToken cancellationToken)
+    {
+        // These are absolute checkpoints after the accepted mutation. Only the GET profile
+        // operation is repeated; the skin/cape mutation is never sent again.
+        TimeSpan elapsed = TimeSpan.Zero;
+        foreach (var checkpoint in new[]
+                 {
+                     TimeSpan.FromSeconds(5),
+                     TimeSpan.FromSeconds(15),
+                     TimeSpan.FromSeconds(30),
+                 })
+        {
+            try
+            {
+                await Task.Delay(checkpoint - elapsed, cancellationToken);
+                elapsed = checkpoint;
+                var refreshed = await _authenticationService.RefreshProfileAsync(
+                    accountId,
+                    cancellationToken);
+                if (!hasExpectedState(refreshed))
+                {
+                    continue;
+                }
+
+                RefreshAccounts();
+                StatusText = L("client.vm.status.profileSynchronized");
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                Debug.WriteLine(
+                    $"Minecraft profile synchronization deferred: {error.GetType().Name}");
+            }
+        }
+    }
+
+    private async Task RefreshAccountsInBackgroundAsync(CancellationToken cancellationToken)
+    {
+        // The Java access token is short-lived. Refresh shortly before it expires using only the
+        // DPAPI/MSAL token caches. Transient network failures leave the account intact and are
+        // retried on the next cycle; only the authentication service's authoritative failures
+        // remove an account and require interaction again.
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var changed = await RefreshAccountSetIndependentlyAsync(
+                    Accounts.Select(account => account.Id).ToArray(),
+                    (accountId, token) => _authenticationService.RefreshIfExpiringAsync(
+                        accountId,
+                        TimeSpan.FromMinutes(20),
+                        token),
+                    cancellationToken);
+
+                if (changed)
+                {
+                    RefreshAccounts();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                Debug.WriteLine($"Minecraft account background refresh deferred: {error.GetType().Name}");
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    internal static async Task<bool> RefreshAccountSetIndependentlyAsync(
+        IEnumerable<string> accountIds,
+        Func<string, CancellationToken, Task<bool>> refreshAccount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(accountIds);
+        ArgumentNullException.ThrowIfNull(refreshAccount);
+        var changed = false;
+        foreach (var accountId in accountIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                changed |= await refreshAccount(accountId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error) when (error is KeyNotFoundException or UnauthorizedAccessException)
+            {
+                // The authentication service has already removed or invalidated this account.
+                // Refresh the visible list after every remaining account had its own chance.
+                changed = true;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // DNS, timeout, transport and ambiguous upstream failures are isolated to the
+                // affected account. Never let account A defer renewal for B or C.
+                Debug.WriteLine(
+                    $"Minecraft account background refresh deferred: {error.GetType().Name}");
+            }
+        }
+
+        return changed;
     }
 
     private void ShowCreatePage()
@@ -2245,16 +3730,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private void ShowSelectedInstance()
     {
-        if (SelectedInstance is not null)
-        {
-            IsSettingsPage = false;
-            IsCatalogPage = false;
-            IsCreatePage = false;
-        }
-        else
-        {
-            ShowCreatePage();
-        }
+        IsSettingsPage = false;
+        IsCatalogPage = false;
+        IsCreatePage = false;
     }
 
     private async Task OpenClientSettingsAsync()
@@ -2333,7 +3811,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         SettingsEditor = null;
         IsSettingsPage = false;
         IsCatalogPage = false;
-        IsCreatePage = SelectedInstance is null;
+        IsCreatePage = false;
     }
 
     private void CancelClientSettingsClose()
@@ -2441,10 +3919,128 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    private async Task CreateBedrockShortcutAsync()
+    {
+        var choice = SelectedBedrockChannel
+                     ?? throw new InvalidOperationException(
+                         L("client.vm.validation.bedrockUnsupported"));
+        if (!IsValidBedrockShortcutName(NewBedrockShortcutName))
+        {
+            throw new InvalidOperationException(L("client.vm.validation.bedrockName"));
+        }
+
+        IsBusy = true;
+        ErrorText = string.Empty;
+        try
+        {
+            var shortcut = await _bedrockShortcutRegistry.AddAsync(
+                new BedrockClientShortcut
+                {
+                    Id = Guid.NewGuid(),
+                    DisplayName = NewBedrockShortcutName.Trim(),
+                    Channel = choice.Channel,
+                    CreatedAtUtc = DateTimeOffset.UtcNow,
+                },
+                _lifetimeCancellation.Token);
+            var item = new BedrockClientShortcutItemViewModel(shortcut);
+            BedrockShortcuts.Insert(0, item);
+            OnPropertyChanged(nameof(HasBedrockShortcuts));
+            SelectedBedrockShortcut = item;
+            StatusText = L("client.vm.status.bedrockShortcutCreated", item.Name);
+
+            if (_bedrockOfficialHandoff.TryOpenStore(choice.Channel))
+            {
+                StatusText = L(
+                    "client.vm.status.bedrockOfficialInstallerOpened",
+                    item.ChannelText);
+            }
+            else
+            {
+                ErrorText = L("client.vm.validation.bedrockHandoffFailed");
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void OpenSelectedBedrockOfficial()
+    {
+        var shortcut = SelectedBedrockShortcut
+                       ?? throw new InvalidOperationException(
+                           L("client.vm.validation.bedrockUnsupported"));
+        ErrorText = string.Empty;
+        if (!_bedrockOfficialHandoff.TryOpenStore(shortcut.Channel))
+        {
+            ErrorText = L("client.vm.validation.bedrockHandoffFailed");
+            StatusText = L("client.vm.status.operationFailed");
+            return;
+        }
+
+        StatusText = L(
+            "client.vm.status.bedrockOfficialInstallerOpened",
+            shortcut.ChannelText);
+    }
+
+    private async Task DeleteSelectedBedrockShortcutAsync()
+    {
+        var shortcut = SelectedBedrockShortcut
+                       ?? throw new InvalidOperationException(
+                           L("client.vm.validation.bedrockUnsupported"));
+        var answer = DarkMessageBox.Show(
+            L("client.bedrock.remove.confirm", shortcut.Name),
+            L("client.bedrock.remove.title"),
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var removedIndex = BedrockShortcuts.IndexOf(shortcut);
+            var removed = await _bedrockShortcutRegistry.RemoveAsync(
+                shortcut.Id,
+                CancellationToken.None);
+            BedrockShortcuts.Remove(shortcut);
+            OnPropertyChanged(nameof(HasBedrockShortcuts));
+            SelectedBedrockShortcut = BedrockShortcuts.Count == 0
+                ? null
+                : BedrockShortcuts[Math.Min(
+                    Math.Max(removedIndex, 0),
+                    BedrockShortcuts.Count - 1)];
+            StatusText = L("client.vm.status.bedrockShortcutRemoved", removed.DisplayName);
+            if (!HasAnySelectedClient)
+            {
+                ShowSelectedInstance();
+            }
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private static bool IsValidBedrockShortcutName(string? value)
+    {
+        var trimmed = value?.Trim();
+        return !string.IsNullOrWhiteSpace(trimmed) &&
+               trimmed.Length <= 128 &&
+               !trimmed.Any(char.IsControl);
+    }
+
     private bool CanCreateInstance() =>
-        !IsBusy && IsJavaEdition && SelectedRelease is not null && SelectedLoader?.IsManaged == true &&
-        !string.IsNullOrWhiteSpace(NewInstanceName) &&
-        (SelectedLoader.Loader == MinecraftClientLoader.Vanilla || SelectedLoaderVersion is not null);
+        !IsBusy && (IsJavaEdition
+            ? SelectedRelease is not null && SelectedLoader?.IsManaged == true &&
+              !string.IsNullOrWhiteSpace(NewInstanceName) &&
+              (SelectedLoader.Loader == MinecraftClientLoader.Vanilla ||
+               SelectedLoaderVersion is not null)
+            : SelectedBedrockChannel is not null &&
+              IsValidBedrockShortcutName(NewBedrockShortcutName));
 
     private bool CanLaunchSelected() =>
         !IsBusy && SelectedInstance is { IsRunning: false };
@@ -2461,16 +4057,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private void OpenBedrockOfficial()
     {
         ErrorText = string.Empty;
-        if (!_bedrockOfficialHandoff.TryOpen(out var target))
+        var choice = SelectedBedrockChannel;
+        if (choice is null || !_bedrockOfficialHandoff.TryOpenStore(choice.Channel))
         {
             ErrorText = L("client.vm.validation.bedrockHandoffFailed");
             StatusText = L("client.vm.status.operationFailed");
             return;
         }
 
-        StatusText = target == BedrockOfficialHandoffTarget.Minecraft
-            ? L("client.vm.status.bedrockOpened")
-            : L("client.vm.status.bedrockStoreOpened");
+        StatusText = L("client.vm.status.bedrockOfficialInstallerOpened", choice.Name);
     }
 
     private void NotifyCreateStateChanged()
@@ -2580,6 +4175,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         WindowHeight = height;
     }
 
+    private void RefreshResolutionChoices()
+    {
+        _resolutionChoices = ClientResolutionCatalog.CreateChoices(
+            _windowWidth,
+            _windowHeight);
+        OnPropertyChanged(nameof(ResolutionChoices));
+        OnPropertyChanged(nameof(SelectedResolution));
+    }
+
     private void OpenSelectedContentFolder(object? parameter)
     {
         if (SelectedInstance is not { } item || parameter is not string folder || !IsAllowedContentFolder(folder))
@@ -2593,6 +4197,374 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         start.ArgumentList.Add(path);
         Process.Start(start);
     }
+
+    private bool CanOpenContentDownload(object? parameter) =>
+        SelectedInstance is { IsRunning: false } &&
+        !IsBusy &&
+        TryGetDownloadContentKind(parameter, out _);
+
+    private async Task OpenContentDownloadAsync(object? parameter)
+    {
+        if (SelectedInstance is not { IsRunning: false } instance ||
+            !TryGetDownloadContentKind(parameter, out var kind))
+        {
+            throw new InvalidOperationException(L("client.vm.validation.contentDownload"));
+        }
+
+        ContentDownloadKind = kind;
+        ContentDownloadSearchText = string.Empty;
+        ContentDownloadResults.Clear();
+        SelectedContentDownloadProject = null;
+        ContentDownloadFallbackUri = null;
+        var preferredLoader = kind == MinecraftClientContentKind.Mod &&
+                              IsSupportedDownloadLoader(instance.Model.Loader)
+            ? instance.Model.Loader
+            : (MinecraftClientLoader?)null;
+        SelectedContentDownloadLoader =
+            ContentDownloadLoaders.FirstOrDefault(choice => choice.Loader == preferredLoader)
+            ?? ContentDownloadLoaders[0];
+        ContentDownloadStatusText = L("client.vm.contentDownload.initial");
+        IsContentDownloadOpen = true;
+        OnPropertyChanged(nameof(ContentDownloadDescription));
+        await SearchContentDownloadAsync();
+    }
+
+    private void CloseContentDownload()
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        IsContentDownloadOpen = false;
+        ContentDownloadResults.Clear();
+        SelectedContentDownloadProject = null;
+        ContentDownloadFallbackUri = null;
+        ContentDownloadStatusText = L("client.vm.contentDownload.initial");
+    }
+
+    private async Task SearchContentDownloadAsync()
+    {
+        var instance = SelectedInstance
+                       ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
+        if (!IsContentDownloadOpen)
+        {
+            return;
+        }
+
+        var instanceId = instance.Id;
+        var kind = ContentDownloadKind;
+        var loader = ResolveRequestedContentLoader(instance, kind);
+        var operation = BeginOperation();
+        IsBusy = true;
+        try
+        {
+            ContentDownloadFallbackUri = null;
+            ContentDownloadStatusText = L("client.vm.contentDownload.searching");
+            var page = await _modrinthContentCatalog.SearchAsync(
+                new ModrinthClientContentSearchRequest(
+                    kind,
+                    ContentDownloadSearchText.Trim(),
+                    instance.Model.GameVersion,
+                    loader,
+                    ModrinthClientContentSort.Relevance,
+                    Offset: 0,
+                    Limit: 20),
+                operation.Token);
+            if (!IsContentDownloadOpen ||
+                SelectedInstance?.Id != instanceId ||
+                ContentDownloadKind != kind)
+            {
+                return;
+            }
+
+            ContentDownloadResults.Clear();
+            foreach (var project in page.Projects)
+            {
+                ContentDownloadResults.Add(CreateContentDownloadProjectItem(
+                    project,
+                    instance.Model.GameVersion));
+            }
+
+            SelectedContentDownloadProject = ContentDownloadResults.FirstOrDefault();
+            ContentDownloadStatusText = ContentDownloadResults.Count == 0
+                ? L("client.vm.contentDownload.noResults")
+                : L(
+                    "client.vm.contentDownload.found",
+                    ContentDownloadResults.Count,
+                    page.TotalHits);
+        }
+        finally
+        {
+            IsBusy = false;
+            CompleteOperation(operation);
+        }
+    }
+
+    private bool CanInstallSelectedContentDownload() =>
+        IsContentDownloadOpen &&
+        SelectedInstance is { IsRunning: false } &&
+        SelectedContentDownloadProject is not null &&
+        !IsBusy;
+
+    private async Task InstallSelectedContentDownloadAsync()
+    {
+        var instance = SelectedInstance
+                       ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
+        var project = SelectedContentDownloadProject
+                      ?? throw new InvalidOperationException(L("client.vm.validation.contentDownloadProject"));
+        var kind = ContentDownloadKind;
+        var loader = ResolveRequestedContentLoader(instance, kind);
+        var effectiveLoader = loader;
+        var operation = BeginOperation();
+        IsBusy = true;
+        try
+        {
+            ContentDownloadFallbackUri = null;
+            ContentDownloadStatusText = L("client.vm.contentDownload.planning", project.Title);
+            await EnsureContentMutationAllowedAsync(instance, operation.Token);
+            var plan = await _modrinthContentInstaller.PlanAsync(
+                project.ProjectId,
+                kind,
+                instance.Model.GameVersion,
+                loader,
+                operation.Token);
+
+            if (!plan.CanInstallAutomatically)
+            {
+                ApplyContentDownloadFallback(plan.Fallbacks, plan.Project.ProjectPageUri);
+                return;
+            }
+
+            if (kind == MinecraftClientContentKind.Mod &&
+                plan.RequiredLoader is { } requiredLoader)
+            {
+                effectiveLoader = requiredLoader;
+                if (instance.Model.Loader != requiredLoader)
+                {
+                    ContentDownloadFallbackUri =
+                        plan.Artifacts.FirstOrDefault()?.VersionPageUri ??
+                        plan.Project.ProjectPageUri;
+                    ContentDownloadStatusText = L(
+                        "client.vm.contentDownload.installingLoader",
+                        requiredLoader);
+                    try
+                    {
+                        var switched = await SwitchContentLoaderAsync(
+                            instance,
+                            requiredLoader,
+                            operation.Token);
+                        instance.ReplaceModel(switched.Instance);
+                        SelectedContentDownloadLoader =
+                            ContentDownloadLoaders.FirstOrDefault(
+                                choice => choice.Loader == requiredLoader)
+                            ?? SelectedContentDownloadLoader;
+                        ContentDownloadFallbackUri = null;
+                    }
+                    catch (Exception error) when (
+                        error is HttpRequestException or IOException or InvalidDataException or
+                            InvalidOperationException or UnauthorizedAccessException or
+                            NotSupportedException or ArgumentException or
+                            System.ComponentModel.Win32Exception)
+                    {
+                        ContentDownloadStatusText = L(
+                            "client.vm.contentDownload.loaderInstallFailed",
+                            requiredLoader);
+                        return;
+                    }
+                }
+            }
+
+            var progress = new Progress<ModrinthClientContentInstallProgress>(value =>
+            {
+                ContentDownloadStatusText = value.Stage switch
+                {
+                    "commit" => L("client.vm.contentDownload.committing"),
+                    "complete" => L("client.vm.contentDownload.finishing"),
+                    _ => L(
+                        "client.vm.contentDownload.downloading",
+                        Math.Min(value.CompletedItems + 1, Math.Max(1, value.TotalItems)),
+                        Math.Max(1, value.TotalItems)),
+                };
+            });
+            await EnsureContentMutationAllowedAsync(instance, operation.Token);
+            var result = await _modrinthContentInstaller.InstallAsync(
+                new ModrinthClientContentInstallRequest(
+                    instance.Model.DirectoryPath,
+                    project.ProjectId,
+                    kind,
+                    instance.Model.GameVersion,
+                    effectiveLoader),
+                progress,
+                operation.Token);
+            if (!result.Installed)
+            {
+                ApplyContentDownloadFallback(result.Fallbacks, result.Plan.Project.ProjectPageUri);
+                return;
+            }
+
+            SelectedContentKind = kind;
+            await RefreshContentAsync();
+            ContentDownloadStatusText = L(
+                "client.vm.contentDownload.installed",
+                result.InstalledEntries.Count,
+                project.Title);
+        }
+        finally
+        {
+            IsBusy = false;
+            CompleteOperation(operation);
+        }
+    }
+
+    private async Task<MinecraftClientInstallResult> SwitchContentLoaderAsync(
+        ClientInstanceItemViewModel instance,
+        MinecraftClientLoader requiredLoader,
+        CancellationToken cancellationToken)
+    {
+        if (!IsSupportedDownloadLoader(requiredLoader))
+        {
+            throw new NotSupportedException(
+                $"{requiredLoader} is not supported by the managed content loader switcher.");
+        }
+
+        var snapshot = _releaseSnapshot;
+        if (snapshot is null || !snapshot.Releases.Any(release => string.Equals(
+                release.Id,
+                instance.Model.GameVersion,
+                StringComparison.Ordinal)))
+        {
+            snapshot = await _releaseCatalog.GetStableReleasesAsync(cancellationToken);
+        }
+
+        var provider = _loaderCatalogs.FirstOrDefault(candidate =>
+                           candidate.Loader == requiredLoader)
+                       ?? throw new NotSupportedException(
+                           $"No official catalog is configured for {requiredLoader}.");
+        var versions = await provider.GetVersionsAsync(
+            snapshot,
+            instance.Model.GameVersion,
+            cancellationToken);
+        var selectedVersion = versions.FirstOrDefault(version =>
+                                  version.Loader == requiredLoader &&
+                                  string.Equals(
+                                      version.GameVersion,
+                                      instance.Model.GameVersion,
+                                      StringComparison.Ordinal) &&
+                                  version.InstallKind == MinecraftClientLoaderInstallKind.Managed &&
+                                  version.ReleaseChannel is MinecraftLoaderReleaseChannel.Stable or
+                                      MinecraftLoaderReleaseChannel.Recommended)
+                              ?? throw new InvalidOperationException(
+                                  $"No official stable {requiredLoader} release supports Minecraft {instance.Model.GameVersion}.");
+
+        var javaPath = instance.Model.JavaExecutablePath;
+        if (string.IsNullOrWhiteSpace(javaPath) || !File.Exists(javaPath))
+        {
+            var javaMajor = instance.Model.JavaMajorVersion ??
+                            _javaRecommendation.GetRecommendation(
+                                instance.Model.GameVersion,
+                                CoreType.Unknown).MajorVersion;
+            javaPath = await ResolveJavaAsync(javaMajor, cancellationToken);
+        }
+
+        var progress = new Progress<MinecraftClientInstallProgress>(_ =>
+            ContentDownloadStatusText = L(
+                "client.vm.contentDownload.installingLoader",
+                requiredLoader));
+        return await _instanceManager.SwitchLoaderAsync(
+            instance.Id,
+            requiredLoader,
+            selectedVersion.Version,
+            javaPath,
+            progress,
+            cancellationToken);
+    }
+
+    private void ApplyContentDownloadFallback(
+        IReadOnlyList<ModrinthClientContentFallback> fallbacks,
+        Uri projectPageUri)
+    {
+        var fallback = fallbacks.FirstOrDefault();
+        ContentDownloadFallbackUri =
+            fallback?.DirectDownloadUri ??
+            fallback?.VersionPageUri ??
+            projectPageUri;
+        ContentDownloadStatusText = L(
+            "client.vm.contentDownload.fallback",
+            fallback?.DisplayName ?? SelectedContentDownloadProject?.Title ?? string.Empty);
+    }
+
+    private void OpenSelectedContentProjectPage()
+    {
+        if (SelectedContentDownloadProject is { ProjectPageUri: { } uri })
+        {
+            OpenVerifiedModrinthUri(uri);
+        }
+    }
+
+    private void OpenContentFallback()
+    {
+        if (ContentDownloadFallbackUri is { } uri)
+        {
+            OpenVerifiedModrinthUri(uri);
+        }
+    }
+
+    private static void OpenVerifiedModrinthUri(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        if (!uri.IsAbsoluteUri ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !IsAllowedModrinthHost(uri.IdnHost))
+        {
+            throw new InvalidOperationException("Only official Modrinth HTTPS links can be opened.");
+        }
+
+        Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+    }
+
+    private static bool IsAllowedModrinthHost(string host) =>
+        string.Equals(host, "modrinth.com", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(host, "www.modrinth.com", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(host, "cdn.modrinth.com", StringComparison.OrdinalIgnoreCase);
+
+    private MinecraftClientLoader? ResolveRequestedContentLoader(
+        ClientInstanceItemViewModel instance,
+        MinecraftClientContentKind kind)
+    {
+        if (kind != MinecraftClientContentKind.Mod)
+        {
+            return null;
+        }
+
+        return SelectedContentDownloadLoader?.Loader ??
+               (IsSupportedDownloadLoader(instance.Model.Loader)
+                   ? instance.Model.Loader
+                   : null);
+    }
+
+    private static bool TryGetDownloadContentKind(
+        object? parameter,
+        out MinecraftClientContentKind kind)
+    {
+        if (parameter is string text &&
+            Enum.TryParse(text, ignoreCase: true, out kind) &&
+            kind is MinecraftClientContentKind.Mod or
+                MinecraftClientContentKind.ResourcePack or
+                MinecraftClientContentKind.ShaderPack)
+        {
+            return true;
+        }
+
+        kind = default;
+        return false;
+    }
+
+    private static bool IsSupportedDownloadLoader(MinecraftClientLoader loader) =>
+        loader is MinecraftClientLoader.Forge or
+            MinecraftClientLoader.Fabric or
+            MinecraftClientLoader.Quilt or
+            MinecraftClientLoader.NeoForge;
 
     private static bool IsAllowedContentFolder(string folder) => folder is
         "mods" or "resourcepacks" or "shaderpacks" or "saves" or "screenshots" or "logs";
@@ -2966,6 +4938,35 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _ => L("client.vm.progress.working"),
         };
 
+    private static string LocalizeFtbInstallProgress(FtbClientPackInstallProgress progress) =>
+        progress.Stage switch
+        {
+            "install-game" => L("client.vm.progress.ftb.installGame"),
+            "download-content" => L(
+                "client.vm.progress.ftb.downloadContent",
+                progress.CompletedItems,
+                progress.TotalItems),
+            "complete" => L("client.vm.progress.ftb.complete"),
+            _ => L("client.vm.progress.working"),
+        };
+
+    private static int? TryParseFtbJavaMajor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var first = value.Trim().Split('.', '-', '+')[0];
+        return int.TryParse(
+                   first,
+                   System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var major) && major is >= 8 and <= 99
+            ? major
+            : null;
+    }
+
     private static string LocalizeContentProgress(MinecraftClientContentProgress progress) =>
         progress.Stage switch
         {
@@ -2990,6 +4991,53 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         return version is null
             ? "unknown"
             : $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
+    }
+
+    private void RefreshLocalizedBedrockChoices()
+    {
+        var selectedChannel = _selectedBedrockChannel?.Channel
+                              ?? MinecraftBedrockChannel.Stable;
+        _bedrockChannelChoices =
+        [
+            new BedrockChannelChoiceViewModel(
+                MinecraftBedrockChannel.Stable,
+                L("client.bedrock.channel.stable"),
+                L("client.create.bedrockChannelHint")),
+            new BedrockChannelChoiceViewModel(
+                MinecraftBedrockChannel.Preview,
+                L("client.bedrock.channel.preview"),
+                L("client.create.bedrockChannelHint")),
+        ];
+        _selectedBedrockChannel = _bedrockChannelChoices.First(choice =>
+            choice.Channel == selectedChannel);
+    }
+
+    private void RefreshLocalizedContentDownloadChoices()
+    {
+        var selectedLoader = _selectedContentDownloadLoader?.Loader;
+        _contentDownloadLoaders =
+        [
+            new(null, L("client.content.download.loader.auto")),
+            new(MinecraftClientLoader.Forge, "Forge"),
+            new(MinecraftClientLoader.NeoForge, "NeoForge"),
+            new(MinecraftClientLoader.Fabric, "Fabric"),
+            new(MinecraftClientLoader.Quilt, "Quilt"),
+        ];
+        _selectedContentDownloadLoader =
+            _contentDownloadLoaders.FirstOrDefault(choice => choice.Loader == selectedLoader)
+            ?? _contentDownloadLoaders[0];
+    }
+
+    private static ClientContentDownloadProjectItemViewModel CreateContentDownloadProjectItem(
+        ModrinthClientContentProject project,
+        string gameVersion)
+    {
+        var compatibility = project.Loaders.Count == 0
+            ? gameVersion
+            : string.Join(" / ", project.Loaders);
+        return new ClientContentDownloadProjectItemViewModel(
+            project,
+            L("client.vm.contentDownload.compatibility", project.Downloads, compatibility));
     }
 
     private void RefreshLocalizedCatalogChoices()
@@ -3037,12 +5085,51 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private void OnCultureChanged(object? sender, EventArgs e)
     {
         RefreshLocalizedCatalogChoices();
+        RefreshLocalizedBedrockChoices();
+        var selectedDownloadProjectId = _selectedContentDownloadProject?.ProjectId;
+        var downloadFallbackUri = ContentDownloadFallbackUri;
+        var downloadProjects = ContentDownloadResults
+            .Select(item => item.Project)
+            .ToArray();
+        RefreshLocalizedContentDownloadChoices();
         OnPropertyChanged(nameof(CatalogLoaders));
         OnPropertyChanged(nameof(CatalogCategories));
         OnPropertyChanged(nameof(CatalogSortOptions));
         OnPropertyChanged(nameof(SelectedCatalogLoader));
         OnPropertyChanged(nameof(SelectedCatalogCategory));
         OnPropertyChanged(nameof(SelectedCatalogSort));
+        OnPropertyChanged(nameof(ContentDownloadLoaders));
+        OnPropertyChanged(nameof(SelectedContentDownloadLoader));
+        OnPropertyChanged(nameof(BedrockChannelChoices));
+        OnPropertyChanged(nameof(SelectedBedrockChannel));
+        OnPropertyChanged(nameof(ContentDownloadHeading));
+        OnPropertyChanged(nameof(ContentDownloadDescription));
+
+        if (downloadProjects.Length > 0)
+        {
+            var gameVersion = SelectedInstance?.Model.GameVersion ?? string.Empty;
+            ContentDownloadResults.Clear();
+            foreach (var project in downloadProjects)
+            {
+                ContentDownloadResults.Add(CreateContentDownloadProjectItem(project, gameVersion));
+            }
+
+            SelectedContentDownloadProject = ContentDownloadResults.FirstOrDefault(item =>
+                string.Equals(item.ProjectId, selectedDownloadProjectId, StringComparison.Ordinal));
+        }
+
+        ContentDownloadFallbackUri = downloadFallbackUri;
+        ContentDownloadStatusText = IsBusy
+            ? L("client.vm.contentDownload.working")
+            : downloadFallbackUri is not null
+                ? L(
+                    "client.vm.contentDownload.fallback",
+                    SelectedContentDownloadProject?.Title ?? string.Empty)
+                : !IsContentDownloadOpen
+                    ? L("client.vm.contentDownload.initial")
+                    : ContentDownloadResults.Count == 0
+                        ? L("client.vm.contentDownload.noResults")
+                        : L("client.vm.contentDownload.visible", ContentDownloadResults.Count);
 
         if (CatalogGameVersions.FirstOrDefault() is { Version: null } first)
         {
@@ -3062,6 +5149,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(CatalogResultsSummary));
         OnPropertyChanged(nameof(SelectedContentKindText));
         OnPropertyChanged(nameof(ContentModeText));
+        OnPropertyChanged(nameof(SelectedPlayerName));
+        OnPropertyChanged(nameof(AccountButtonAccessibleName));
+        OnPropertyChanged(nameof(SelectedAccountExpirySummary));
+        OnPropertyChanged(nameof(DeviceCodeExpirySummary));
+        OnPropertyChanged(nameof(SelectedSkinFileName));
     }
 
     private static string L(string key, params object?[] arguments) =>
@@ -3089,11 +5181,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         _disposed = true;
+        _launcherWindowLifecycle.BeginShutdown();
         _lifetimeCancellation.Cancel();
         _loaderRefreshCancellation?.Cancel();
         _operationCancellation?.Cancel();
         _catalogBrowseCancellation?.Cancel();
         _catalogVersionCancellation?.Cancel();
+        _accountLoginCancellation?.Cancel();
+        _skinTextureLoadCancellation?.Cancel();
         await _contentRefreshCoordinator.DisposeAsync();
         Task[] observerTasks;
         lock (_runningSessionGate)
@@ -3101,12 +5196,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             observerTasks = _sessionObserverTasks.ToArray();
         }
 
+        Task[] profileSynchronizationTasks;
+        lock (_profileSynchronizationGate)
+        {
+            profileSynchronizationTasks = _profileSynchronizationTasks.ToArray();
+        }
+
         try
         {
             await Task.WhenAll(
-                observerTasks.Append(_catalogBrowseTask)
+                observerTasks.Concat(profileSynchronizationTasks)
+                    .Append(_catalogBrowseTask)
                     .Append(_catalogArtworkTask)
-                    .Append(_catalogVersionTask));
+                    .Append(_catalogVersionTask)
+                    .Append(_accountRefreshTask)
+                    .Append(_accountLoginTask));
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -3132,12 +5236,16 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _operationCancellation?.Dispose();
         _catalogBrowseCancellation?.Dispose();
         _catalogVersionCancellation?.Dispose();
+        _accountLoginCancellation?.Dispose();
+        _skinTextureLoadCancellation?.Dispose();
         _lifetimeCancellation.Dispose();
         if (_artworkCache is IDisposable disposableArtworkCache)
         {
             disposableArtworkCache.Dispose();
         }
 
+        _modrinthContentInstaller.Dispose();
+        _bedrockShortcutRegistry.Dispose();
         _registry.Dispose();
         _catalogHttpClient.Dispose();
         _runtimeHttpClient.Dispose();

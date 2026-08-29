@@ -68,10 +68,7 @@ public sealed class CmlMinecraftClientProcessBuilder : IMinecraftClientProcessBu
                 cancellationToken)
             .ConfigureAwait(false);
         process.StartInfo.WorkingDirectory = instance.DirectoryPath;
-        process.StartInfo.UseShellExecute = false;
-        process.StartInfo.CreateNoWindow = false;
-        process.StartInfo.RedirectStandardOutput = instance.ShowGameLog;
-        process.StartInfo.RedirectStandardError = instance.ShowGameLog;
+        ConfigureBackgroundLaunch(process.StartInfo);
         foreach (var pair in instance.EnvironmentVariables)
         {
             ValidateEnvironmentVariable(pair.Key, pair.Value);
@@ -79,6 +76,21 @@ public sealed class CmlMinecraftClientProcessBuilder : IMinecraftClientProcessBu
         }
 
         return process;
+    }
+
+    internal static void ConfigureBackgroundLaunch(ProcessStartInfo startInfo)
+    {
+        ArgumentNullException.ThrowIfNull(startInfo);
+
+        // Minecraft may still require java.exe (instead of javaw.exe), especially for older
+        // releases and user-selected runtimes. CREATE_NO_WINDOW hides only its console without a
+        // shell. Keep WindowStyle normal so the later LWJGL game window remains visible, while
+        // redirected pipes preserve diagnostics and are drained asynchronously by the session.
+        startInfo.UseShellExecute = false;
+        startInfo.CreateNoWindow = true;
+        startInfo.WindowStyle = ProcessWindowStyle.Normal;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
     }
 
     private static MArgument CreateJvmArgument(string argument)

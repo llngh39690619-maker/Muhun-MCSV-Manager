@@ -112,6 +112,194 @@ public sealed class MinecraftClientInstanceManager
     }
 
     /// <summary>
+    /// Adds a managed loader to an existing, stopped instance without modifying the live tree
+    /// until a complete replacement has been prepared and verified. The original instance is
+    /// retained as a same-volume rollback tombstone until the registry transaction succeeds.
+    /// </summary>
+    public async Task<MinecraftClientInstallResult> SwitchLoaderAsync(
+        Guid instanceId,
+        MinecraftClientLoader loader,
+        string loaderVersion,
+        string? javaExecutablePath,
+        IProgress<MinecraftClientInstallProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (instanceId == Guid.Empty)
+        {
+            throw new ArgumentException("The client instance id is invalid.", nameof(instanceId));
+        }
+
+        if (loader is not (MinecraftClientLoader.Forge or MinecraftClientLoader.Fabric or
+            MinecraftClientLoader.Quilt or MinecraftClientLoader.NeoForge))
+        {
+            throw new NotSupportedException(
+                $"{loader} cannot be selected by the managed mod-loader switcher.");
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(loaderVersion);
+        try
+        {
+            OfficialCatalogValidation.ValidateVersionToken(
+                loaderVersion,
+                nameof(loaderVersion),
+                maximumLength: 128);
+        }
+        catch (InvalidDataException error)
+        {
+            throw new ArgumentException("The loader version is invalid.", nameof(loaderVersion), error);
+        }
+
+        if (!string.IsNullOrWhiteSpace(javaExecutablePath) &&
+            (!Path.IsPathFullyQualified(javaExecutablePath) || !File.Exists(javaExecutablePath)))
+        {
+            throw new FileNotFoundException(
+                "The selected Java executable does not exist.",
+                javaExecutablePath);
+        }
+
+        var catalog = await _releaseCatalog.GetStableReleasesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await _mutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string? preparedDirectory = null;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RejectReparsePoint(_instancesDirectory);
+            RejectReparsePoint(_stagingDirectory);
+
+            var expectedDirectory = GetManagedInstanceDirectory(instanceId);
+            var snapshot = await _registry.LoadAsync(cancellationToken).ConfigureAwait(false);
+            var original = snapshot.Instances.FirstOrDefault(item => item.Id == instanceId)
+                           ?? throw new InvalidDataException(
+                               "The Minecraft client instance is missing from the registry.");
+            ValidateManagedInstancePath(original, expectedDirectory);
+            RejectMissingOrRedirectedInstanceDirectory(expectedDirectory);
+            RejectRunningInstance(original);
+            if (original.Edition != MinecraftClientEdition.Java)
+            {
+                throw new NotSupportedException(
+                    "Managed loader switching only supports Minecraft Java Edition instances.");
+            }
+
+            if (!catalog.Releases.Any(release =>
+                    string.Equals(release.Id, original.GameVersion, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    $"Minecraft {original.GameVersion} is not in the official stable release catalog.");
+            }
+
+            if (original.Loader == loader &&
+                original.LoaderInstallKind == MinecraftClientLoaderInstallKind.Managed &&
+                !string.IsNullOrWhiteSpace(original.LoaderVersion))
+            {
+                return new MinecraftClientInstallResult(original, original.InstalledVersionId);
+            }
+
+            if (original.CatalogProvider?.Equals("ftb", StringComparison.Ordinal) == true)
+            {
+                throw new NotSupportedException(
+                    "FTB modpack instances must keep the Minecraft and mod-loader versions declared by their official pack manifest. Use the mod's official project download for this instance or create a separate client instance.");
+            }
+
+            EnsureSameVolume(expectedDirectory, _stagingDirectory);
+            preparedDirectory = CreateLoaderSwitchPath("work");
+            RejectExistingPath(preparedDirectory);
+            Directory.CreateDirectory(preparedDirectory);
+            progress?.Report(new MinecraftClientInstallProgress(
+                "loader-prepare",
+                "Preparing the compatible mod loader in isolation…",
+                0d));
+
+            var request = CreateLoaderSwitchRequest(original, loader, loaderVersion);
+            var installedVersionId = await _payloadInstaller.InstallAsync(
+                    request,
+                    preparedDirectory,
+                    javaExecutablePath,
+                    progress,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(installedVersionId) || installedVersionId.Length > 192)
+            {
+                throw new InvalidDataException(
+                    "The client loader installer returned an invalid launch profile id.");
+            }
+
+            // Overlay non-conflicting files only after the fresh loader profile has been verified.
+            // This preserves saves/configuration while preventing stale or tampered managed files
+            // from replacing the newly installed profile and libraries.
+            progress?.Report(new MinecraftClientInstallProgress(
+                "loader-copy",
+                "Preserving the existing client data…",
+                0.9d));
+            MergeInstanceTree(expectedDirectory, preparedDirectory, cancellationToken);
+            RejectTreeReparsePoints(preparedDirectory);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Re-read immediately before promotion. A concurrent launch or settings mutation must
+            // fail closed rather than replacing a now-active or changed instance.
+            var currentDocument = await _registry.LoadAsync(cancellationToken).ConfigureAwait(false);
+            var current = currentDocument.Instances.FirstOrDefault(item => item.Id == instanceId)
+                          ?? throw new InvalidDataException(
+                              "The Minecraft client instance is missing from the registry.");
+            ValidateManagedInstancePath(current, expectedDirectory);
+            RejectRunningInstance(current);
+            EnsureLoaderSwitchSourceUnchanged(original, current);
+
+            var rollbackDirectory = CreateLoaderSwitchPath("rollback");
+            RejectExistingPath(rollbackDirectory);
+            progress?.Report(new MinecraftClientInstallProgress(
+                "loader-commit",
+                "Safely activating the compatible mod loader…",
+                0.95d));
+            var updated = await CommitStagedLoaderSwitchAsync(
+                    _instancesDirectory,
+                    expectedDirectory,
+                    _stagingDirectory,
+                    preparedDirectory,
+                    rollbackDirectory,
+                    async () => await _registry.UpdateAsync(
+                            document =>
+                            {
+                                var stored = document.Instances.FirstOrDefault(
+                                                 item => item.Id == instanceId)
+                                             ?? throw new InvalidDataException(
+                                                 "The Minecraft client instance is missing from the registry.");
+                                ValidateManagedInstancePath(stored, expectedDirectory);
+                                RejectRunningInstance(stored);
+                                EnsureLoaderSwitchSourceUnchanged(original, stored);
+                                stored.Loader = loader;
+                                stored.LoaderVersion = loaderVersion;
+                                stored.LoaderInstallKind = MinecraftClientLoaderInstallKind.Managed;
+                                stored.InstalledVersionId = installedVersionId;
+                                if (!string.IsNullOrWhiteSpace(javaExecutablePath))
+                                {
+                                    stored.JavaExecutablePath = Path.GetFullPath(javaExecutablePath);
+                                }
+
+                                return stored;
+                            },
+                            CancellationToken.None)
+                        .ConfigureAwait(false))
+                .ConfigureAwait(false);
+            preparedDirectory = null;
+            progress?.Report(new MinecraftClientInstallProgress(
+                "loader-complete",
+                $"{loader} is ready for Minecraft {updated.GameVersion}.",
+                1d));
+            return new MinecraftClientInstallResult(updated, installedVersionId);
+        }
+        finally
+        {
+            if (preparedDirectory is not null)
+            {
+                TryDeleteOwnedDirectory(_stagingDirectory, preparedDirectory);
+            }
+
+            _mutationGate.Release();
+        }
+    }
+
+    /// <summary>
     /// Removes one managed, stopped client instance. The directory is first renamed to a unique
     /// tombstone on the same volume, then the registry transaction is committed. A failed registry
     /// commit restores the original directory; committed tombstones are cleaned without following
@@ -240,6 +428,102 @@ public sealed class MinecraftClientInstanceManager
         }
     }
 
+    internal static async Task<TResult> CommitStagedLoaderSwitchAsync<TResult>(
+        string instancesDirectory,
+        string instanceDirectory,
+        string stagingDirectory,
+        string preparedDirectory,
+        string rollbackDirectory,
+        Func<Task<TResult>> commitRegistryAsync)
+    {
+        ArgumentNullException.ThrowIfNull(commitRegistryAsync);
+        var normalizedInstances = NormalizeRoot(instancesDirectory, nameof(instancesDirectory));
+        var normalizedStaging = NormalizeRoot(stagingDirectory, nameof(stagingDirectory));
+        var normalizedInstance = SafePath.EnsureWithinRoot(
+            normalizedInstances,
+            instanceDirectory,
+            allowRoot: false);
+        var normalizedPrepared = SafePath.EnsureWithinRoot(
+            normalizedStaging,
+            preparedDirectory,
+            allowRoot: false);
+        var normalizedRollback = SafePath.EnsureWithinRoot(
+            normalizedStaging,
+            rollbackDirectory,
+            allowRoot: false);
+        RejectReparsePoint(normalizedInstances);
+        RejectReparsePoint(normalizedStaging);
+        RejectMissingOrRedirectedInstanceDirectory(normalizedInstance);
+        RejectMissingOrRedirectedInstanceDirectory(normalizedPrepared);
+        RejectExistingPath(normalizedRollback);
+        RejectTreeReparsePoints(normalizedInstance);
+        RejectTreeReparsePoints(normalizedPrepared);
+        EnsureSameVolume(normalizedInstance, normalizedStaging);
+
+        Directory.Move(normalizedInstance, normalizedRollback);
+        try
+        {
+            try
+            {
+                Directory.Move(normalizedPrepared, normalizedInstance);
+            }
+            catch (Exception promotionError)
+            {
+                try
+                {
+                    Directory.Move(normalizedRollback, normalizedInstance);
+                }
+                catch (Exception rollbackError)
+                {
+                    throw new AggregateException(
+                        "The prepared loader could not be activated and the original instance could not be restored.",
+                        promotionError,
+                        rollbackError);
+                }
+
+                throw;
+            }
+
+            TResult result;
+            try
+            {
+                result = await commitRegistryAsync().ConfigureAwait(false);
+            }
+            catch (Exception commitError)
+            {
+                try
+                {
+                    if (Directory.Exists(normalizedPrepared) || File.Exists(normalizedPrepared))
+                    {
+                        throw new IOException(
+                            $"Cannot roll back the loader switch because its staging path was recreated: {normalizedPrepared}");
+                    }
+
+                    Directory.Move(normalizedInstance, normalizedPrepared);
+                    Directory.Move(normalizedRollback, normalizedInstance);
+                }
+                catch (Exception rollbackError)
+                {
+                    throw new AggregateException(
+                        "The loader registry commit failed and the original instance could not be restored.",
+                        commitError,
+                        rollbackError);
+                }
+
+                throw;
+            }
+
+            TryDeleteOwnedDirectory(normalizedStaging, normalizedRollback);
+            return result;
+        }
+        catch
+        {
+            // Prepared output and rollback tombstones are deliberately retained if restoration is
+            // incomplete. The caller only cleans the prepared copy after the original path exists.
+            throw;
+        }
+    }
+
     private static MinecraftClientInstance CreateInstance(
         MinecraftClientInstallRequest request,
         string finalDirectory,
@@ -271,6 +555,50 @@ public sealed class MinecraftClientInstanceManager
             EnableDiscordPresence = request.EnableDiscordPresence,
             CreatedAtUtc = DateTimeOffset.UtcNow,
         };
+
+    private static MinecraftClientInstallRequest CreateLoaderSwitchRequest(
+        MinecraftClientInstance source,
+        MinecraftClientLoader loader,
+        string loaderVersion) =>
+        new(
+            source.Id,
+            source.Name,
+            source.Edition,
+            source.GameVersion,
+            loader,
+            loaderVersion,
+            source.MemoryMode,
+            source.MinimumMemoryMb,
+            source.MaximumMemoryMb,
+            source.WindowWidth,
+            source.WindowHeight,
+            source.FullScreen,
+            source.EnableQuickLaunch,
+            source.HideLauncherAfterGameStarts,
+            source.ShowGameLog,
+            source.EnableDedicatedGpu,
+            source.EnableDiscordPresence,
+            source.JavaMajorVersion);
+
+    private static void EnsureLoaderSwitchSourceUnchanged(
+        MinecraftClientInstance expected,
+        MinecraftClientInstance actual)
+    {
+        if (expected.Id != actual.Id ||
+            expected.Edition != actual.Edition ||
+            !string.Equals(expected.GameVersion, actual.GameVersion, StringComparison.Ordinal) ||
+            expected.Loader != actual.Loader ||
+            !string.Equals(expected.LoaderVersion, actual.LoaderVersion, StringComparison.Ordinal) ||
+            expected.LoaderInstallKind != actual.LoaderInstallKind ||
+            !string.Equals(
+                expected.InstalledVersionId,
+                actual.InstalledVersionId,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The Minecraft client instance changed while its loader was being prepared.");
+        }
+    }
 
     private static void ValidateRequest(MinecraftClientInstallRequest request)
     {
@@ -334,6 +662,96 @@ public sealed class MinecraftClientInstanceManager
         }
 
         throw new IOException("Unable to allocate a unique client deletion tombstone.");
+    }
+
+    private string CreateLoaderSwitchPath(string role)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            var candidate = Path.Combine(
+                _stagingDirectory,
+                $"loader-switch-{role}-{DateTime.UtcNow.Ticks:D19}-{Guid.NewGuid():N}");
+            if (!Directory.Exists(candidate) && !File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new IOException("Unable to allocate a unique loader-switch staging directory.");
+    }
+
+    private static void MergeInstanceTree(
+        string sourceDirectory,
+        string destinationDirectory,
+        CancellationToken cancellationToken)
+    {
+        var sourceRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceDirectory));
+        var destinationRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationDirectory));
+        RejectMissingOrRedirectedInstanceDirectory(sourceRoot);
+        RejectTreeReparsePoints(sourceRoot);
+        RejectMissingOrRedirectedInstanceDirectory(destinationRoot);
+        RejectTreeReparsePoints(destinationRoot);
+
+        var pending = new Stack<(string Source, string Destination)>();
+        pending.Push((sourceRoot, destinationRoot));
+        while (pending.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (source, destination) = pending.Pop();
+            RejectReparsePoint(source);
+            RejectReparsePoint(destination);
+
+            foreach (var directory in Directory.EnumerateDirectories(
+                         source,
+                         "*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RejectReparsePoint(directory);
+                var target = SafePath.CombineUnderRoot(
+                    destinationRoot,
+                    Path.GetRelativePath(sourceRoot, directory));
+                if (File.Exists(target))
+                {
+                    throw new IOException(
+                        $"Cannot preserve a client directory because a verified loader file uses the same path: {target}");
+                }
+
+                if (!Directory.Exists(target))
+                {
+                    Directory.CreateDirectory(target);
+                }
+
+                RejectReparsePoint(target);
+                pending.Push((directory, target));
+            }
+
+            foreach (var file in Directory.EnumerateFiles(
+                         source,
+                         "*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RejectReparsePoint(file);
+                var target = SafePath.CombineUnderRoot(
+                    destinationRoot,
+                    Path.GetRelativePath(sourceRoot, file));
+                if (Directory.Exists(target))
+                {
+                    throw new IOException(
+                        $"Cannot preserve a client file because a verified loader directory uses the same path: {target}");
+                }
+
+                if (File.Exists(target))
+                {
+                    RejectReparsePoint(target);
+                    continue;
+                }
+
+                File.Copy(file, target, overwrite: false);
+            }
+        }
     }
 
     private static void ValidateManagedInstancePath(

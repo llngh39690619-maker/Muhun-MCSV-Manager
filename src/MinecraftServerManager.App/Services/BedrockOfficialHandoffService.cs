@@ -1,12 +1,17 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Services;
 
 internal enum BedrockOfficialHandoffTarget
 {
     Minecraft,
+    // Retained for the existing UI fallback; this value is specifically the official
+    // Minecraft Launcher Microsoft Store product, not an arbitrary Store URI.
     MicrosoftStore,
+    MinecraftForWindowsStore,
+    MinecraftPreviewStore,
 }
 
 /// <summary>
@@ -19,10 +24,22 @@ internal sealed class BedrockOfficialHandoffService
     // no caller-controlled value is ever forwarded to the Windows shell.
     internal static readonly Uri MinecraftUri = new("minecraft://", UriKind.Absolute);
 
-    // Official Microsoft Store product ID for Minecraft Launcher.
-    internal static readonly Uri MicrosoftStoreUri = new(
+    // Official Microsoft Store product IDs. They are a closed compile-time allowlist and are
+    // never constructed from shortcut names, version strings, URLs, or other caller input.
+    internal static readonly Uri MinecraftForWindowsStoreUri = new(
+        "ms-windows-store://pdp/?ProductId=9NBLGGH2JHXJ",
+        UriKind.Absolute);
+
+    internal static readonly Uri MinecraftPreviewStoreUri = new(
+        "ms-windows-store://pdp/?ProductId=9P5X4QVLC2XR",
+        UriKind.Absolute);
+
+    internal static readonly Uri MinecraftLauncherStoreUri = new(
         "ms-windows-store://pdp/?ProductId=9PGW18NPBZV5",
         UriKind.Absolute);
+
+    // Compatibility name used by the existing protocol-to-Launcher fallback.
+    internal static readonly Uri MicrosoftStoreUri = MinecraftLauncherStoreUri;
 
     private readonly Func<ProcessStartInfo, bool> _tryStart;
 
@@ -54,12 +71,39 @@ internal sealed class BedrockOfficialHandoffService
         return false;
     }
 
+    /// <summary>
+    /// Opens the one fixed official Store product selected by a closed Stable/Preview enum.
+    /// Display names and all other shortcut data are intentionally absent from this interface.
+    /// </summary>
+    public bool TryOpenStore(MinecraftBedrockChannel channel) =>
+        _tryStart(CreateStoreStartInfo(channel));
+
+    /// <summary>Opens the fixed official Minecraft Launcher Store product.</summary>
+    public bool TryOpenLauncherStore() =>
+        _tryStart(CreateStartInfo(BedrockOfficialHandoffTarget.MicrosoftStore));
+
+    internal static ProcessStartInfo CreateStoreStartInfo(MinecraftBedrockChannel channel) =>
+        CreateStartInfo(GetStoreTarget(channel));
+
+    internal static BedrockOfficialHandoffTarget GetStoreTarget(MinecraftBedrockChannel channel) =>
+        channel switch
+        {
+            MinecraftBedrockChannel.Stable =>
+                BedrockOfficialHandoffTarget.MinecraftForWindowsStore,
+            MinecraftBedrockChannel.Preview =>
+                BedrockOfficialHandoffTarget.MinecraftPreviewStore,
+            _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, null),
+        };
+
     internal static ProcessStartInfo CreateStartInfo(BedrockOfficialHandoffTarget target)
     {
         var uri = target switch
         {
             BedrockOfficialHandoffTarget.Minecraft => MinecraftUri,
-            BedrockOfficialHandoffTarget.MicrosoftStore => MicrosoftStoreUri,
+            BedrockOfficialHandoffTarget.MicrosoftStore => MinecraftLauncherStoreUri,
+            BedrockOfficialHandoffTarget.MinecraftForWindowsStore =>
+                MinecraftForWindowsStoreUri,
+            BedrockOfficialHandoffTarget.MinecraftPreviewStore => MinecraftPreviewStoreUri,
             _ => throw new ArgumentOutOfRangeException(nameof(target), target, null),
         };
 

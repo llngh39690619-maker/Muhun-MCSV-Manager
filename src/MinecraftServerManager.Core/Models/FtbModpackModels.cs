@@ -48,7 +48,8 @@ public sealed record FtbPackVersion(
     string Name,
     string Type,
     long? Updated,
-    IReadOnlyList<FtbTarget> Targets)
+    IReadOnlyList<FtbTarget> Targets,
+    bool IsPrivate = false)
 {
     public string? MinecraftVersion => FindTarget("game", "minecraft")?.Version;
 
@@ -63,6 +64,71 @@ public sealed record FtbPackVersion(
     private FtbTarget? FindTarget(string type, string name) => Targets.FirstOrDefault(target =>
         target.Type.Equals(type, StringComparison.OrdinalIgnoreCase)
         && target.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+}
+
+public sealed record FtbPackFileHashes(
+    string Sha1,
+    string Sha256,
+    string Sha512);
+
+/// <summary>One file declared by an official public FTB client-pack manifest.</summary>
+public sealed record FtbPackFile(
+    long Id,
+    string Name,
+    /// <summary>Normalized instance-relative destination, including the file name.</summary>
+    string Path,
+    Uri DownloadUri,
+    IReadOnlyList<Uri> Mirrors,
+    long Size,
+    bool ClientOnly,
+    bool ServerOnly,
+    bool Optional,
+    string Type,
+    FtbPackFileHashes Hashes)
+{
+    /// <summary>Prefers FTB-owned blob mirrors before the authoritative external CDN URL.</summary>
+    public IReadOnlyList<Uri> PreferredDownloadUris => Mirrors
+        .Where(static uri => uri.IdnHost.Equals(
+            "files.feed-the-beast.com",
+            StringComparison.OrdinalIgnoreCase))
+        .Concat([DownloadUri])
+        .Concat(Mirrors)
+        .DistinctBy(static uri => uri.AbsoluteUri, StringComparer.Ordinal)
+        .ToArray();
+}
+
+public sealed record FtbPackMemorySpecs(
+    int MinimumMb,
+    int RecommendedMb);
+
+/// <summary>
+/// Bounded projection of <c>/v1/modpacks/public/modpack/{pack}/{version}</c>. Only public release
+/// manifests are eligible for automatic client installation.
+/// </summary>
+public sealed record FtbPackVersionManifest(
+    int PackId,
+    int VersionId,
+    string Name,
+    string Type,
+    bool IsPrivate,
+    long? Updated,
+    IReadOnlyList<FtbTarget> Targets,
+    FtbPackMemorySpecs Memory,
+    IReadOnlyList<FtbPackFile> Files)
+{
+    public string? MinecraftVersion => Targets.FirstOrDefault(target =>
+        target.Type.Equals("game", StringComparison.OrdinalIgnoreCase) &&
+        target.Name.Equals("minecraft", StringComparison.OrdinalIgnoreCase))?.Version;
+
+    public string? ModLoaderName => Targets.FirstOrDefault(target =>
+        target.Type.Equals("modloader", StringComparison.OrdinalIgnoreCase))?.Name;
+
+    public string? ModLoaderVersion => Targets.FirstOrDefault(target =>
+        target.Type.Equals("modloader", StringComparison.OrdinalIgnoreCase))?.Version;
+
+    public string? JavaVersion => Targets.FirstOrDefault(target =>
+        target.Type.Equals("runtime", StringComparison.OrdinalIgnoreCase) &&
+        target.Name.Equals("java", StringComparison.OrdinalIgnoreCase))?.Version;
 }
 
 public sealed record FtbArtwork(
@@ -96,7 +162,8 @@ public sealed record FtbPack(
     public const int MaximumArtworkCandidatesPerRole = 32;
 
     public FtbPackVersion? LatestRelease => Versions
-        .Where(version => version.Type.Equals("release", StringComparison.OrdinalIgnoreCase))
+        .Where(version => !version.IsPrivate &&
+                          version.Type.Equals("release", StringComparison.OrdinalIgnoreCase))
         .MaxBy(version => version.Id);
 
     public IReadOnlyList<Uri> IconUriCandidates => BuildArtworkCandidates(

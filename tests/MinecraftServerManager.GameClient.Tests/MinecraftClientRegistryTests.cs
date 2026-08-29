@@ -156,6 +156,20 @@ public sealed class MinecraftClientRegistryTests : IDisposable
     }
 
     [Fact]
+    public async Task Registry_RejectsBedrockBecauseItUsesAnIndependentShortcutRegistry()
+    {
+        var instance = CreateInstance(
+            "bedrock",
+            Path.Combine(_root, "instances", "bedrock"));
+        instance.Edition = MinecraftClientEdition.Bedrock;
+        using var registry = new MinecraftClientRegistry(
+            Path.Combine(_root, "bedrock-must-not-enter-java-registry.json"));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
+            new MinecraftClientRegistryDocument { Instances = [instance] }));
+    }
+
+    [Fact]
     public async Task Registry_RejectsUntrustedCatalogMediaUri()
     {
         var instance = CreateInstance("unsafe", Path.Combine(_root, "instances", "unsafe"));
@@ -167,6 +181,75 @@ public sealed class MinecraftClientRegistryTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
             new MinecraftClientRegistryDocument { Instances = [instance] }));
+    }
+
+    [Fact]
+    public async Task Registry_RejectsInvalidFtbIdentityAndNonFtbArtworkHost()
+    {
+        var invalidIdentity = CreateInstance(
+            "invalid-ftb-id",
+            Path.Combine(_root, "instances", "invalid-ftb-id"));
+        invalidIdentity.CatalogProvider = "ftb";
+        invalidIdentity.CatalogProjectId = "0130";
+        invalidIdentity.CatalogVersionId = "100140";
+        var invalidArtwork = CreateInstance(
+            "invalid-ftb-art",
+            Path.Combine(_root, "instances", "invalid-ftb-art"));
+        invalidArtwork.CatalogProvider = "ftb";
+        invalidArtwork.CatalogProjectId = "130";
+        invalidArtwork.CatalogVersionId = "100140";
+        invalidArtwork.CatalogIconUri = new Uri("https://example.invalid/icon.png");
+        using var registry = new MinecraftClientRegistry(Path.Combine(_root, "unsafe-ftb-registry.json"));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
+            new MinecraftClientRegistryDocument { Instances = [invalidIdentity] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
+            new MinecraftClientRegistryDocument { Instances = [invalidArtwork] }));
+    }
+
+    [Fact]
+    public async Task Registry_DisposeWaitsForDurableInFlightCommitBeforeClosingStore()
+    {
+        var path = Path.Combine(_root, "dispose-during-commit.json");
+        using var durableSaveReached = new ManualResetEventSlim();
+        using var allowCommitReturn = new ManualResetEventSlim();
+        var instance = CreateInstance(
+            "durable",
+            Path.Combine(_root, "instances", "durable"));
+        var registry = new MinecraftClientRegistry(
+            path,
+            () =>
+            {
+                durableSaveReached.Set();
+                Assert.True(allowCommitReturn.Wait(TimeSpan.FromSeconds(10)));
+            });
+        try
+        {
+            var update = Task.Run(() => registry.UpdateAsync(
+                document =>
+                {
+                    document.Instances.Add(instance);
+                    return true;
+                }));
+            Assert.True(durableSaveReached.Wait(TimeSpan.FromSeconds(10)));
+
+            var dispose = Task.Run(registry.Dispose);
+            await Task.Delay(100);
+            Assert.False(dispose.IsCompleted);
+
+            allowCommitReturn.Set();
+            Assert.True(await update.WaitAsync(TimeSpan.FromSeconds(10)));
+            await dispose.WaitAsync(TimeSpan.FromSeconds(10));
+
+            using var reopened = new MinecraftClientRegistry(path);
+            Assert.Equal(instance.Id, Assert.Single((await reopened.LoadAsync()).Instances).Id);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => registry.LoadAsync());
+        }
+        finally
+        {
+            allowCommitReturn.Set();
+            registry.Dispose();
+        }
     }
 
     private static MinecraftClientInstance CreateInstance(string name, string directory) => new()

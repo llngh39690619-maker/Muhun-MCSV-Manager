@@ -6,10 +6,9 @@ using MinecraftServerManager.GameClient.Contracts;
 namespace MinecraftServerManager.GameClient;
 
 /// <summary>
-/// A bounded client-facing projection of the official FTB catalogue. FTB client packs are never
-/// downloaded by X MCSV: the official FTB App remains the supported installer.
+/// A bounded client-facing projection of the official public FTB catalogue.
 /// </summary>
-public sealed class FtbClientCatalog
+public sealed class FtbClientCatalog : IFtbClientPackCatalog
 {
     private readonly FtbCatalogProvider _provider;
 
@@ -38,6 +37,17 @@ public sealed class FtbClientCatalog
         return MapAndFilter(result.Packs, request);
     }
 
+    public Task<FtbPack> GetPackAsync(
+        int packId,
+        CancellationToken cancellationToken = default)
+        => _provider.GetPackAsync(packId, cancellationToken);
+
+    public Task<FtbPackVersionManifest> GetVersionManifestAsync(
+        int packId,
+        int versionId,
+        CancellationToken cancellationToken = default)
+        => _provider.GetVersionManifestAsync(packId, versionId, cancellationToken);
+
     internal static FtbClientCatalogPage MapAndFilter(
         IReadOnlyList<FtbPack> packs,
         FtbClientCatalogRequest request)
@@ -58,6 +68,7 @@ public sealed class FtbClientCatalog
                 .Where(static version => version.Type.Equals(
                     "release",
                     StringComparison.OrdinalIgnoreCase))
+                .Where(static version => !version.IsPrivate)
                 .Where(version => MatchesVersion(version, request))
                 .OrderByDescending(static version =>
                     FtbTimestampNormalizer.NormalizeUtc(version.Updated))
@@ -85,7 +96,8 @@ public sealed class FtbClientCatalog
                         version.MinecraftVersion?.Trim() ?? string.Empty,
                         version.ModLoaderName,
                         version.ModLoaderVersion,
-                        FtbTimestampNormalizer.NormalizeUtc(version.Updated) ?? DateTimeOffset.MinValue))
+                        FtbTimestampNormalizer.NormalizeUtc(version.Updated) ?? DateTimeOffset.MinValue,
+                        version.JavaVersion))
                     .ToArray()));
             if (projects.Count == request.Limit)
             {
@@ -188,7 +200,8 @@ public sealed record FtbClientCatalogVersion(
     string GameVersion,
     string? LoaderName,
     string? LoaderVersion,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? JavaVersion = null);
 
 public sealed record FtbClientCatalogPage(
     IReadOnlyList<FtbClientCatalogProject> Projects,

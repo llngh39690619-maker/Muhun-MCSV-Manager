@@ -60,6 +60,7 @@ public partial class MainWindow : Window
         _windowSizePersistenceTimer.Tick += OnWindowSizePersistenceTimerTick;
         DataContext = viewModel;
         viewModel.ClientWorkspace.HideLauncherRequested += OnClientHideLauncherRequested;
+        viewModel.ClientWorkspace.RestoreLauncherRequested += OnClientRestoreLauncherRequested;
         _trayIcon.OpenRequested += OnTrayOpenRequested;
         _trayIcon.ExitRequested += OnTrayExitRequested;
     }
@@ -400,7 +401,54 @@ public partial class MainWindow : Window
             return;
         }
 
-        WindowState = WindowState.Minimized;
+        ApplyClientLauncherWindowTransition(ClientLauncherWindowTransition.Minimize);
+    }
+
+    private void OnClientRestoreLauncherRequested(object? sender, EventArgs e)
+    {
+        if (_isClosed || _shutdownInProgress)
+        {
+            return;
+        }
+
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(
+                () => OnClientRestoreLauncherRequested(sender, e),
+                DispatcherPriority.Normal);
+            return;
+        }
+
+        ApplyClientLauncherWindowTransition(ClientLauncherWindowTransition.Restore);
+    }
+
+    internal void ApplyClientLauncherWindowTransition(
+        ClientLauncherWindowTransition transition)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            throw new InvalidOperationException(
+                "Client launcher window transitions must run on the window dispatcher.");
+        }
+
+        if (_isClosed || _shutdownInProgress)
+        {
+            return;
+        }
+
+        switch (transition)
+        {
+            case ClientLauncherWindowTransition.None:
+                return;
+            case ClientLauncherWindowTransition.Minimize:
+                WindowState = WindowState.Minimized;
+                return;
+            case ClientLauncherWindowTransition.Restore:
+                RestoreFromTray();
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(transition), transition, null);
+        }
     }
 
     private void OnTrayOpenRequested(object? sender, EventArgs e)
@@ -570,6 +618,7 @@ public partial class MainWindow : Window
         if (DataContext is MainWindowViewModel viewModel)
         {
             viewModel.ClientWorkspace.HideLauncherRequested -= OnClientHideLauncherRequested;
+            viewModel.ClientWorkspace.RestoreLauncherRequested -= OnClientRestoreLauncherRequested;
         }
         _windowSizePersistenceTimer.Stop();
         _windowSizePersistenceTimer.Tick -= OnWindowSizePersistenceTimerTick;

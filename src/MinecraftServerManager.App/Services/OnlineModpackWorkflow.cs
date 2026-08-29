@@ -20,7 +20,7 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
     private const string UserAgent = "MuhunMCSVManager/1.0 (Windows; modpack-installer)";
     private const int MinimumStrictOnlineJarConfidence = 80;
     private readonly ApplicationPaths _paths;
-    private readonly HttpClient _ftbCatalogClient = new();
+    private readonly HttpClient _ftbCatalogClient;
     private readonly HttpClient _ftbDownloadClient = new();
     private readonly HttpClient _modrinthApiClient;
     private readonly HttpClient _modrinthDownloadClient;
@@ -67,6 +67,13 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _artworkCache = artworkCache ?? new OnlineModpackArtworkCache(_paths);
         _ownsArtworkCache = artworkCache is null;
+        _ftbCatalogClient = new HttpClient(new SocketsHttpHandler
+        {
+            // FTB catalogue requests are restricted to fixed official API origins. Redirects must
+            // remain visible so the provider can reject them before contacting another origin.
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.All
+        });
         _modrinthApiClient = new HttpClient(new SocketsHttpHandler
         {
             // Catalogue calls never need redirects. Keeping them visible lets the provider reject

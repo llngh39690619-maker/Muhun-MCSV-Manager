@@ -24,6 +24,8 @@ public sealed class ClientWorkspaceLocalizationTests
             .ToArray();
         Assert.NotEmpty(keys);
         Assert.All(keys, key => Assert.Contains(key, ProductLocalizationCatalog.Keys));
+        Assert.Contains("L10n.client.footer.product", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("X MCSV · Minecraft Client", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -63,11 +65,15 @@ public sealed class ClientWorkspaceLocalizationTests
             null,
             DateTimeOffset.UtcNow));
         var changedProperties = new List<string?>();
+        var instanceChangedProperties = new List<string?>();
+        instance.PropertyChanged += (_, eventArgs) => instanceChangedProperties.Add(eventArgs.PropertyName);
         catalogVersion.PropertyChanged += (_, eventArgs) => changedProperties.Add(eventArgs.PropertyName);
 
         try
         {
             Assert.Equal("遊戲中", instance.StatusText);
+            Assert.Equal("原版", instance.LoaderText);
+            Assert.Equal("原版 · 1.21.1", instance.VersionSummary);
             Assert.Contains("小時", instance.PlayTimeText, StringComparison.Ordinal);
             Assert.Equal("自動（依內容調整）", editor.MemoryModes[1].Name);
             Assert.Contains("寬度", editor.ResolutionError, StringComparison.Ordinal);
@@ -76,11 +82,58 @@ public sealed class ClientWorkspaceLocalizationTests
             LocalizationService.Current.SetCulture("en-US");
 
             Assert.Equal("Playing", instance.StatusText);
+            Assert.Equal("Vanilla", instance.LoaderText);
+            Assert.Equal("Vanilla · 1.21.1", instance.VersionSummary);
             Assert.Contains("hours", instance.PlayTimeText, StringComparison.Ordinal);
             Assert.Equal("Automatic (adjust to content)", editor.MemoryModes[1].Name);
             Assert.Contains("Width", editor.ResolutionError, StringComparison.Ordinal);
             Assert.EndsWith("Unknown loader", catalogVersion.Name, StringComparison.Ordinal);
             Assert.Contains(nameof(ClientCatalogVersionItemViewModel.Name), changedProperties);
+            Assert.Contains(nameof(ClientInstanceItemViewModel.LoaderText), instanceChangedProperties);
+            Assert.Contains(nameof(ClientInstanceItemViewModel.VersionSummary), instanceChangedProperties);
+        }
+        finally
+        {
+            LocalizationService.Current.SetCulture("zh-TW");
+        }
+    }
+
+    [Fact]
+    public async Task ClientContentAndSkinLabels_FollowTheSelectedProductLanguage()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        LocalizationService.Current.Initialize(
+            Path.Combine(directory.Path, "language.json"),
+            CultureInfo.GetCultureInfo("zh-TW"));
+        await using var viewModel = new ClientWorkspaceViewModel(
+            new ApplicationPaths(directory.Path),
+            static () => new NewMinecraftClientDefaultsSettings());
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, eventArgs) => changedProperties.Add(eventArgs.PropertyName);
+
+        try
+        {
+            Assert.Equal("下載模組", viewModel.ContentDownloadHeading);
+            Assert.Equal("自動匹配", viewModel.ContentDownloadLoaders[0].DisplayName);
+            Assert.Equal("設定", LocalizationService.Current.Get("client.action.settings"));
+            Assert.Equal("經典", LocalizationService.Current.Get("client.account.skin.classic"));
+            Assert.Equal("苗條", LocalizationService.Current.Get("client.account.skin.slim"));
+            Assert.Equal("材質包", LocalizationService.Current.Get("client.content.resourcePacks"));
+            Assert.Equal("材質包", LocalizationService.Current.Get("client.vm.content.kind.resourcePack"));
+            Assert.Equal("X MCSV · Minecraft 客戶端", LocalizationService.Current.Get("client.footer.product"));
+
+            LocalizationService.Current.SetCulture("en-US");
+
+            Assert.Equal("Download mods", viewModel.ContentDownloadHeading);
+            Assert.Equal("Auto match", viewModel.ContentDownloadLoaders[0].DisplayName);
+            Assert.Equal("Settings", LocalizationService.Current.Get("client.action.settings"));
+            Assert.Equal("Classic", LocalizationService.Current.Get("client.account.skin.classic"));
+            Assert.Equal("Slim", LocalizationService.Current.Get("client.account.skin.slim"));
+            Assert.Equal("Texture packs", LocalizationService.Current.Get("client.content.resourcePacks"));
+            Assert.Equal("X MCSV · Minecraft Client", LocalizationService.Current.Get("client.footer.product"));
+            Assert.Contains(nameof(ClientWorkspaceViewModel.ContentDownloadLoaders), changedProperties);
+            Assert.Contains(nameof(ClientWorkspaceViewModel.ContentDownloadHeading), changedProperties);
+            Assert.Contains(nameof(ClientWorkspaceViewModel.ContentDownloadDescription), changedProperties);
         }
         finally
         {
@@ -193,6 +246,7 @@ public sealed class ClientWorkspaceLocalizationTests
         Assert.DoesNotContain("ContentStatusText = value.Message", source, StringComparison.Ordinal);
         Assert.Contains("LocalizeClientInstallProgress(value)", source, StringComparison.Ordinal);
         Assert.Contains("LocalizeModrinthProgress(value)", source, StringComparison.Ordinal);
+        Assert.Contains("LocalizeFtbInstallProgress(value)", source, StringComparison.Ordinal);
         Assert.Contains("LocalizeContentProgress(value)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("XMCSV/1.0.8", source, StringComparison.Ordinal);
         Assert.Contains("AssemblyInformationalVersionAttribute", source, StringComparison.Ordinal);

@@ -17,6 +17,7 @@ public sealed class ApplicationPaths
         ClientStaging = Path.Combine(ClientRoot, "staging");
         ClientSecrets = Path.Combine(ClientRoot, "secrets");
         ClientRegistryFile = Path.Combine(ClientRoot, "client-instances.v1.json");
+        BedrockShortcutRegistryFile = Path.Combine(ClientRoot, "bedrock-shortcuts.v1.json");
         Runtimes = Path.Combine(Root, "runtimes");
         ClientRuntimes = Path.Combine(ClientRoot, "runtimes");
         Backups = Path.Combine(Root, "backups");
@@ -75,6 +76,7 @@ public sealed class ApplicationPaths
     public string ClientStaging { get; }
     public string ClientSecrets { get; }
     public string ClientRegistryFile { get; }
+    public string BedrockShortcutRegistryFile { get; }
     public string Runtimes { get; }
     public string ClientRuntimes { get; }
     public string Backups { get; }

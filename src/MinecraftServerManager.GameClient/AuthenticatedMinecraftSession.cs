@@ -32,6 +32,8 @@ public sealed class AuthenticatedMinecraftSession
 
     public string? Xuid { get; }
 
+    internal string AccessToken => _accessToken;
+
     internal MSession ToCmlSession() => new(Username, _accessToken, MinecraftUuid)
     {
         Xuid = Xuid ?? string.Empty,

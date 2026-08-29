@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using MinecraftServerManager.Core.Models;
 
@@ -10,13 +11,29 @@ namespace MinecraftServerManager.Core.Providers;
 /// </summary>
 public sealed class FtbCatalogProvider
 {
-    private static readonly Uri ApiRoot = new("https://api.feed-the-beast.com/v1/modpacks/modpack/");
+    private static readonly Uri ApiRoot =
+        new("https://api.feed-the-beast.com/v1/modpacks/public/modpack/");
+    private const string PublicApiPathPrefix = "/v1/modpacks/public/modpack/";
     private const int MaximumHydrationConcurrency = 4;
     private const int MaximumArtworkEntries = 100;
     private const int MaximumArtworkMirrorsPerEntry = 8;
+    // Current official featured packs can exceed 11,000 manifest entries. Keep enough headroom
+    // for those public releases while retaining a finite, independently enforced safety limit.
+    private const int MaximumManifestFiles = 20_000;
+    private const int MaximumManifestMirrorsPerFile = 16;
     private const long MaximumSearchBytes = 1L * 1024 * 1024;
     private const long MaximumFeaturedBytes = 1L * 1024 * 1024;
     private const long MaximumPackBytes = 8L * 1024 * 1024;
+    private const long MaximumManifestBytes = 32L * 1024 * 1024;
+    private const long MaximumManifestFileBytes = 2L * 1024 * 1024 * 1024;
+    private const long MaximumManifestTotalBytes = 16L * 1024 * 1024 * 1024;
+    private static readonly IReadOnlySet<string> OfficialFileHosts =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "files.feed-the-beast.com",
+            "cdn.feed-the-beast.com",
+            "edge.forgecdn.net",
+        };
 
     private readonly HttpClient _httpClient;
     private readonly string _userAgent;
@@ -122,12 +139,11 @@ public sealed class FtbCatalogProvider
             throw new InvalidDataException($"FTB Pack ID 不符，要求 {packId}，回應 {responseId}。");
         }
 
-        var name = ReadRequiredString(root, "name", "FTB Pack");
-        var slug = ReadOptionalString(root, "slug") ?? string.Empty;
-        var isPrivate = root.TryGetProperty("private", out var privateElement)
-            && privateElement.ValueKind is JsonValueKind.True;
-        var synopsis = ReadOptionalString(root, "synopsis")
-                       ?? ReadOptionalString(root, "description");
+        var name = RequireBoundedString(root, "name", "FTB Pack", 512);
+        var slug = ReadOptionalBoundedString(root, "slug", "FTB Pack", 256) ?? string.Empty;
+        var isPrivate = ReadOptionalBoolean(root, "private");
+        var synopsis = ReadOptionalBoundedString(root, "synopsis", "FTB Pack", 16_384)
+                       ?? ReadOptionalBoundedString(root, "description", "FTB Pack", 16_384);
         var installCount = ReadOptionalLong(root, "installs");
         var artwork = ReadArtwork(root);
         var versions = new List<FtbPackVersion>();
@@ -135,6 +151,11 @@ public sealed class FtbCatalogProvider
         if (root.TryGetProperty("versions", out var versionsElement)
             && versionsElement.ValueKind == JsonValueKind.Array)
         {
+            if (versionsElement.GetArrayLength() > 10_000)
+            {
+                throw new InvalidDataException("FTB Pack contains too many versions.");
+            }
+
             foreach (var versionElement in versionsElement.EnumerateArray())
             {
                 var versionId = ReadRequiredInt(versionElement, "id", "FTB Pack version");
@@ -147,11 +168,25 @@ public sealed class FtbCatalogProvider
                 if (versionElement.TryGetProperty("targets", out var targetsElement)
                     && targetsElement.ValueKind == JsonValueKind.Array)
                 {
+                    if (targetsElement.GetArrayLength() > 32)
+                    {
+                        throw new InvalidDataException("FTB Pack version contains too many targets.");
+                    }
+
                     foreach (var targetElement in targetsElement.EnumerateArray())
                     {
                         var type = ReadOptionalString(targetElement, "type");
                         var targetName = ReadOptionalString(targetElement, "name");
                         var targetVersion = ReadOptionalString(targetElement, "version");
+                        if (type?.Length > 64 || targetName?.Length > 128 ||
+                            targetVersion?.Length > 128 ||
+                            type?.Any(char.IsControl) == true ||
+                            targetName?.Any(char.IsControl) == true ||
+                            targetVersion?.Any(char.IsControl) == true)
+                        {
+                            throw new InvalidDataException(
+                                "FTB Pack version target is too long or unsafe.");
+                        }
                         if (!string.IsNullOrWhiteSpace(type)
                             && !string.IsNullOrWhiteSpace(targetName)
                             && !string.IsNullOrWhiteSpace(targetVersion))
@@ -163,11 +198,12 @@ public sealed class FtbCatalogProvider
 
                 versions.Add(new FtbPackVersion(
                     versionId,
-                    ReadRequiredString(versionElement, "name", "FTB Pack version"),
-                    ReadRequiredString(versionElement, "type", "FTB Pack version"),
+                    RequireBoundedString(versionElement, "name", "FTB Pack version", 512),
+                    RequireBoundedString(versionElement, "type", "FTB Pack version", 64),
                     FtbTimestampNormalizer.NormalizeToUnixTimeMilliseconds(
                         ReadOptionalLong(versionElement, "updated")),
-                    targets));
+                    targets,
+                    ReadOptionalBoolean(versionElement, "private")));
             }
         }
 
@@ -181,6 +217,154 @@ public sealed class FtbCatalogProvider
             synopsis,
             installCount,
             artwork);
+    }
+
+    public async Task<FtbPackVersionManifest> GetVersionManifestAsync(
+        int packId,
+        int versionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (packId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(packId), "FTB Pack ID 必須是正整數。");
+        }
+
+        if (versionId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(versionId), "FTB Pack version ID 必須是正整數。");
+        }
+
+        using var document = await GetJsonAsync(
+                $"{packId.ToString(System.Globalization.CultureInfo.InvariantCulture)}/" +
+                versionId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                MaximumManifestBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var root = document.RootElement;
+        EnsureSuccessStatus(root, "FTB Pack manifest");
+        RejectDuplicateJsonProperties(root);
+
+        var responsePackId = ReadRequiredInt(root, "parent", "FTB Pack manifest");
+        var responseVersionId = ReadRequiredInt(root, "id", "FTB Pack manifest");
+        if (responsePackId != packId || responseVersionId != versionId)
+        {
+            throw new InvalidDataException(
+                $"FTB manifest identity mismatch: expected {packId}/{versionId}, got {responsePackId}/{responseVersionId}.");
+        }
+
+        var targets = ReadTargets(root, "FTB Pack manifest");
+        var memory = ReadMemorySpecs(root);
+        if (!root.TryGetProperty("files", out var filesElement) ||
+            filesElement.ValueKind != JsonValueKind.Array ||
+            filesElement.GetArrayLength() > MaximumManifestFiles)
+        {
+            throw new InvalidDataException(
+                $"FTB Pack manifest files are missing or exceed {MaximumManifestFiles} entries.");
+        }
+
+        var files = new List<FtbPackFile>(filesElement.GetArrayLength());
+        var destinations = new Dictionary<string, FtbPackFile>(StringComparer.OrdinalIgnoreCase);
+        long totalBytes = 0;
+        foreach (var fileElement in filesElement.EnumerateArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (fileElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("FTB Pack manifest contains a non-object file entry.");
+            }
+
+            var name = ReadRequiredString(fileElement, "name", "FTB Pack file");
+            var path = ReadRequiredString(fileElement, "path", "FTB Pack file");
+            var collisionKey = NormalizeManifestDestination(path, name);
+
+            var size = ReadRequiredLong(fileElement, "size", "FTB Pack file");
+            if (size is < 0 or > MaximumManifestFileBytes)
+            {
+                throw new InvalidDataException("FTB Pack file size is outside the safe limit.");
+            }
+
+            var primary = ReadOfficialFileUri(RequireBoundedString(
+                fileElement,
+                "url",
+                "FTB Pack file",
+                4_096));
+            var mirrors = ReadManifestMirrors(fileElement);
+            if (!fileElement.TryGetProperty("hashes", out var hashesElement) ||
+                hashesElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("FTB Pack file hashes are missing.");
+            }
+
+            var sha1 = ReadRequiredHash(hashesElement, "sha1", 40);
+            var sha256 = ReadRequiredHash(hashesElement, "sha256", 64);
+            var sha512 = ReadRequiredHash(hashesElement, "sha512", 128);
+            var legacySha1 = ReadOptionalString(fileElement, "sha1");
+            if (legacySha1 is not null && !legacySha1.Equals(sha1, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("FTB Pack file SHA-1 fields disagree.");
+            }
+
+            var file = new FtbPackFile(
+                ReadOptionalLong(fileElement, "id") ?? 0,
+                name,
+                collisionKey,
+                primary,
+                mirrors,
+                size,
+                ReadOptionalBoolean(fileElement, "clientonly"),
+                ReadOptionalBoolean(fileElement, "serveronly"),
+                ReadOptionalBoolean(fileElement, "optional"),
+                RequireBoundedString(fileElement, "type", "FTB Pack file", 64),
+                new FtbPackFileHashes(sha1, sha256, sha512));
+            if (destinations.TryGetValue(collisionKey, out var existing))
+            {
+                if (!IsSafeCaseOnlyAlias(existing, file))
+                {
+                    throw new InvalidDataException(
+                        $"FTB Pack manifest contains a conflicting destination: {collisionKey}");
+                }
+
+                // Windows resolves these case-only aliases to the same file. The full verified
+                // content and install semantics match, so retain one deterministic entry.
+                continue;
+            }
+
+            totalBytes = checked(totalBytes + size);
+            if (totalBytes > MaximumManifestTotalBytes)
+            {
+                throw new InvalidDataException("FTB Pack manifest total size exceeds the safe limit.");
+            }
+
+            destinations.Add(collisionKey, file);
+            files.Add(file);
+        }
+
+        return new FtbPackVersionManifest(
+            responsePackId,
+            responseVersionId,
+            RequireBoundedString(root, "name", "FTB Pack manifest", 512),
+            RequireBoundedString(root, "type", "FTB Pack manifest", 64),
+            ReadOptionalBoolean(root, "private"),
+            FtbTimestampNormalizer.NormalizeToUnixTimeMilliseconds(ReadOptionalLong(root, "updated")),
+            targets,
+            memory,
+            files);
+    }
+
+    internal static bool IsSafeCaseOnlyAlias(FtbPackFile existing, FtbPackFile candidate)
+    {
+        ArgumentNullException.ThrowIfNull(existing);
+        ArgumentNullException.ThrowIfNull(candidate);
+        return !existing.Path.Equals(candidate.Path, StringComparison.Ordinal) &&
+               existing.Path.Equals(candidate.Path, StringComparison.OrdinalIgnoreCase) &&
+               existing.Size == candidate.Size &&
+               existing.ClientOnly == candidate.ClientOnly &&
+               existing.ServerOnly == candidate.ServerOnly &&
+               existing.Optional == candidate.Optional &&
+               existing.Type.Equals(candidate.Type, StringComparison.OrdinalIgnoreCase) &&
+               existing.Hashes.Sha1.Equals(candidate.Hashes.Sha1, StringComparison.OrdinalIgnoreCase) &&
+               existing.Hashes.Sha256.Equals(candidate.Hashes.Sha256, StringComparison.OrdinalIgnoreCase) &&
+               existing.Hashes.Sha512.Equals(candidate.Hashes.Sha512, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<FtbArtwork> ReadArtwork(JsonElement root)
@@ -240,6 +424,234 @@ public sealed class FtbCatalogProvider
         }
 
         return result;
+    }
+
+    private static IReadOnlyList<FtbTarget> ReadTargets(JsonElement root, string context)
+    {
+        if (!root.TryGetProperty("targets", out var targetsElement) ||
+            targetsElement.ValueKind != JsonValueKind.Array ||
+            targetsElement.GetArrayLength() is 0 or > 32)
+        {
+            throw new InvalidDataException($"{context} targets are missing or invalid.");
+        }
+
+        var targets = new List<FtbTarget>(targetsElement.GetArrayLength());
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var targetElement in targetsElement.EnumerateArray())
+        {
+            var type = RequireBoundedString(targetElement, "type", context, 64);
+            var name = RequireBoundedString(targetElement, "name", context, 128);
+            var version = RequireBoundedString(targetElement, "version", context, 128);
+            if (!identities.Add($"{type}\0{name}"))
+            {
+                throw new InvalidDataException($"{context} contains duplicate target '{type}/{name}'.");
+            }
+
+            targets.Add(new FtbTarget(type, name, version));
+        }
+
+        return targets;
+    }
+
+    private static FtbPackMemorySpecs ReadMemorySpecs(JsonElement root)
+    {
+        if (!root.TryGetProperty("specs", out var specs) || specs.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException("FTB Pack manifest memory specs are missing.");
+        }
+
+        var minimum = ReadRequiredInt(specs, "minimum", "FTB Pack specs");
+        var recommended = ReadRequiredInt(specs, "recommended", "FTB Pack specs");
+        if (minimum is < 512 or > 262_144 || recommended < minimum || recommended > 262_144)
+        {
+            throw new InvalidDataException("FTB Pack memory specs are outside the safe range.");
+        }
+
+        return new FtbPackMemorySpecs(minimum, recommended);
+    }
+
+    private static IReadOnlyList<Uri> ReadManifestMirrors(JsonElement fileElement)
+    {
+        if (!fileElement.TryGetProperty("mirrors", out var mirrorsElement))
+        {
+            return [];
+        }
+
+        if (mirrorsElement.ValueKind != JsonValueKind.Array ||
+            mirrorsElement.GetArrayLength() > MaximumManifestMirrorsPerFile)
+        {
+            throw new InvalidDataException("FTB Pack file mirrors are invalid or excessive.");
+        }
+
+        var result = new List<Uri>(mirrorsElement.GetArrayLength());
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mirror in mirrorsElement.EnumerateArray())
+        {
+            var value = mirror.ValueKind switch
+            {
+                JsonValueKind.String => mirror.GetString(),
+                JsonValueKind.Object => ReadOptionalString(mirror, "url"),
+                _ => null,
+            };
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+                !IsOfficialFileUri(uri) ||
+                !seen.Add(uri.AbsoluteUri))
+            {
+                continue;
+            }
+
+            result.Add(uri);
+        }
+
+        return result;
+    }
+
+    private static Uri ReadOfficialFileUri(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !IsOfficialFileUri(uri))
+        {
+            throw new InvalidDataException("FTB Pack file URL is not on an allowed official manifest CDN.");
+        }
+
+        return uri;
+    }
+
+    internal static bool IsOfficialFileUri(Uri uri) =>
+        uri.IsAbsoluteUri &&
+        uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+        uri.IsDefaultPort &&
+        string.IsNullOrEmpty(uri.UserInfo) &&
+        string.IsNullOrEmpty(uri.Fragment) &&
+        OfficialFileHosts.Contains(uri.IdnHost.TrimEnd('.'));
+
+    internal static string NormalizeManifestDestination(string path, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (path.Length > 1_024 || name.Length > 255 ||
+            path.Contains('\\') || name.Contains('/') || name.Contains('\\') ||
+            name is "." or ".." || HasUnsafeWindowsSegment(name))
+        {
+            throw new InvalidDataException("FTB Pack file path or name is unsafe.");
+        }
+
+        var normalizedPath = path.Normalize(NormalizationForm.FormC);
+        var normalizedName = name.Normalize(NormalizationForm.FormC);
+        while (normalizedPath.StartsWith("./", StringComparison.Ordinal))
+        {
+            normalizedPath = normalizedPath[2..];
+        }
+
+        normalizedPath = normalizedPath.TrimEnd('/');
+        if (normalizedPath.StartsWith("/", StringComparison.Ordinal) ||
+            Path.IsPathFullyQualified(normalizedPath) ||
+            normalizedPath.Contains("//", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("FTB Pack file path is rooted or malformed.");
+        }
+
+        var segments = normalizedPath.Length == 0
+            ? Array.Empty<string>()
+            : normalizedPath.Split('/', StringSplitOptions.None);
+        if (segments.Any(segment => segment is "" or "." or ".." || HasUnsafeWindowsSegment(segment)))
+        {
+            throw new InvalidDataException("FTB Pack file path contains an unsafe segment.");
+        }
+
+        var destination = string.Join('/', segments.Append(normalizedName));
+        if (destination.Length > 2_048)
+        {
+            throw new InvalidDataException("FTB Pack file destination is too long.");
+        }
+
+        return destination;
+    }
+
+    private static bool HasUnsafeWindowsSegment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.EndsWith(' ') || value.EndsWith('.') ||
+            value.Any(character => char.IsControl(character) || character is '<' or '>' or ':' or '"' or '|' or '?' or '*'))
+        {
+            return true;
+        }
+
+        var stem = value.Split('.', 2)[0];
+        return stem.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
+               stem.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+               stem.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
+               stem.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+               stem.Length == 4 &&
+               (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
+                stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
+               stem[3] is >= '1' and <= '9';
+    }
+
+    private static string ReadRequiredHash(JsonElement element, string property, int length)
+    {
+        var value = ReadRequiredString(element, property, "FTB Pack file hash").Trim();
+        if (value.Length != length || !value.All(Uri.IsHexDigit))
+        {
+            throw new InvalidDataException($"FTB Pack file {property} is invalid.");
+        }
+
+        return value.ToLowerInvariant();
+    }
+
+    private static string RequireBoundedString(
+        JsonElement element,
+        string property,
+        string context,
+        int maximumLength)
+    {
+        var value = ReadRequiredString(element, property, context).Trim();
+        if (value.Length > maximumLength || value.Any(char.IsControl))
+        {
+            throw new InvalidDataException($"{context} field {property} is too long or unsafe.");
+        }
+
+        return value;
+    }
+
+    private static string? ReadOptionalBoundedString(
+        JsonElement element,
+        string property,
+        string context,
+        int maximumLength)
+    {
+        var value = ReadOptionalString(element, property)?.Trim();
+        if (value is not null &&
+            (value.Length > maximumLength || value.Any(char.IsControl)))
+        {
+            throw new InvalidDataException(
+                string.Concat(context, " field ", property, " is too long or unsafe."));
+        }
+
+        return value;
+    }
+
+    private static void RejectDuplicateJsonProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                {
+                    throw new InvalidDataException(
+                        $"FTB Pack manifest contains duplicate JSON property '{property.Name}'.");
+                }
+
+                RejectDuplicateJsonProperties(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                RejectDuplicateJsonProperties(item);
+            }
+        }
     }
 
     private static void AddSafeArtworkUri(
@@ -341,7 +753,13 @@ public sealed class FtbCatalogProvider
     {
         if (!uri.IsAbsoluteUri
             || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-            || !uri.Host.Equals("api.feed-the-beast.com", StringComparison.OrdinalIgnoreCase))
+            || !uri.IdnHost.TrimEnd('.').Equals(
+                "api.feed-the-beast.com",
+                StringComparison.OrdinalIgnoreCase)
+            || !uri.IsDefaultPort
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Fragment)
+            || !uri.AbsolutePath.StartsWith(PublicApiPathPrefix, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"FTB API 重新導向到未核准來源：{uri}");
         }
@@ -369,6 +787,16 @@ public sealed class FtbCatalogProvider
         return result;
     }
 
+    private static long ReadRequiredLong(JsonElement element, string property, string context)
+    {
+        if (!element.TryGetProperty(property, out var value) || !value.TryGetInt64(out var result))
+        {
+            throw new InvalidDataException($"{context}回應缺少整數欄位 {property}。");
+        }
+
+        return result;
+    }
+
     private static string ReadRequiredString(JsonElement element, string property, string context)
         => ReadOptionalString(element, property)
             ?? throw new InvalidDataException($"{context}回應缺少文字欄位 {property}。");
@@ -388,6 +816,21 @@ public sealed class FtbCatalogProvider
         => element.TryGetProperty(property, out var value) && value.TryGetInt64(out var result)
             ? result
             : null;
+
+    private static bool ReadOptionalBoolean(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => throw new InvalidDataException($"FTB API boolean field {property} is invalid."),
+        };
+    }
 
     private static async Task<byte[]> ReadBoundedBytesAsync(
         HttpContent content,

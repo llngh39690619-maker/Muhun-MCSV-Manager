@@ -15,6 +15,7 @@ public sealed class FtbClientCatalogTests
                 "Stable Pack",
                 false,
                 Version(101, "release", "1.21.1", "NeoForged"),
+                Version(103, "release", "1.21.1", "NeoForge") with { IsPrivate = true },
                 Version(100, "beta", "1.21.1", "NeoForge"),
                 Version(99, "release", "1.20.1", "Forge")),
             Pack(11, "Private Pack", true, Version(110, "release", "1.21.1", "NeoForge")),

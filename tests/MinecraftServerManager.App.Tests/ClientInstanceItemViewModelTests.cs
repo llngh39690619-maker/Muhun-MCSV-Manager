@@ -54,13 +54,18 @@ public sealed class ClientInstanceItemViewModelTests
     [Fact]
     public void IconImagePath_FallsBackToCatalogPreviewWhenNoIconExists()
     {
-        var preview = Path.Combine(Path.GetTempPath(), "catalog-preview.webp");
+        using var temporary = new AppearanceThemeServiceTests.TestDirectory();
+        var instanceRoot = Path.Combine(temporary.Path, "instance");
+        var assets = Path.Combine(instanceRoot, ".x-mcsv", "assets");
+        Directory.CreateDirectory(assets);
+        var preview = Path.Combine(assets, "catalog-preview.webp");
+        File.WriteAllBytes(preview, "RIFF\0\0\0\0WEBP"u8.ToArray());
         var viewModel = new ClientInstanceItemViewModel(new MinecraftClientInstance
         {
             Id = Guid.NewGuid(),
             Name = "Artwork fallback",
             GameVersion = "1.21.1",
-            DirectoryPath = Path.GetTempPath(),
+            DirectoryPath = instanceRoot,
             CatalogPreviewImagePath = preview,
         });
 

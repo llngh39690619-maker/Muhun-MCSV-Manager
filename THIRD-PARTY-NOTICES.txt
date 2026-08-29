@@ -84,6 +84,22 @@ Project: https://github.com/CmlLib/CmlLib.Core.Auth.Microsoft
 Copyright (c) 2023 AlphaBs
 License: MIT
 
+XboxAuthNet.Game.Msal 0.1.3
+Project: https://github.com/AlphaBs/XboxAuthNet
+Copyright (c) 2023 AlphaBs
+License: MIT
+
+Microsoft.Identity.Client 4.88.0 and
+Microsoft.Identity.Client.Extensions.Msal 4.88.0
+Project: https://github.com/AzureAD/microsoft-authentication-library-for-dotnet
+Copyright: Microsoft Corporation
+License: MIT
+
+Microsoft.IdentityModel.Abstractions 8.14.0
+Project: https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet
+Copyright: Microsoft Corporation
+License: MIT
+
 Microsoft.Extensions.DependencyInjection.Abstractions 8.0.1 and
 Microsoft.Extensions.Logging.Abstractions 8.0.1
 Project: https://github.com/dotnet/runtime

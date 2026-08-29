@@ -82,6 +82,28 @@
           "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.1"
         }
       },
+      "Microsoft.Identity.Client": {
+        "type": "Transitive",
+        "resolved": "4.88.0",
+        "contentHash": "7Eg+0J3DQyy/HNMucGScRBCcxetZUJkti8KNxY6K/HtM5BsyYQpc25agW0xxKmjvpaZY9XcEbyUL7DbSkIIcZQ==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Abstractions": "8.14.0"
+        }
+      },
+      "Microsoft.Identity.Client.Extensions.Msal": {
+        "type": "Transitive",
+        "resolved": "4.88.0",
+        "contentHash": "9thwwy5LGQJuUcTWQ+P22aGD7kFc+03NCEE81fEzQeb1zlXuVPZxfrq/5D5IoXFDRVLdF8UiWLG1rNidmJwkAQ==",
+        "dependencies": {
+          "Microsoft.Identity.Client": "4.88.0",
+          "System.Security.Cryptography.ProtectedData": "4.5.0"
+        }
+      },
+      "Microsoft.IdentityModel.Abstractions": {
+        "type": "Transitive",
+        "resolved": "8.14.0",
+        "contentHash": "iwbCpSjD3ehfTwBhtSNEtKPK0ICun6ov7Ibx6ISNA9bfwIyzI2Siwyi9eJFCJBwxowK9xcA1mj+jBWiigeqgcQ=="
+      },
       "Microsoft.TestPlatform.ObjectModel": {
         "type": "Transitive",
         "resolved": "17.14.1",
@@ -131,6 +153,16 @@
         "dependencies": {
           "Microsoft.Extensions.Logging.Abstractions": "8.0.1",
           "XboxAuthNet": "3.0.4"
+        }
+      },
+      "XboxAuthNet.Game.Msal": {
+        "type": "Transitive",
+        "resolved": "0.1.3",
+        "contentHash": "+thPPJUIAlZbN1qvwmD6nVgYOQrmPUvNfRlfg+DEpA8dW5BUiqHxVoI/JUA6ylzxxwAwMTT105EsDvben7Vmog==",
+        "dependencies": {
+          "Microsoft.Identity.Client": "4.61.3",
+          "Microsoft.Identity.Client.Extensions.Msal": "4.61.3",
+          "XboxAuthNet.Game": "1.4.1"
         }
       },
       "xunit.abstractions": {
@@ -184,9 +216,12 @@
         "dependencies": {
           "CmlLib.Core": "[4.0.6, )",
           "CmlLib.Core.Auth.Microsoft": "[3.3.1, )",
+          "Microsoft.Identity.Client": "[4.88.0, )",
+          "Microsoft.Identity.Client.Extensions.Msal": "[4.88.0, )",
           "MinecraftServerManager.Core": "[1.1.0, )",
           "MinecraftServerManager.GameClient.Contracts": "[1.1.0, )",
-          "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
+          "System.Security.Cryptography.ProtectedData": "[10.0.11, )",
+          "XboxAuthNet.Game.Msal": "[0.1.3, )"
         }
       },
       "minecraftservermanager.gameclient.contracts": {

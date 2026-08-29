@@ -38,6 +38,7 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
     private string _iconImagePath;
     private string _windowWidthText;
     private string _windowHeightText;
+    private IReadOnlyList<ClientResolutionChoice> _resolutionChoices = [];
     private bool _fullScreen;
     private bool _enableQuickLaunch;
     private bool _hideLauncherAfterGameStarts;
@@ -65,6 +66,9 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
         _iconImagePath = settings.IconImagePath ?? string.Empty;
         _windowWidthText = settings.WindowWidth.ToString(CultureInfo.InvariantCulture);
         _windowHeightText = settings.WindowHeight.ToString(CultureInfo.InvariantCulture);
+        _resolutionChoices = ClientResolutionCatalog.CreateChoices(
+            settings.WindowWidth,
+            settings.WindowHeight);
         _fullScreen = settings.FullScreen;
         _enableQuickLaunch = settings.EnableQuickLaunch;
         _hideLauncherAfterGameStarts = settings.HideLauncherAfterGameStarts;
@@ -95,6 +99,8 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
     public Guid InstanceId { get; }
 
     public IReadOnlyList<ClientMemoryModeChoice> MemoryModes => _memoryModes;
+
+    public IReadOnlyList<ClientResolutionChoice> ResolutionChoices => _resolutionChoices;
 
     public ClientMemoryModeChoice SelectedMemoryMode
     {
@@ -140,6 +146,7 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
             if (SetProperty(ref _windowWidthText, value ?? string.Empty))
             {
                 OnPropertyChanged(nameof(WindowWidth));
+                RefreshResolutionChoices();
                 RefreshState();
             }
         }
@@ -153,6 +160,7 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
             if (SetProperty(ref _windowHeightText, value ?? string.Empty))
             {
                 OnPropertyChanged(nameof(WindowHeight));
+                RefreshResolutionChoices();
                 RefreshState();
             }
         }
@@ -168,6 +176,28 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
     {
         get => ParseIntegerOrZero(WindowHeightText);
         set => WindowHeightText = value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    public ClientResolutionChoice? SelectedResolution
+    {
+        get => ClientResolutionCatalog.Find(ResolutionChoices, WindowWidth, WindowHeight);
+        set
+        {
+            if (value is null || !ClientResolutionCatalog.IsValid(value.Width, value.Height) ||
+                value.Width == WindowWidth && value.Height == WindowHeight)
+            {
+                return;
+            }
+
+            _windowWidthText = value.Width.ToString(CultureInfo.InvariantCulture);
+            _windowHeightText = value.Height.ToString(CultureInfo.InvariantCulture);
+            OnPropertyChanged(nameof(WindowWidthText));
+            OnPropertyChanged(nameof(WindowHeightText));
+            OnPropertyChanged(nameof(WindowWidth));
+            OnPropertyChanged(nameof(WindowHeight));
+            RefreshResolutionChoices();
+            RefreshState();
+        }
     }
 
     public bool FullScreen { get => _fullScreen; set => SetAndRefresh(ref _fullScreen, value); }
@@ -603,6 +633,13 @@ public sealed class ClientInstanceSettingsEditorViewModel : ObservableObject, IN
 
     private static int ParseIntegerOrZero(string value) =>
         int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+
+    private void RefreshResolutionChoices()
+    {
+        _resolutionChoices = ClientResolutionCatalog.CreateChoices(WindowWidth, WindowHeight);
+        OnPropertyChanged(nameof(ResolutionChoices));
+        OnPropertyChanged(nameof(SelectedResolution));
+    }
 
     private static string? NormalizeOptionalText(string value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

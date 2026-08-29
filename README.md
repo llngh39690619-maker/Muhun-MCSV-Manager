@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前公開的來源快照版本為 **1.1.0**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的來源快照版本為 **1.2.2**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：** 1.1.0 正式位元、簽章、2,510 項測試及獨立磁碟驗證已完成；本 repository 目前提供原始碼與技術文件，但不表示 GitHub Release 已發布。只有 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 中完整列出的 1.1.0 發行資產才是公開安裝包；GitHub 自動產生的 Source code ZIP 不是 Windows 安裝包。
+> **發行狀態：研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.2 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
 
 ## English summary
 
@@ -16,14 +16,16 @@ The server-side CurseForge catalog uses the official API with a user-supplied, i
 
 - 建立、匯入、啟動、停止、重新啟動及批次管理多個 Minecraft Server。
 - 建立與啟動隔離的 Minecraft Java 客戶端；只列 Mojang 正式 release，支援 Vanilla、Fabric、Forge、NeoForge、Quilt。OptiFine／LabyMod 僅交給各自的官方外部安裝流程，不靜默下載或鏡像檔案。
-- 基岩版不建立受管理 Java 實例；介面只交給固定的 Microsoft 官方 Minecraft Launcher／Store 入口。
-- Microsoft OAuth 與 Minecraft Java 擁有權檢查；token 僅以目前 Windows 使用者的 DPAPI vault 保存，不要求 Microsoft 密碼。
+- 基岩版可建立自訂 X MCSV 本機顯示名稱，並選擇 Microsoft 官方正式版最新版或預覽版最新版通道；它使用獨立捷徑登錄，不建立受管理 Java 實例，也不碰觸世界或 Store 安裝資料。Microsoft 不提供任意歷史 Bedrock 版本的公開消費者下載流程，因此介面不會偽裝成可鎖定或下載舊版。
+- Microsoft OAuth／裝置碼登入、Minecraft Java 擁有權檢查、玩家資料與權杖自動續期；token 僅以目前 Windows 使用者的 DPAPI vault 保存，不要求或保存 Microsoft 密碼。
 - 客戶端 Java 自動準備、全域／自動／手動記憶體、解析度、全螢幕、快速啟動、系統匣、GPU 偏好及有界即時日誌。
-- 客戶端模組、資源包、光影、地圖與截圖管理；Modrinth 安全安裝及 FTB 官方 App 協定交接。客戶端不爬取 CurseForge 網頁，也不把 API Key 寫入 EXE。
+- 客戶端模組、材質包、光影包、地圖與截圖管理；Modrinth 內容搜尋會鎖定實例遊戲版本、驗證正式穩定版本與檔案雜湊、遞迴安裝必要前置模組，並在安全時自動匹配 Forge／NeoForge／Fabric／Quilt。客戶端不爬取 CurseForge 網頁，也不把 API Key 寫入 EXE。
+- 官方 Skin／披風管理；Skin 支援經典／苗條體型、本機 PNG 上傳、即時 3D 走路預覽與滑鼠 360 度旋轉，保存後同步至 Minecraft 官方服務。
+- Minecraft 客戶端在背景啟動 Java，不顯示黑色主控台；啟動後可縮小 X MCSV，遊戲關閉時自動還原主視窗。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時從 `25565` 起選擇最低可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
-- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；客戶端目錄支援 Modrinth 驗證安裝、FTB 官方 App 交接，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖。
+- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
 - Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載與完整性驗證。
 - 多帳號、角色、全域與逐 Server 權限、記住裝置、最後 Owner 防護及 SQLite 稽核。
@@ -90,7 +92,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用正式發行包
+### 使用既有正式發行包（不適用於 1.2.2 原始碼快照）
 
 - 安裝／升級 Windows Service 時需要系統管理員權限。
 - 正式 Windows 執行檔為 self-contained，不需另行安裝 .NET Runtime。
@@ -117,7 +119,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-1.1.0 正式成品已完成 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、29 個檔案的逐檔 SHA-256、封裝及獨立磁碟驗證。詳細結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、封裝及獨立磁碟驗證。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -125,7 +127,7 @@ dotnet test .\MinecraftServerManager.sln `
 2. 為每個帳號設定全域及逐 Server 權限。
 3. 設定 Tailscale Funnel，或使用 Cloudflare Named／Quick Tunnel 相容模式。
 4. 從 HTTPS 網址登入 Web 面板。
-5. iOS 可使用 Safari「加入主畫面」；Android 可側載正式發行包中的簽署 APK。
+5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.2 的 GitHub 發布不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 
@@ -133,7 +135,7 @@ dotnet test .\MinecraftServerManager.sln `
 
 - Server 端 CurseForge 查詢／下載使用官方 API，並遵守專案作者的 Distribution 設定。
 - CurseForge API Key 不會寫入原始碼、repository、設定或日誌；由使用者在需要該次 Server 端操作時提供，並只在該次流程的記憶體中暫存。
-- 客戶端工作區不把 CurseForge API Key 寫入 EXE，也不爬取網頁；免金鑰安裝使用 Modrinth，FTB 模組包交給官方 FTB App。
+- 客戶端工作區不把 CurseForge API Key 寫入 EXE，也不爬取網頁；免金鑰安裝使用 Modrinth 或 FTB 官方公開 API。FTB 只接受公開正式穩定版，逐檔驗證官方 manifest 的 SHA-512／SHA-256／SHA-1，官方 App 保留為失敗備援。
 - X MCSV 不重新託管第三方模組包，並在介面顯示來源、專案與作者資訊。
 - 使用者仍須遵守 Minecraft EULA、平台服務條款及各模組／模組包授權。
 
@@ -153,7 +155,7 @@ X MCSV 是獨立開發的專案，不隸屬於、未獲 Microsoft、Mojang Studi
 - 公開的 GitHub 更新 feed 尚未部署前，GUI 自動下載更新不可使用。
 - iOS 版本是可加入主畫面的 PWA，不是 App Store 原生 IPA。
 - Android 版本是 HTTPS WebView shell，目前不是 Google Play 發行。
-- 基岩版只提供 Microsoft 官方 Minecraft Launcher／Store 交接，不由 X MCSV 下載、安裝或管理為本機實例。
+- 基岩版只提供自訂名稱的本機捷徑，以及 Microsoft 官方最新版／預覽版通道交接；不由 X MCSV 下載、安裝、鎖定歷史版本或管理為 Java 實例。
 - 尚未提供「玩家連線時喚醒、無人時自動關閉」功能。
 - 模組包更新可保護檔案並回復，但無法保證任意第三方模組跨版本的語意相容性。
 

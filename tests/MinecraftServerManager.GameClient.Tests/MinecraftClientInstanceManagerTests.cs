@@ -95,6 +95,145 @@ public sealed class MinecraftClientInstanceManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task SwitchLoaderAsync_PreparesCopyThenAtomicallyUpdatesInstanceAndRegistry()
+    {
+        var request = CreateRequest();
+        var installCount = 0;
+        using var registry = new MinecraftClientRegistry(Path.Combine(_root, "client-instances.v1.json"));
+        var payload = new FakePayloadInstaller(async (directory, cancellationToken) =>
+        {
+            installCount++;
+            if (installCount == 1)
+            {
+                Directory.CreateDirectory(Path.Combine(directory, "versions", request.GameVersion));
+                Directory.CreateDirectory(Path.Combine(directory, "libraries"));
+                await File.WriteAllTextAsync(
+                    Path.Combine(directory, "versions", request.GameVersion, "base.marker"),
+                    "base",
+                    cancellationToken);
+                await File.WriteAllTextAsync(
+                    Path.Combine(directory, "libraries", "shared.dat"),
+                    "old",
+                    cancellationToken);
+                return request.GameVersion;
+            }
+
+            Assert.False(File.Exists(Path.Combine(directory, "saves", "world.dat")));
+            Directory.CreateDirectory(Path.Combine(directory, "versions", "forge-profile"));
+            Directory.CreateDirectory(Path.Combine(directory, "libraries"));
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "versions", "forge-profile", "loader.marker"),
+                "verified",
+                cancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "libraries", "shared.dat"),
+                "verified",
+                cancellationToken);
+            return "forge-profile";
+        });
+        var manager = CreateManager(registry, payload, request.GameVersion);
+        var installed = await manager.InstallAsync(request, javaExecutablePath: null);
+        Directory.CreateDirectory(Path.Combine(installed.Instance.DirectoryPath, "saves"));
+        await File.WriteAllTextAsync(
+            Path.Combine(installed.Instance.DirectoryPath, "saves", "world.dat"),
+            "keep");
+
+        var switched = await manager.SwitchLoaderAsync(
+            request.InstanceId,
+            MinecraftClientLoader.Forge,
+            "50.0.1",
+            javaExecutablePath: null);
+
+        Assert.Equal(installed.Instance.DirectoryPath, switched.Instance.DirectoryPath);
+        Assert.Equal(MinecraftClientLoader.Forge, switched.Instance.Loader);
+        Assert.Equal("50.0.1", switched.Instance.LoaderVersion);
+        Assert.Equal("forge-profile", switched.Instance.InstalledVersionId);
+        Assert.Equal(
+            "keep",
+            await File.ReadAllTextAsync(Path.Combine(switched.Instance.DirectoryPath, "saves", "world.dat")));
+        Assert.True(File.Exists(Path.Combine(
+            switched.Instance.DirectoryPath,
+            "versions",
+            "forge-profile",
+            "loader.marker")));
+        Assert.Equal(
+            "verified",
+            await File.ReadAllTextAsync(Path.Combine(
+                switched.Instance.DirectoryPath,
+                "libraries",
+                "shared.dat")));
+        var stored = Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Equal(MinecraftClientLoader.Forge, stored.Loader);
+        Assert.Equal("50.0.1", stored.LoaderVersion);
+        Assert.Equal("forge-profile", stored.InstalledVersionId);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "staging")));
+    }
+
+    [Fact]
+    public async Task SwitchLoaderAsync_FailedPreparationLeavesOriginalInstanceUntouched()
+    {
+        var request = CreateRequest();
+        var installCount = 0;
+        using var registry = new MinecraftClientRegistry(Path.Combine(_root, "client-instances.v1.json"));
+        var payload = new FakePayloadInstaller((directory, _) =>
+        {
+            installCount++;
+            if (installCount == 1)
+            {
+                File.WriteAllText(Path.Combine(directory, "base.marker"), "base");
+                return Task.FromResult(request.GameVersion);
+            }
+
+            File.WriteAllText(Path.Combine(directory, "partial-loader.marker"), "partial");
+            throw new InvalidDataException("loader verification failed");
+        });
+        var manager = CreateManager(registry, payload, request.GameVersion);
+        var installed = await manager.InstallAsync(request, javaExecutablePath: null);
+        File.WriteAllText(Path.Combine(installed.Instance.DirectoryPath, "world.dat"), "keep");
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => manager.SwitchLoaderAsync(
+            request.InstanceId,
+            MinecraftClientLoader.Forge,
+            "50.0.1",
+            javaExecutablePath: null));
+
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(installed.Instance.DirectoryPath, "world.dat")));
+        Assert.False(File.Exists(Path.Combine(installed.Instance.DirectoryPath, "partial-loader.marker")));
+        var stored = Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Equal(MinecraftClientLoader.Vanilla, stored.Loader);
+        Assert.Equal(request.GameVersion, stored.InstalledVersionId);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "staging")));
+    }
+
+    [Fact]
+    public async Task CommitStagedLoaderSwitchAsync_RegistryFailureRestoresOriginalTree()
+    {
+        var instances = Path.Combine(_root, "instances");
+        var staging = Path.Combine(_root, "staging");
+        var instance = Path.Combine(instances, Guid.NewGuid().ToString("N"));
+        var prepared = Path.Combine(staging, $"loader-switch-work-{Guid.NewGuid():N}");
+        var rollback = Path.Combine(staging, $"loader-switch-rollback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(instance);
+        Directory.CreateDirectory(prepared);
+        File.WriteAllText(Path.Combine(instance, "world.dat"), "original");
+        File.WriteAllText(Path.Combine(prepared, "loader.dat"), "new");
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            MinecraftClientInstanceManager.CommitStagedLoaderSwitchAsync(
+                instances,
+                instance,
+                staging,
+                prepared,
+                rollback,
+                () => Task.FromException<bool>(new InvalidDataException("registry failed"))));
+
+        Assert.Equal("original", File.ReadAllText(Path.Combine(instance, "world.dat")));
+        Assert.False(File.Exists(Path.Combine(instance, "loader.dat")));
+        Assert.True(File.Exists(Path.Combine(prepared, "loader.dat")));
+        Assert.False(Directory.Exists(rollback));
+    }
+
+    [Fact]
     public async Task DeleteAsync_StagesThenRemovesRegistryAndPayload()
     {
         var request = CreateRequest();

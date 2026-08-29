@@ -49,8 +49,39 @@ public sealed record MinecraftClientInstallResult(
     MinecraftClientInstance Instance,
     string InstalledVersionId);
 
+public enum MinecraftClientSkinVariant
+{
+    Classic = 0,
+    Slim = 1,
+}
+
+public sealed record MinecraftClientSkinInfo(
+    string Id,
+    Uri TextureUri,
+    MinecraftClientSkinVariant Variant,
+    bool IsActive);
+
+public sealed record MinecraftClientCapeInfo(
+    string Id,
+    string Alias,
+    Uri? TextureUri,
+    bool IsActive);
+
 public sealed record MinecraftClientAccountInfo(
     string Id,
     string Username,
     string MinecraftUuid,
-    DateTimeOffset LastAuthenticatedAtUtc);
+    DateTimeOffset LastAuthenticatedAtUtc,
+    DateTimeOffset? AuthenticationExpiresAtUtc,
+    MinecraftClientSkinInfo? ActiveSkin,
+    IReadOnlyList<MinecraftClientCapeInfo> Capes);
+
+/// <summary>
+/// Public, short-lived information which the player may safely copy while completing
+/// Microsoft's device authorization flow. The OAuth device credential is deliberately
+/// kept inside the authentication library and is never exposed by this contract.
+/// </summary>
+public sealed record MinecraftDeviceCodePrompt(
+    Uri VerificationUri,
+    string UserCode,
+    DateTimeOffset ExpiresAtUtc);

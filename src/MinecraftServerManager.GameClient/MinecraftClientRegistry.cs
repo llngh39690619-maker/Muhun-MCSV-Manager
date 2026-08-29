@@ -8,21 +8,33 @@ public sealed class MinecraftClientRegistry : IDisposable
 {
     private readonly JsonSettingsStore<MinecraftClientRegistryDocument> _store;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
-    private bool _disposed;
+    private readonly Action? _afterDurableSaveForTesting;
+    private int _disposeState;
 
     public MinecraftClientRegistry(string registryPath)
+        : this(registryPath, afterDurableSaveForTesting: null)
+    {
+    }
+
+    internal MinecraftClientRegistry(
+        string registryPath,
+        Action? afterDurableSaveForTesting)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(registryPath);
         _store = new JsonSettingsStore<MinecraftClientRegistryDocument>(registryPath);
+        _afterDurableSaveForTesting = afterDurableSaveForTesting;
     }
+
+    internal string RegistryPath => _store.FilePath;
 
     public async Task<MinecraftClientRegistryDocument> LoadAsync(
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfDisposingOrDisposed();
         await _mutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfDisposingOrDisposed();
             return await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -36,10 +48,11 @@ public sealed class MinecraftClientRegistry : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfDisposingOrDisposed();
         await _mutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfDisposingOrDisposed();
             await SaveCoreAsync(document, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -57,10 +70,11 @@ public sealed class MinecraftClientRegistry : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(update);
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfDisposingOrDisposed();
         await _mutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfDisposingOrDisposed();
             var document = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
             var result = update(document);
             cancellationToken.ThrowIfCancellationRequested();
@@ -75,15 +89,30 @@ public sealed class MinecraftClientRegistry : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0)
         {
             return;
         }
 
-        _disposed = true;
-        _store.Dispose();
-        _mutationGate.Dispose();
+        // Wait for an already-started atomic save to finish before disposing its underlying
+        // store. In particular, never dispose the semaphore after File.Move committed but before
+        // UpdateAsync released it; that could make a durable commit appear to have failed.
+        _mutationGate.Wait();
+        try
+        {
+            _store.Dispose();
+        }
+        finally
+        {
+            // Deliberately keep the gate undisposed so operations already queued during the race
+            // can wake, observe _disposeState, and fail without an ObjectDisposedException from
+            // SemaphoreSlim.Release obscuring a completed registry transaction.
+            _mutationGate.Release();
+        }
     }
+
+    private void ThrowIfDisposingOrDisposed() =>
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
 
     private async Task<MinecraftClientRegistryDocument> LoadCoreAsync(
         CancellationToken cancellationToken)
@@ -94,13 +123,16 @@ public sealed class MinecraftClientRegistry : IDisposable
         return document;
     }
 
-    private Task SaveCoreAsync(
+    private async Task SaveCoreAsync(
         MinecraftClientRegistryDocument document,
         CancellationToken cancellationToken)
     {
         Validate(document);
         document.SchemaVersion = MinecraftClientRegistryDocument.CurrentSchemaVersion;
-        return _store.SaveAsync(document, cancellationToken);
+        await _store.SaveAsync(document, cancellationToken).ConfigureAwait(false);
+        // Test seam for the exact boundary where the atomic settings store has committed but the
+        // caller has not yet observed success. Production callers always use the public ctor.
+        _afterDurableSaveForTesting?.Invoke();
     }
 
     internal static void Validate(MinecraftClientRegistryDocument document)
@@ -122,6 +154,12 @@ public sealed class MinecraftClientRegistry : IDisposable
         var activeProcesses = new HashSet<(int ProcessId, long StartedAtUtcTicks)>();
         foreach (var instance in document.Instances)
         {
+            if (instance.Edition != MinecraftClientEdition.Java)
+            {
+                throw new InvalidDataException(
+                    "The managed Minecraft client registry only accepts Java Edition instances.");
+            }
+
             if (instance.Id == Guid.Empty || !ids.Add(instance.Id))
             {
                 throw new InvalidDataException("Minecraft client registry contains an invalid or duplicate id.");
@@ -173,21 +211,33 @@ public sealed class MinecraftClientRegistry : IDisposable
                 throw new InvalidDataException("Minecraft client instance settings exceed safe limits.");
             }
 
-            if (instance.CatalogProvider is not null &&
-                !instance.CatalogProvider.Equals("modrinth", StringComparison.Ordinal) ||
-                instance.CatalogIconUri is not null &&
-                !ModrinthClientModpackCatalog.IsOfficialCdnUri(instance.CatalogIconUri) ||
-                instance.CatalogPreviewUri is not null &&
-                !ModrinthClientModpackCatalog.IsOfficialCdnUri(instance.CatalogPreviewUri))
+            if (instance.CatalogProvider?.Equals("modrinth", StringComparison.Ordinal) == true)
             {
-                throw new InvalidDataException("Minecraft client catalog provenance is invalid.");
+                if (!IsCatalogIdentifier(instance.CatalogProjectId) ||
+                    !IsCatalogIdentifier(instance.CatalogVersionId) ||
+                    instance.CatalogIconUri is not null &&
+                    !ModrinthClientModpackCatalog.IsOfficialCdnUri(instance.CatalogIconUri) ||
+                    instance.CatalogPreviewUri is not null &&
+                    !ModrinthClientModpackCatalog.IsOfficialCdnUri(instance.CatalogPreviewUri))
+                {
+                    throw new InvalidDataException("Modrinth client catalog provenance is invalid.");
+                }
             }
-
-            if (instance.CatalogProvider?.Equals("modrinth", StringComparison.Ordinal) == true &&
-                (!IsCatalogIdentifier(instance.CatalogProjectId) ||
-                 !IsCatalogIdentifier(instance.CatalogVersionId)))
+            else if (instance.CatalogProvider?.Equals("ftb", StringComparison.Ordinal) == true)
             {
-                throw new InvalidDataException("Modrinth client catalog provenance is incomplete.");
+                if (!IsPositiveCatalogNumber(instance.CatalogProjectId) ||
+                    !IsPositiveCatalogNumber(instance.CatalogVersionId) ||
+                    instance.CatalogIconUri is not null &&
+                    !FtbMinecraftClientPackInstaller.IsOfficialFtbArtworkUri(instance.CatalogIconUri) ||
+                    instance.CatalogPreviewUri is not null &&
+                    !FtbMinecraftClientPackInstaller.IsOfficialFtbArtworkUri(instance.CatalogPreviewUri))
+                {
+                    throw new InvalidDataException("FTB client catalog provenance is invalid.");
+                }
+            }
+            else if (instance.CatalogProvider is not null)
+            {
+                throw new InvalidDataException("Minecraft client catalog provider is invalid.");
             }
 
             if (instance.CatalogProvider is null &&
@@ -234,6 +284,15 @@ public sealed class MinecraftClientRegistry : IDisposable
         static bool IsCatalogIdentifier(string? value)
             => !string.IsNullOrWhiteSpace(value) && value.Length <= 64 &&
                value.All(char.IsAsciiLetterOrDigit);
+
+        static bool IsPositiveCatalogNumber(string? value)
+            => !string.IsNullOrWhiteSpace(value) && value.Length <= 10 &&
+               int.TryParse(
+                   value,
+                   System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var parsed) &&
+               parsed > 0 && parsed.ToString(System.Globalization.CultureInfo.InvariantCulture) == value;
 
         static bool PathsEqual(string first, string second)
         {

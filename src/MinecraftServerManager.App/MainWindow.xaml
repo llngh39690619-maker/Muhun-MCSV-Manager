@@ -134,7 +134,8 @@
         <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
         <Rectangle Fill="{DynamicResource WindowPatternBrush}" IsHitTestVisible="False" />
         <Image Source="{Binding SelectedServer.BackgroundImagePath}" Stretch="UniformToFill"
-               Opacity="{Binding SelectedServer.BackgroundImageOpacity}" IsHitTestVisible="False" />
+               Opacity="{Binding SelectedServer.BackgroundImageOpacity}" IsHitTestVisible="False"
+               Visibility="{Binding IsServerWorkspace, Converter={StaticResource BoolToVisibility}}" />
 
         <Grid Visibility="{Binding IsServerWorkspace, Converter={StaticResource BoolToVisibility}}">
             <Grid.RowDefinitions>
@@ -840,6 +841,8 @@
             </Border>
         </Grid>
         <views:ClientWorkspaceView DataContext="{Binding ClientWorkspace}"
-                                   Visibility="{Binding IsClientWorkspace, Converter={StaticResource BoolToVisibility}}" />
+                                   Visibility="{Binding DataContext.IsClientWorkspace,
+                                                        RelativeSource={RelativeSource AncestorType={x:Type Window}},
+                                                        Converter={StaticResource BoolToVisibility}}" />
     </Grid>
 </Window>

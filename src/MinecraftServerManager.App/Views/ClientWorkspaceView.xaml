@@ -37,6 +37,7 @@
             <Setter Property="Margin" Value="0,12,0,5" />
         </Style>
         <Style x:Key="LoaderListItem" TargetType="ListBoxItem">
+            <Setter Property="IsEnabled" Value="{Binding IsAvailable}" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Margin" Value="0" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -61,6 +62,9 @@
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="LoaderBorder" Property="Background" Value="{DynamicResource AccentDarkBrush}" />
                                 <Setter TargetName="LoaderBorder" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="LoaderBorder" Property="Opacity" Value="0.55" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -94,11 +98,32 @@
                     <Button Content="{DynamicResource L10n.main.workspace.client}" Style="{StaticResource PrimaryButton}" MinWidth="102" Margin="0,0,8,0" />
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ComboBox ItemsSource="{Binding Accounts}" SelectedItem="{Binding SelectedAccount}"
-                              DisplayMemberPath="Username" MinWidth="180" Margin="0,0,8,0" />
-                    <Button Content="{DynamicResource L10n.client.account.add}" Command="{Binding AddAccountCommand}" Margin="0,0,8,0" />
-                    <Button Content="{DynamicResource L10n.client.account.remove}" Command="{Binding RemoveSelectedAccountCommand}" Margin="0,0,8,0" />
-                    <Button Content="{DynamicResource L10n.client.account.signOutAll}" Command="{Binding SignOutAllAccountsCommand}" Margin="0,0,8,0" />
+                    <Button Command="{Binding ToggleAccountPanelCommand}" Width="48" MinWidth="48" Height="48"
+                            Margin="0,0,8,0" Padding="6" ToolTip="{Binding AccountButtonAccessibleName}"
+                            AutomationProperties.Name="{Binding AccountButtonAccessibleName}">
+                        <Border Width="32" Height="32" CornerRadius="4" Background="{DynamicResource AccentDarkBrush}"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Ellipse Width="7" Height="7" Fill="{DynamicResource MutedTextBrush}"
+                                             HorizontalAlignment="Center" VerticalAlignment="Top" />
+                                    <Ellipse Width="15" Height="8" Fill="{DynamicResource MutedTextBrush}"
+                                             HorizontalAlignment="Center" VerticalAlignment="Bottom" />
+                                </Grid>
+                                <Image Source="{Binding SelectedPlayerHeadTexture}" Width="32" Height="32" Stretch="Fill"
+                                       SnapsToDevicePixels="True" UseLayoutRounding="True"
+                                       RenderOptions.BitmapScalingMode="NearestNeighbor" />
+                            </Grid>
+                        </Border>
+                    </Button>
+                    <ComboBox x:Name="HeaderAccountSelector"
+                              ItemsSource="{Binding Accounts}" SelectedItem="{Binding SelectedAccount}"
+                              DisplayMemberPath="Username" Width="166" Height="40" Margin="0,0,8,0"
+                              ToolTip="{DynamicResource L10n.client.account.select}"
+                              AutomationProperties.Name="{DynamicResource L10n.client.account.select}" />
+                    <Button Content="{DynamicResource L10n.client.account.add}" Command="{Binding AddAccountCommand}"
+                            Margin="0,0,8,0"
+                            AutomationProperties.Name="{DynamicResource L10n.client.account.add}" />
                     <Button Content="{DynamicResource L10n.common.refresh}" Command="{Binding RefreshCatalogCommand}" Margin="0,0,8,0" />
                     <Button Content="⚙" Width="42" MinWidth="42" Padding="4"
                             Command="{Binding DataContext.OpenSettingsCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}" />
@@ -177,6 +202,20 @@
                                             <TextBlock Text="▣" Foreground="{DynamicResource AccentBrush}"
                                                        HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="17" />
                                         </Border>
+                                        <Grid Visibility="{Binding UsesGrassBlockFallback, Converter={StaticResource BoolToVisibility}}">
+                                            <Border Background="#795238" CornerRadius="7" />
+                                            <Border Height="11" VerticalAlignment="Top" Background="#62A83E" CornerRadius="7,7,2,2" />
+                                            <Rectangle Width="5" Height="7" Fill="#8A6543" Margin="5,12,0,0"
+                                                       HorizontalAlignment="Left" VerticalAlignment="Top" />
+                                            <Rectangle Width="6" Height="5" Fill="#63432F" Margin="0,0,5,5"
+                                                       HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                                        </Grid>
+                                        <Border Background="{DynamicResource WindowBrush}" CornerRadius="7"
+                                                Visibility="{Binding CatalogSourceBadgeText, Converter={StaticResource StringToVisibility}}">
+                                            <TextBlock Text="{Binding CatalogSourceBadgeText}" Foreground="{DynamicResource AccentBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       FontSize="11" FontWeight="Bold" />
+                                        </Border>
                                         <Image infra:LocalImageThumbnail.SourcePath="{Binding IconImagePath}"
                                                infra:LocalImageThumbnail.DecodePixelWidth="96"
                                                infra:LocalImageThumbnail.DecodePixelHeight="96"
@@ -200,6 +239,71 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                        <StackPanel Visibility="{Binding HasBedrockShortcuts, Converter={StaticResource BoolToVisibility}}"
+                                    Margin="0,0,0,10">
+                            <TextBlock Text="{DynamicResource L10n.client.bedrock.shortcuts.heading}"
+                                       FontWeight="SemiBold" Margin="4,0,4,7" />
+                            <ListBox ItemsSource="{Binding BedrockShortcuts}"
+                                     SelectedItem="{Binding SelectedBedrockShortcut}"
+                                     MaxHeight="190" Background="Transparent" BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="Margin" Value="0,0,0,7" />
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="ShortcutBorder"
+                                                            Background="{DynamicResource PanelRaisedBrush}"
+                                                            BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="1" CornerRadius="9" Padding="10">
+                                                        <ContentPresenter />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="ShortcutBorder" Property="BorderBrush"
+                                                                    Value="{DynamicResource AccentBrush}" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="ShortcutBorder" Property="Background"
+                                                                    Value="{DynamicResource AccentDarkBrush}" />
+                                                            <Setter TargetName="ShortcutBorder" Property="BorderBrush"
+                                                                    Value="{DynamicResource AccentBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="42" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid Width="34" Height="34" VerticalAlignment="Center">
+                                                <Border Background="#795238" CornerRadius="7" />
+                                                <Border Height="11" VerticalAlignment="Top" Background="#62A83E"
+                                                        CornerRadius="7,7,2,2" />
+                                            </Grid>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding VersionSummary}"
+                                                           Style="{StaticResource MutedText}" FontSize="11"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
                         <Button Content="{DynamicResource L10n.client.action.openCatalog}" Command="{Binding OpenCatalogCommand}" Margin="0,0,0,8" />
                         <Button Content="{DynamicResource L10n.client.action.create}" Style="{StaticResource PrimaryButton}"
                                 Command="{Binding NewInstanceCommand}" />
@@ -208,9 +312,17 @@
             </Border>
 
             <Grid Grid.Column="1">
-                <ScrollViewer Visibility="{Binding IsCreatePage, Converter={StaticResource BoolToVisibility}}"
-                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="26" HorizontalAlignment="Stretch">
+                <Grid x:Name="CreatePageLayout"
+                      Visibility="{Binding IsCreatePage, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <ScrollViewer x:Name="CreateFormScrollViewer" Grid.Row="0"
+                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="26,26,26,14" HorizontalAlignment="Stretch">
                         <Grid Margin="0,0,0,18">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <StackPanel>
@@ -249,9 +361,20 @@
                                         <TextBlock Text="{DynamicResource L10n.client.create.bedrockHint}"
                                                    TextWrapping="Wrap" Foreground="{DynamicResource WarningBrush}"
                                                    Margin="0,6,0,0" />
+                                        <TextBlock Text="{DynamicResource L10n.client.create.bedrockAliasLabel}"
+                                                   Style="{StaticResource ClientFormLabel}" Margin="0,14,0,5" />
+                                        <TextBox Text="{Binding NewBedrockShortcutName, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBlock Text="{DynamicResource L10n.client.create.bedrockAliasDescription}"
+                                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                                        <TextBlock Text="{DynamicResource L10n.client.create.bedrockChannel}"
+                                                   Style="{StaticResource ClientFormLabel}" Margin="0,14,0,5" />
+                                        <ComboBox ItemsSource="{Binding BedrockChannelChoices}"
+                                                  SelectedItem="{Binding SelectedBedrockChannel}"
+                                                  DisplayMemberPath="Name" />
+                                        <TextBlock Text="{DynamicResource L10n.client.create.bedrockChannelHint}"
+                                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
                                         <Button Content="{DynamicResource L10n.client.create.openBedrockOfficial}"
                                                 Command="{Binding OpenBedrockOfficialCommand}"
-                                                Style="{StaticResource PrimaryButton}"
                                                 HorizontalAlignment="Left" MinWidth="210" Margin="0,12,0,0" />
                                         <TextBlock Text="{DynamicResource L10n.client.create.bedrockHandoffHint}"
                                                    Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0" />
@@ -353,41 +476,53 @@
                             <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14">
                                 <StackPanel>
                                     <TextBlock Text="{DynamicResource L10n.client.create.gameWindow}" Style="{StaticResource ClientSectionHeading}" />
-                                    <WrapPanel Margin="0,0,0,10">
-                                        <Button Content="1280 × 720" Command="{Binding ApplyResolutionPresetCommand}" CommandParameter="1280x720" Margin="0,0,8,8" />
-                                        <Button Content="1600 × 900" Command="{Binding ApplyResolutionPresetCommand}" CommandParameter="1600x900" Margin="0,0,8,8" />
-                                        <Button Content="1920 × 1080" Command="{Binding ApplyResolutionPresetCommand}" CommandParameter="1920x1080" Margin="0,0,8,8" />
-                                        <CheckBox Content="{DynamicResource L10n.client.create.fullScreen}" IsChecked="{Binding FullScreen}" VerticalAlignment="Center" Margin="10,0,0,8" />
-                                    </WrapPanel>
                                     <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                        <StackPanel Margin="0,0,8,0"><TextBlock Text="{DynamicResource L10n.client.create.width}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" /><TextBox Text="{Binding WindowWidth}" /></StackPanel>
-                                        <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="{DynamicResource L10n.client.create.height}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" /><TextBox Text="{Binding WindowHeight}" /></StackPanel>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <ComboBox ItemsSource="{Binding ResolutionChoices}" SelectedItem="{Binding SelectedResolution}"
+                                                  DisplayMemberPath="DisplayName" MinWidth="220" />
+                                        <CheckBox Grid.Column="1" Content="{DynamicResource L10n.client.create.fullScreen}"
+                                                  IsChecked="{Binding FullScreen}" VerticalAlignment="Center" Margin="18,0,0,0" />
                                     </Grid>
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                    BorderThickness="1" CornerRadius="10" Padding="14">
-                                <Grid>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="8" /></Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
-                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" Margin="0,5,0,0" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="14,0,0,0">
-                                        <Button Content="{DynamicResource L10n.common.cancel}" Command="{Binding CancelOperationCommand}" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.create.download}" Style="{StaticResource PrimaryButton}" Command="{Binding CreateInstanceCommand}" MinWidth="130" />
-                                    </StackPanel>
-                                    <ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Minimum="0" Maximum="1" Value="{Binding ProgressValue, Mode=OneWay}"
-                                                 Background="{DynamicResource WindowBrush}" Foreground="{DynamicResource AccentBrush}" />
-                                </Grid>
-                            </Border>
                         </StackPanel>
-                    </StackPanel>
-                </ScrollViewer>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <Border x:Name="CreateActionBar" Grid.Row="1"
+                            Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1,1,1,0" CornerRadius="10,10,0,0"
+                            Padding="14" Margin="26,0,26,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
+                                           Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" Margin="0,5,0,0" />
+                            </StackPanel>
+                            <WrapPanel Grid.Column="1" VerticalAlignment="Center">
+                                <Button Content="{DynamicResource L10n.common.cancel}" Command="{Binding CancelOperationCommand}" Margin="0,0,8,0" />
+                                <Button Content="{DynamicResource L10n.client.create.download}" Style="{StaticResource PrimaryButton}"
+                                        Command="{Binding CreateInstanceCommand}" MinWidth="130"
+                                        Visibility="{Binding IsJavaEdition, Converter={StaticResource BoolToVisibility}}" />
+                                <Button Content="{DynamicResource L10n.client.create.bedrockCreate}" Style="{StaticResource PrimaryButton}"
+                                        Command="{Binding CreateInstanceCommand}" MinWidth="230"
+                                        Visibility="{Binding IsBedrockEdition, Converter={StaticResource BoolToVisibility}}" />
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+
+                    <ProgressBar x:Name="CreateInstallProgressBar" Grid.Row="2"
+                                 Height="8" Margin="26,0,26,14"
+                                 Minimum="0" Maximum="1" Value="{Binding ProgressValue, Mode=OneWay}"
+                                  Background="{DynamicResource WindowBrush}" Foreground="{DynamicResource AccentBrush}"
+                                  AutomationProperties.Name="{Binding StatusText}"
+                                  Visibility="{Binding IsJavaEdition, Converter={StaticResource BoolToVisibility}}" />
+                </Grid>
 
                 <ScrollViewer Visibility="{Binding IsCatalogPage, Converter={StaticResource BoolToVisibility}}"
                               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -402,8 +537,14 @@
                                 <TextBlock Text="{DynamicResource L10n.client.catalog.description}"
                                            Style="{StaticResource MutedText}" Margin="0,5,0,0" TextWrapping="Wrap" />
                             </StackPanel>
-                            <Button Grid.Column="1" Content="{DynamicResource L10n.common.close}" Command="{Binding CloseCatalogCommand}"
-                                    VerticalAlignment="Center" Margin="14,0,0,0" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                                        Margin="14,0,0,0">
+                                <Button Content="{DynamicResource L10n.common.cancel}"
+                                        Command="{Binding CancelOperationCommand}" Margin="0,0,8,0"
+                                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+                                <Button Content="{DynamicResource L10n.common.close}"
+                                        Command="{Binding CloseCatalogCommand}" />
+                            </StackPanel>
                         </Grid>
 
                         <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14">
@@ -637,14 +778,18 @@
                                         <TextBlock Text="{DynamicResource L10n.client.catalog.availableVersions}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
                                         <ComboBox ItemsSource="{Binding CatalogVersions}" SelectedItem="{Binding SelectedCatalogVersion}"
                                                   DisplayMemberPath="Name" />
-                                        <StackPanel Visibility="{Binding ShowsModrinthInstallOptions, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel Visibility="{Binding ShowsCatalogInstallOptions, Converter={StaticResource BoolToVisibility}}">
                                             <TextBlock Text="{DynamicResource L10n.client.catalog.instanceName}" Style="{StaticResource ClientFormLabel}" />
                                             <TextBox Text="{Binding CatalogInstanceName, UpdateSourceTrigger=PropertyChanged}" />
                                             <CheckBox Content="{DynamicResource L10n.client.catalog.includeOptional}" IsChecked="{Binding IncludeOptionalPackFiles}"
-                                                      Margin="0,12,0,10" />
+                                                      Margin="0,12,0,10"
+                                                      Visibility="{Binding IsModrinthCatalogSource, Converter={StaticResource BoolToVisibility}}" />
                                         </StackPanel>
                                         <Button Content="{Binding CatalogInstallActionText}" Style="{StaticResource PrimaryButton}"
                                                 Command="{Binding InstallCatalogPackCommand}" />
+                                        <Button Content="{DynamicResource L10n.client.catalog.ftbFallbackAction}"
+                                                Command="{Binding OpenFtbFallbackCommand}" Margin="0,10,0,0"
+                                                Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />
                                     </StackPanel>
                                 </controls:ResponsiveWrapPanel>
                             </Border>
@@ -661,6 +806,48 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer Visibility="{Binding IsBedrockShortcutPage, Converter={StaticResource BoolToVisibility}}"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="26" HorizontalAlignment="Stretch">
+                        <Border Style="{StaticResource ClientCard}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding SelectedBedrockShortcut.Name}"
+                                               FontSize="28" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding SelectedBedrockShortcut.VersionSummary}"
+                                               Style="{StaticResource MutedText}" FontSize="14" Margin="0,4,0,0" />
+                                </StackPanel>
+                                <WrapPanel Grid.Column="1" VerticalAlignment="Center" Margin="18,0,0,0">
+                                    <Button Content="{DynamicResource L10n.client.bedrock.remove.action}"
+                                            Style="{StaticResource DangerButton}"
+                                            Command="{Binding DeleteBedrockShortcutCommand}" Margin="0,0,8,0" />
+                                    <Button Content="{DynamicResource L10n.client.bedrock.dashboard.open}"
+                                            Style="{StaticResource PrimaryButton}"
+                                            Command="{Binding OpenSelectedBedrockOfficialCommand}" MinWidth="220" />
+                                </WrapPanel>
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource ClientCard}" Margin="0,14,0,0">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.client.bedrock.dashboard.heading}"
+                                           Style="{StaticResource ClientSectionHeading}" />
+                                <TextBlock Text="{DynamicResource L10n.client.bedrock.dashboard.description}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="{DynamicResource L10n.client.create.bedrockHandoffHint}"
+                                           Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,10,0,0" />
+                                <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" Margin="0,14,0,0" />
+                                <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}"
+                                           TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
 
@@ -682,7 +869,7 @@
                                 </StackPanel>
                                 <WrapPanel Grid.Column="1" VerticalAlignment="Center" Margin="18,0,0,0">
                                     <Button Content="{DynamicResource L10n.client.action.delete}" Style="{StaticResource DangerButton}" Command="{Binding DeleteClientInstanceCommand}" Margin="0,0,8,0" />
-                                    <Button Content="{DynamicResource L10n.main.tab.settings}" Command="{Binding OpenClientSettingsCommand}" Margin="0,0,8,0" />
+                                    <Button Content="{DynamicResource L10n.client.action.settings}" Command="{Binding OpenClientSettingsCommand}" Margin="0,0,8,0" />
                                     <Button Content="{DynamicResource L10n.main.action.openFolder}" Command="{Binding OpenInstanceFolderCommand}" Margin="0,0,8,0" />
                                     <Button Content="{DynamicResource L10n.common.stop}" Command="{Binding StopClientCommand}" Margin="0,0,8,0" />
                                     <Button Content="{DynamicResource L10n.client.action.launch}" Style="{StaticResource PrimaryButton}" Command="{Binding LaunchCommand}" MinWidth="130" />
@@ -692,13 +879,120 @@
 
                         <TextBlock Text="{DynamicResource L10n.client.content.heading}" FontSize="21" FontWeight="SemiBold" Margin="2,4,0,12" />
                         <controls:ResponsiveWrapPanel MinItemWidth="245" HorizontalSpacing="12" VerticalSpacing="12" MaximumColumns="3">
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.mods}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.mods}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openMods}" Command="{Binding OpenContentFolderCommand}" CommandParameter="mods" HorizontalAlignment="Left" /></StackPanel></Border>
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.resourcePacks}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.resourcePacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openResourcePacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="resourcepacks" HorizontalAlignment="Left" /></StackPanel></Border>
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.shaderPacks}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.shaderPacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openShaderPacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="shaderpacks" HorizontalAlignment="Left" /></StackPanel></Border>
+                            <Border Style="{StaticResource ClientCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.content.mods}" FontSize="18" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.client.content.description.mods}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
+                                    <WrapPanel>
+                                        <Button Content="{DynamicResource L10n.client.content.openMods}" Command="{Binding OpenContentFolderCommand}" CommandParameter="mods" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="Mod" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource ClientCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.content.resourcePacks}" FontSize="18" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.client.content.description.resourcePacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
+                                    <WrapPanel>
+                                        <Button Content="{DynamicResource L10n.client.content.openResourcePacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="resourcepacks" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="ResourcePack" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource ClientCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.content.shaderPacks}" FontSize="18" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.client.content.description.shaderPacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
+                                    <WrapPanel>
+                                        <Button Content="{DynamicResource L10n.client.content.openShaderPacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="shaderpacks" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="ShaderPack" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
                             <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.saves}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.saves}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openSaves}" Command="{Binding OpenContentFolderCommand}" CommandParameter="saves" HorizontalAlignment="Left" /></StackPanel></Border>
                             <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.screenshots}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.screenshots}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openScreenshots}" Command="{Binding OpenContentFolderCommand}" CommandParameter="screenshots" HorizontalAlignment="Left" /></StackPanel></Border>
                             <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.logs}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.logs}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openLogs}" Command="{Binding OpenContentFolderCommand}" CommandParameter="logs" HorizontalAlignment="Left" /></StackPanel></Border>
                         </controls:ResponsiveWrapPanel>
+
+                        <Border Style="{StaticResource ClientCard}" Margin="0,14,0,0"
+                                Visibility="{Binding IsContentDownloadOpen, Converter={StaticResource BoolToVisibility}}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding ContentDownloadHeading}" FontSize="20" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding ContentDownloadDescription}" Style="{StaticResource MutedText}"
+                                                   Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="{DynamicResource L10n.common.close}"
+                                            Command="{Binding CloseContentDownloadCommand}" Margin="12,0,0,0" />
+                                </Grid>
+                                <Grid Grid.Row="1" Margin="0,16,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding ContentDownloadSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="{DynamicResource L10n.client.content.download.searchHint}" />
+                                    <ComboBox Grid.Column="1" Margin="10,0,0,0"
+                                              ItemsSource="{Binding ContentDownloadLoaders}"
+                                              SelectedItem="{Binding SelectedContentDownloadLoader}"
+                                              DisplayMemberPath="DisplayName"
+                                              Visibility="{Binding IsModContentDownload, Converter={StaticResource BoolToVisibility}}" />
+                                    <Button Grid.Column="2" Content="{DynamicResource L10n.client.content.download.search}"
+                                            Style="{StaticResource PrimaryButton}" Command="{Binding SearchContentDownloadCommand}"
+                                            Margin="10,0,0,0" MinWidth="96" />
+                                </Grid>
+                                <TextBlock Grid.Row="2" Text="{Binding ContentDownloadStatusText}" Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10" />
+                                <Grid Grid.Row="3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="150" />
+                                    </Grid.ColumnDefinitions>
+                                    <ListBox ItemsSource="{Binding ContentDownloadResults}"
+                                             SelectedItem="{Binding SelectedContentDownloadProject}"
+                                             MinHeight="180" MaxHeight="360"
+                                             Background="{DynamicResource WindowBrush}"
+                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="5">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="8,6">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="15" />
+                                                    <TextBlock Text="{Binding Summary}" Style="{StaticResource MutedText}"
+                                                               TextWrapping="Wrap" MaxHeight="42" Margin="0,3,0,0" />
+                                                    <TextBlock Text="{Binding CompatibilityText}" Foreground="{DynamicResource AccentBrush}"
+                                                               FontSize="11" Margin="0,4,0,0" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                        <Button Content="{DynamicResource L10n.client.content.download.install}"
+                                                Style="{StaticResource PrimaryButton}" Command="{Binding InstallContentDownloadCommand}"
+                                                Margin="0,0,0,8" />
+                                        <Button Content="{DynamicResource L10n.client.content.download.openProject}"
+                                                Command="{Binding OpenSelectedContentProjectPageCommand}" Margin="0,0,0,8" />
+                                        <Button Content="{DynamicResource L10n.client.content.download.openFallback}"
+                                                Command="{Binding OpenContentFallbackCommand}"
+                                                Visibility="{Binding HasContentDownloadFallback, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </Border>
 
                         <Border Style="{StaticResource ClientCard}" Margin="0,14,0,0"
                                 Visibility="{Binding SelectedInstance.IsGameLogEnabled, Converter={StaticResource BoolToVisibility}}">
@@ -855,10 +1149,11 @@
                             <StackPanel>
                                 <TextBlock Text="{DynamicResource L10n.client.settings.resolution}" Style="{StaticResource ClientSectionHeading}" />
                                 <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                    <StackPanel Margin="0,0,8,0"><TextBlock Text="{DynamicResource L10n.client.settings.width}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" /><TextBox Text="{Binding WindowWidthText, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}" /></StackPanel>
-                                    <StackPanel Grid.Column="1" Margin="8,0"><TextBlock Text="{DynamicResource L10n.client.settings.height}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" /><TextBox Text="{Binding WindowHeightText, UpdateSourceTrigger=PropertyChanged, ValidatesOnNotifyDataErrors=True}" /></StackPanel>
-                                    <CheckBox Grid.Column="2" Content="{DynamicResource L10n.client.settings.fullScreen}" IsChecked="{Binding FullScreen}" Margin="18,22,0,0" VerticalAlignment="Center" />
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <ComboBox ItemsSource="{Binding ResolutionChoices}" SelectedItem="{Binding SelectedResolution}"
+                                              DisplayMemberPath="DisplayName" MinWidth="220" />
+                                    <CheckBox Grid.Column="1" Content="{DynamicResource L10n.client.settings.fullScreen}"
+                                              IsChecked="{Binding FullScreen}" Margin="18,0,0,0" VerticalAlignment="Center" />
                                 </Grid>
                                 <TextBlock Text="{Binding ResolutionError}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap"
                                            Visibility="{Binding ResolutionError, Converter={StaticResource StringToVisibility}}" Margin="0,7,0,0" />
@@ -927,13 +1222,265 @@
             </Grid>
         </Grid>
 
+        <Border Grid.Row="1" Panel.ZIndex="90" Width="470" HorizontalAlignment="Right"
+                VerticalAlignment="Stretch" Margin="16" Padding="0"
+                Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource AccentBrush}"
+                BorderThickness="1" CornerRadius="14"
+                Visibility="{Binding IsAccountPanelOpen, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Margin="18,14,14,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="{DynamicResource L10n.client.account.panel.heading}" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.client.account.panel.description}" Style="{StaticResource MutedText}"
+                                   TextWrapping="Wrap" Margin="0,3,0,0" />
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="✕" Width="36" Height="36" Padding="0"
+                            Command="{Binding ToggleAccountPanelCommand}" />
+                </Grid>
+
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Padding="18,0,18,18">
+                    <StackPanel>
+                        <Border Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,12"
+                                Visibility="{Binding HasSelectedAccount, Converter={StaticResource InverseBoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.client.account.none.heading}" FontWeight="SemiBold" FontSize="16" />
+                                <TextBlock Text="{DynamicResource L10n.client.account.none.description}" Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Visibility="{Binding HasSelectedAccount, Converter={StaticResource BoolToVisibility}}">
+                            <Border Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding SelectedPlayerName}" FontSize="19" FontWeight="SemiBold" />
+                                            <TextBlock Text="{DynamicResource L10n.client.account.profile.microsoft}" Foreground="{DynamicResource AccentBrush}" FontSize="11" />
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="{DynamicResource L10n.client.account.remove}"
+                                                Command="{Binding RemoveSelectedAccountCommand}" Margin="8,0,0,0" />
+                                    </Grid>
+                                    <TextBlock Text="{DynamicResource L10n.client.account.profile.uuid}" Style="{StaticResource ClientFormLabel}" />
+                                    <TextBox Text="{Binding SelectedPlayerUuid, Mode=OneWay}" IsReadOnly="True" FontFamily="Cascadia Mono, Consolas" />
+                                    <Button Command="{Binding ToggleAccountExpiryCommand}" HorizontalContentAlignment="Stretch"
+                                            Margin="0,12,0,0" Padding="10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.account.expiry.heading}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding SelectedAccountExpirySummary}" Style="{StaticResource MutedText}" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="⌄" FontSize="18" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </Button>
+                                    <Border Background="{DynamicResource AccentDarkBrush}" CornerRadius="8" Padding="10" Margin="0,7,0,0"
+                                            Visibility="{Binding IsAccountExpiryExpanded, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding SelectedAccountExpirySummary}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{DynamicResource L10n.client.account.expiry.autoRenew}" Style="{StaticResource MutedText}"
+                                                       TextWrapping="Wrap" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <Border x:Name="SkinCard" Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,12"
+                                    Focusable="True" KeyboardNavigation.IsTabStop="True">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.account.skin.heading}" Style="{StaticResource ClientSectionHeading}" />
+                                    <TextBlock Text="{DynamicResource L10n.client.account.skin.description}" Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" Margin="0,0,0,10" />
+                                    <controls:MinecraftSkin3DView Height="250" Margin="0,0,0,10"
+                                                                  SkinPath="{Binding SelectedSkinFilePath}"
+                                                                  TextureSource="{Binding SkinPreviewTextureSource}"
+                                                                  IsSlim="{Binding IsSlimSkinPreview}" />
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel x:Name="SkinVariantControls">
+                                            <TextBlock Text="{DynamicResource L10n.client.account.skin.variant}"
+                                                       Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
+                                            <WrapPanel>
+                                                <Button Content="{DynamicResource L10n.client.account.skin.classic}"
+                                                        Command="{Binding SelectClassicSkinCommand}"
+                                                        Style="{StaticResource ClientMemoryModeButton}" Tag="{Binding IsClassicSkinPreview}" />
+                                                <Button Content="{DynamicResource L10n.client.account.skin.slim}"
+                                                        Command="{Binding SelectSlimSkinCommand}"
+                                                        Style="{StaticResource ClientMemoryModeButton}" Tag="{Binding IsSlimSkinPreview}" />
+                                            </WrapPanel>
+                                        </StackPanel>
+                                        <Grid x:Name="SkinEditingControls" Grid.Column="1" Margin="10,12,0,0"
+                                              VerticalAlignment="Top">
+                                            <Grid.Style>
+                                                <Style TargetType="Grid">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Setter Property="Opacity" Value="0" />
+                                                    <Setter Property="IsHitTestVisible" Value="False" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsMouseOver, ElementName=SkinCard}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Setter Property="IsHitTestVisible" Value="True" />
+                                                            <Setter Property="Opacity" Value="1" />
+                                                            <DataTrigger.EnterActions>
+                                                                <BeginStoryboard>
+                                                                    <Storyboard FillBehavior="Stop">
+                                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                                         From="0" To="1" Duration="0:0:0.18" />
+                                                                    </Storyboard>
+                                                                </BeginStoryboard>
+                                                            </DataTrigger.EnterActions>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsKeyboardFocusWithin, ElementName=SkinCard}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Setter Property="IsHitTestVisible" Value="True" />
+                                                            <Setter Property="Opacity" Value="1" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Grid.Style>
+                                            <Button Content="✎"
+                                                    ToolTip="{DynamicResource L10n.client.account.skin.choose}"
+                                                    AutomationProperties.Name="{DynamicResource L10n.client.account.skin.choose}"
+                                                    Command="{Binding ChooseSkinFileCommand}"
+                                                    Style="{StaticResource PrimaryButton}"
+                                                    Width="48" Height="48" MinWidth="48" Padding="4"
+                                                    FontSize="22" />
+                                        </Grid>
+                                    </Grid>
+                                    <TextBlock Text="{Binding SelectedSkinFileName}" Style="{StaticResource MutedText}"
+                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                    <Button Content="{DynamicResource L10n.client.account.skin.save}" Style="{StaticResource PrimaryButton}"
+                                            Command="{Binding SaveSkinCommand}" HorizontalAlignment="Stretch" Margin="0,10,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.account.cape.heading}" Style="{StaticResource ClientSectionHeading}" />
+                                    <TextBlock Text="{DynamicResource L10n.client.account.cape.description}" Style="{StaticResource MutedText}"
+                                               TextWrapping="Wrap" Margin="0,0,0,8" />
+                                    <ListBox ItemsSource="{Binding SelectedAccountCapes}" SelectedItem="{Binding SelectedCape}"
+                                             MaxHeight="130" Background="Transparent" BorderBrush="{DynamicResource BorderBrush}">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="5">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Alias}" FontWeight="SemiBold" />
+                                                    <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.account.cape.active}"
+                                                               Foreground="{DynamicResource AccentBrush}"
+                                                               Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <WrapPanel HorizontalAlignment="Right" Margin="0,8,0,0">
+                                        <Button Content="{DynamicResource L10n.client.account.cape.disable}" Command="{Binding DisableCapeCommand}" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.account.cape.apply}" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding ApplySelectedCapeCommand}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <Border Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.client.account.list.heading}" FontWeight="SemiBold" />
+                                <ComboBox ItemsSource="{Binding Accounts}" SelectedItem="{Binding SelectedAccount}"
+                                          DisplayMemberPath="Username" Margin="0,7,0,0"
+                                          AutomationProperties.Name="{DynamicResource L10n.client.account.select}" />
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Button Content="{DynamicResource L10n.client.account.signOutAll}" Command="{Binding SignOutAllAccountsCommand}" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource AccentBrush}"
+                                BorderThickness="1" CornerRadius="12" Padding="14"
+                                Visibility="{Binding IsAccountLoginChoiceOpen, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource L10n.client.account.login.heading}" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Text="{DynamicResource L10n.client.account.login.description}" Style="{StaticResource MutedText}"
+                                           TextWrapping="Wrap" Margin="0,4,0,12" />
+                                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="9" Padding="11" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.hint.label}" FontWeight="SemiBold" />
+                                        <TextBox Text="{Binding MicrosoftAccountLoginHint, UpdateSourceTrigger=PropertyChanged}"
+                                                 MaxLength="254" Margin="0,7,0,0"
+                                                 ToolTip="{DynamicResource L10n.client.account.login.hint.description}"
+                                                 AutomationProperties.Name="{DynamicResource L10n.client.account.login.hint.label}" />
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.hint.description}"
+                                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="{DynamicResource AccentDarkBrush}" CornerRadius="9" Padding="11" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.browser.heading}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.browser.description}" Style="{StaticResource MutedText}"
+                                                   TextWrapping="Wrap" Margin="0,3,0,8" />
+                                        <Button Content="{DynamicResource L10n.client.account.login.browser.action}"
+                                                Command="{Binding StartBrowserAccountLoginCommand}" HorizontalAlignment="Stretch" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1" CornerRadius="9" Padding="11">
+                                    <StackPanel>
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.device.heading}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{DynamicResource L10n.client.account.login.device.description}" Style="{StaticResource MutedText}"
+                                                   TextWrapping="Wrap" Margin="0,3,0,8" />
+                                        <Button Content="{DynamicResource L10n.client.account.login.device.action}" Style="{StaticResource PrimaryButton}"
+                                                Command="{Binding StartDeviceCodeAccountLoginCommand}" HorizontalAlignment="Stretch"
+                                                Visibility="{Binding IsDeviceCodePromptVisible, Converter={StaticResource InverseBoolToVisibility}}" />
+                                        <Border Background="{DynamicResource WindowBrush}" CornerRadius="8" Padding="10"
+                                                Visibility="{Binding IsDeviceCodePromptVisible, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.account.device.code}" Style="{StaticResource MutedText}" />
+                                                <TextBox Text="{Binding DeviceCode, Mode=OneWay}" IsReadOnly="True" FontSize="22" FontWeight="Bold"
+                                                         FontFamily="Cascadia Mono, Consolas" HorizontalContentAlignment="Center" Margin="0,5,0,5" />
+                                                <TextBlock Text="{Binding DeviceCodeExpirySummary}" Style="{StaticResource MutedText}"
+                                                           HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                                <WrapPanel HorizontalAlignment="Center">
+                                                    <Button Content="{DynamicResource L10n.client.account.device.copy}" Command="{Binding CopyDeviceCodeCommand}" Margin="0,0,8,0" />
+                                                    <Button Content="{DynamicResource L10n.client.account.device.open}" Style="{StaticResource PrimaryButton}"
+                                                            Command="{Binding OpenDeviceLoginPageCommand}" />
+                                                </WrapPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Text="{DynamicResource L10n.client.account.login.passwordSafety}" Foreground="{DynamicResource AccentBrush}"
+                                           TextWrapping="Wrap" Margin="0,10,0,0" />
+                                <Button Content="{DynamicResource L10n.common.cancel}" Command="{Binding CancelAccountLoginCommand}"
+                                        HorizontalAlignment="Right" Margin="0,10,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
         <Border Grid.Row="2" Background="{DynamicResource PanelBrush}"
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
             <Grid Margin="14,4">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}" FontSize="11"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="1" Text="X MCSV · Minecraft Client" Style="{StaticResource MutedText}"
+                <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.footer.product}" Style="{StaticResource MutedText}"
                            FontSize="11" VerticalAlignment="Center" />
             </Grid>
         </Border>
