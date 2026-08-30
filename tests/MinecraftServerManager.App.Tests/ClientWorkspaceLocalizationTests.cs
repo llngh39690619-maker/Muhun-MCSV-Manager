@@ -236,6 +236,94 @@ public sealed class ClientWorkspaceLocalizationTests
     }
 
     [Fact]
+    public void FtbInstallFailures_HaveLocalizedDiagnosticAndLoggingFallbackMessages()
+    {
+        const string diagnosticId = "FTB-TEST-1234";
+        var failureKeys = new[]
+        {
+            "client.vm.catalog.ftb.failure.network",
+            "client.vm.catalog.ftb.failure.timeout",
+            "client.vm.catalog.ftb.failure.integrity",
+            "client.vm.catalog.ftb.failure.compatibility",
+            "client.vm.catalog.ftb.failure.java",
+            "client.vm.catalog.ftb.failure.loader",
+            "client.vm.catalog.ftb.failure.recovery",
+            "client.vm.catalog.ftb.failure.rollback",
+            "client.vm.catalog.ftb.failure.storage",
+            "client.vm.catalog.ftb.failure.unknown",
+        };
+
+        foreach (var cultureName in new[] { "zh-TW", "en-US" })
+        {
+            var strings = ProductLocalizationCatalog.GetDocument(cultureName).Strings;
+            Assert.False(string.IsNullOrWhiteSpace(strings["client.catalog.openDiagnosticsFolder"]));
+            Assert.False(string.IsNullOrWhiteSpace(
+                strings["client.vm.catalog.ftb.diagnosticsFolderOpenFailed"]));
+
+            foreach (var key in failureKeys)
+            {
+                var withDiagnostic = string.Format(
+                    CultureInfo.InvariantCulture,
+                    strings[key],
+                    diagnosticId);
+                Assert.Contains(diagnosticId, withDiagnostic, StringComparison.Ordinal);
+
+                var withoutDiagnostic = strings[key + ".withoutDiagnostic"];
+                Assert.False(string.IsNullOrWhiteSpace(withoutDiagnostic));
+                Assert.DoesNotContain("{0}", withoutDiagnostic, StringComparison.Ordinal);
+                Assert.DoesNotContain(diagnosticId, withoutDiagnostic, StringComparison.Ordinal);
+            }
+
+            foreach (var key in failureKeys.Append("client.vm.catalog.ftb.directFailed")
+                         .Append("client.vm.catalog.ftb.fallbackAvailable"))
+            {
+                Assert.DoesNotContain("已回滾", strings[key], StringComparison.Ordinal);
+                Assert.DoesNotContain("rolled back", strings[key], StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.Equal(
+            "開啟診斷資料夾",
+            ProductLocalizationCatalog.GetDocument("zh-TW").Strings["client.catalog.openDiagnosticsFolder"]);
+        Assert.Equal(
+            "Open diagnostics folder",
+            ProductLocalizationCatalog.GetDocument("en-US").Strings["client.catalog.openDiagnosticsFolder"]);
+    }
+
+    [Fact]
+    public void FtbFailurePresentation_SelectsRecoveryRollbackAndJavaMessagesWithoutHidingSpecificFailures()
+    {
+        Assert.Equal(
+            "client.vm.catalog.ftb.failure.rollback",
+            ClientWorkspaceViewModel.SelectFtbInstallFailureLocalizationKey(
+                new FtbClientInstallFailureClassification(
+                    FtbClientInstallFailurePolicy.RollbackIncomplete,
+                    "client.vm.catalog.ftb.failure.unknown"),
+                "rollback"));
+        Assert.Equal(
+            "client.vm.catalog.ftb.failure.recovery",
+            ClientWorkspaceViewModel.SelectFtbInstallFailureLocalizationKey(
+                new FtbClientInstallFailureClassification(
+                    FtbClientInstallFailurePolicy.RecoveryRequired,
+                    "client.vm.catalog.ftb.failure.unknown"),
+                "recovery-required"));
+        Assert.Equal(
+            "client.vm.catalog.ftb.failure.java",
+            ClientWorkspaceViewModel.SelectFtbInstallFailureLocalizationKey(
+                new FtbClientInstallFailureClassification(
+                    FtbClientInstallFailurePolicy.Unknown,
+                    "client.vm.catalog.ftb.failure.unknown"),
+                "prepare-java"));
+        Assert.Equal(
+            "client.vm.catalog.ftb.failure.network",
+            ClientWorkspaceViewModel.SelectFtbInstallFailureLocalizationKey(
+                new FtbClientInstallFailureClassification(
+                    FtbClientInstallFailurePolicy.NetworkUnavailable,
+                    "client.vm.catalog.ftb.failure.network"),
+                "prepare-java"));
+    }
+
+    [Fact]
     public void ClientWorkspaceProgress_MapsProviderStagesToLocalizedProductText()
     {
         var source = File.ReadAllText(GetAppSourcePath(Path.Combine(

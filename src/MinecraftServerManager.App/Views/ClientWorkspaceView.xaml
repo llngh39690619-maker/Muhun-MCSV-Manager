@@ -803,6 +803,11 @@
                                     <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}"
                                                TextWrapping="Wrap" Margin="0,7,0,0"
                                                Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                                    <Button Content="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
+                                            Command="{Binding OpenClientDiagnosticsFolderCommand}"
+                                            AutomationProperties.Name="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
+                                            HorizontalAlignment="Left" Margin="0,10,0,0"
+                                            Visibility="{Binding ShowsFtbInstallDiagnostic, Converter={StaticResource BoolToVisibility}}" />
                                 </StackPanel>
                             </Border>
                         </StackPanel>

@@ -60,11 +60,91 @@ public sealed class ClientWorkspacePresentationTests
             StringComparison.Ordinal);
         Assert.Contains("OpenFtbFallbackCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("L10n.client.catalog.ftbFallbackAction", xaml, StringComparison.Ordinal);
+        Assert.Contains("OpenClientDiagnosticsFolderCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ShowsFtbInstallDiagnostic", xaml, StringComparison.Ordinal);
+        Assert.Contains("L10n.client.catalog.openDiagnosticsFolder", xaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "AutomationProperties.Name=\"{DynamicResource L10n.client.catalog.openDiagnosticsFolder}\"",
+            xaml,
+            StringComparison.Ordinal);
         Assert.Contains("_ftbInstaller.InstallAsync", source, StringComparison.Ordinal);
         Assert.Contains("InstallSelectedFtbPackAsync", source, StringComparison.Ordinal);
         Assert.Contains("IncludeOptionalFiles: true", source, StringComparison.Ordinal);
         Assert.Contains("_ftbInstaller.RecoverPendingPromotionsAsync", source, StringComparison.Ordinal);
         Assert.Contains("FtbAppProtocol.OfficialDownloadPage", source, StringComparison.Ordinal);
+        Assert.Contains("FtbClientInstallFailurePolicy.Classify", source, StringComparison.Ordinal);
+        Assert.Contains("_clientOperationDiagnosticStore.WriteFailureAsync", source, StringComparison.Ordinal);
+        Assert.Contains("new ClientOperationDiagnosticStore(_paths)", source, StringComparison.Ordinal);
+        Assert.Contains("progressTracker.LastStage", source, StringComparison.Ordinal);
+        Assert.Contains("[\"versionId\"]", source, StringComparison.Ordinal);
+        Assert.Contains("[\"gameVersion\"]", source, StringComparison.Ordinal);
+        Assert.Contains("[\"javaVersion\"]", source, StringComparison.Ordinal);
+        Assert.Contains("ErrorText = LocalizeFtbInstallFailure", source, StringComparison.Ordinal);
+        Assert.Contains("localizationKey + \".withoutDiagnostic\"", source, StringComparison.Ordinal);
+
+        var ftbInstallStart = source.IndexOf(
+            "private async Task InstallSelectedFtbPackAsync",
+            StringComparison.Ordinal);
+        var ftbInstallEnd = source.IndexOf(
+            "private Task OpenSelectedFtbFallbackAsync",
+            ftbInstallStart,
+            StringComparison.Ordinal);
+        var ftbInstall = source[ftbInstallStart..ftbInstallEnd];
+        Assert.Contains("ClearFtbInstallFailureState();", ftbInstall, StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)",
+            ftbInstall,
+            StringComparison.Ordinal);
+        Assert.Contains("_isShowingFtbInstallFailure = true;", ftbInstall, StringComparison.Ordinal);
+        Assert.Contains("SelectFtbInstallFailureLocalizationKey", ftbInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("ErrorText = error.Message", ftbInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("ErrorText = L(\"client.vm.catalog.ftb.directFailed\")", ftbInstall, StringComparison.Ordinal);
+
+        var runGuardedStart = source.IndexOf(
+            "private async Task RunGuardedAsync",
+            StringComparison.Ordinal);
+        var runGuardedEnd = source.IndexOf(
+            "private void ClearFtbInstallFailureState",
+            runGuardedStart,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ClearFtbInstallFailureState();",
+            source[runGuardedStart..runGuardedEnd],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "_isShowingFtbInstallFailure = false;",
+            source[runGuardedStart..runGuardedEnd],
+            StringComparison.Ordinal);
+
+        var diagnosticsStart = source.IndexOf(
+            "private void OpenClientDiagnosticsFolder",
+            StringComparison.Ordinal);
+        var diagnosticsEnd = source.IndexOf(
+            "private void OpenSelectedExternalInstaller",
+            diagnosticsStart,
+            StringComparison.Ordinal);
+        var diagnostics = source[diagnosticsStart..diagnosticsEnd];
+        Assert.Contains("Directory.Exists", diagnostics, StringComparison.Ordinal);
+        Assert.Contains("using var process = Process.Start(start);", diagnostics, StringComparison.Ordinal);
+        Assert.Contains("if (process is null)", diagnostics, StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception error) when (error is not OutOfMemoryException)",
+            diagnostics,
+            StringComparison.Ordinal);
+        Assert.Contains("ShowClientDiagnosticsFolderError();", diagnostics, StringComparison.Ordinal);
+        Assert.Contains("client.vm.catalog.ftb.diagnosticsFolderOpenFailed", diagnostics, StringComparison.Ordinal);
+
+        var cultureChangedStart = source.IndexOf(
+            "private void OnCultureChanged",
+            StringComparison.Ordinal);
+        var cultureChangedEnd = source.IndexOf(
+            "private static string L(",
+            cultureChangedStart,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (_isShowingFtbInstallFailure &&",
+            source[cultureChangedStart..cultureChangedEnd],
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             "if (IsFtbCatalogSource)\r\n        {\r\n            await OpenSelectedFtbPackAsync(project)",
             source,

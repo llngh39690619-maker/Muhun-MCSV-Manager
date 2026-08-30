@@ -224,6 +224,7 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(exception);
         }
     }
 
@@ -239,6 +240,7 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
         catch (Exception exception) when (
             exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(exception);
         }
     }
 
@@ -300,6 +302,8 @@ internal sealed class OfficialMavenClientLoaderInstaller
 
     private readonly IOfficialMavenClientLoaderHttpTransport _transport;
     private readonly IVerifiedMavenClientLoaderProcessRunner _processRunner;
+    private readonly CmlDownloadReliabilityOptions _reliabilityOptions;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
 
     public OfficialMavenClientLoaderInstaller()
         : this(
@@ -311,9 +315,25 @@ internal sealed class OfficialMavenClientLoaderInstaller
     internal OfficialMavenClientLoaderInstaller(
         IOfficialMavenClientLoaderHttpTransport transport,
         IVerifiedMavenClientLoaderProcessRunner processRunner)
+        : this(
+            transport,
+            processRunner,
+            CmlDownloadReliabilityOptions.Default,
+            delayAsync: null)
+    {
+    }
+
+    internal OfficialMavenClientLoaderInstaller(
+        IOfficialMavenClientLoaderHttpTransport transport,
+        IVerifiedMavenClientLoaderProcessRunner processRunner,
+        CmlDownloadReliabilityOptions reliabilityOptions,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
+        _reliabilityOptions = (reliabilityOptions ??
+            throw new ArgumentNullException(nameof(reliabilityOptions))).Validate();
+        _delayAsync = delayAsync ?? Task.Delay;
     }
 
     public async Task<string> InstallAsync(
@@ -340,16 +360,23 @@ internal sealed class OfficialMavenClientLoaderInstaller
             progress?.Report(new MinecraftClientInstallProgress(
                 "download",
                 $"Downloading and verifying the official {loader} installer…"));
-            expectedSha256 = await DownloadSha256SidecarAsync(
-                    loader,
+            expectedSha256 = await ExecuteDownloadWithRetryAsync(
                     sidecarUri,
+                    "loader-sidecar",
+                    token => DownloadSha256SidecarOnceAsync(loader, sidecarUri, token),
+                    cleanup: null,
                     cancellationToken)
                 .ConfigureAwait(false);
-            var length = await DownloadAndVerifyInstallerAsync(
-                    loader,
+            var length = await ExecuteDownloadWithRetryAsync(
                     artifactUri,
-                    partialPath,
-                    expectedSha256,
+                    "loader-installer",
+                    token => DownloadAndVerifyInstallerOnceAsync(
+                        loader,
+                        artifactUri,
+                        partialPath,
+                        expectedSha256,
+                        token),
+                    () => TryDelete(partialPath),
                     cancellationToken)
                 .ConfigureAwait(false);
             File.Move(partialPath, verifiedPath, overwrite: false);
@@ -359,19 +386,52 @@ internal sealed class OfficialMavenClientLoaderInstaller
                 artifactUri,
                 expectedSha256.ToArray(),
                 length);
-            await _processRunner.RunAsync(
-                    artifact,
-                    javaExecutablePath,
+            try
+            {
+                await _processRunner.RunAsync(
+                        artifact,
+                        javaExecutablePath,
+                        fullStagingDirectory,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception processError)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(processError);
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new MinecraftClientLoaderProcessException(
+                    "loader-process",
+                    artifactUri.IdnHost,
+                    processError);
+            }
+
+            try
+            {
+                return FindInstalledProfile(
+                    loader,
+                    gameVersion,
+                    loaderVersion,
                     fullStagingDirectory,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            return FindInstalledProfile(
-                loader,
-                gameVersion,
-                loaderVersion,
-                fullStagingDirectory,
-                versionsBefore,
-                cancellationToken);
+                    versionsBefore,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception profileError)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(profileError);
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new MinecraftClientLoaderProcessException(
+                    "loader-profile-verification",
+                    artifactUri.IdnHost,
+                    profileError);
+            }
         }
         finally
         {
@@ -431,7 +491,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         }
     }
 
-    private async Task<byte[]> DownloadSha256SidecarAsync(
+    private async Task<byte[]> DownloadSha256SidecarOnceAsync(
         MinecraftClientLoader loader,
         Uri uri,
         CancellationToken cancellationToken)
@@ -447,14 +507,16 @@ internal sealed class OfficialMavenClientLoaderInstaller
             var text = Encoding.ASCII.GetString(bytes).Trim();
             if (text.Length != SHA256.HashSizeInBytes * 2 || !text.All(Uri.IsHexDigit))
             {
-                throw new InvalidDataException("The official Maven SHA-256 sidecar is invalid.");
+                throw new DownloadedFileValidationException(
+                    MinecraftClientDownloadFailureKind.InvalidResponse);
             }
 
             return Convert.FromHexString(text);
         }
-        catch (FormatException exception)
+        catch (FormatException)
         {
-            throw new InvalidDataException("The official Maven SHA-256 sidecar is invalid.", exception);
+            throw new DownloadedFileValidationException(
+                MinecraftClientDownloadFailureKind.InvalidResponse);
         }
         finally
         {
@@ -498,7 +560,8 @@ internal sealed class OfficialMavenClientLoaderInstaller
             if (output.Length <= 0 ||
                 response.Content.Headers.ContentLength is { } declared && declared != output.Length)
             {
-                throw new InvalidDataException("The official Maven response length is invalid.");
+                throw new DownloadedFileValidationException(
+                    MinecraftClientDownloadFailureKind.SizeMismatch);
             }
 
             return output.ToArray();
@@ -510,7 +573,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         }
     }
 
-    private async Task<long> DownloadAndVerifyInstallerAsync(
+    private async Task<long> DownloadAndVerifyInstallerOnceAsync(
         MinecraftClientLoader loader,
         Uri uri,
         string destinationPath,
@@ -559,7 +622,8 @@ internal sealed class OfficialMavenClientLoaderInstaller
             if (total <= 0 ||
                 response.Content.Headers.ContentLength is { } declared && declared != total)
             {
-                throw new InvalidDataException("The official loader installer length is invalid.");
+                throw new DownloadedFileValidationException(
+                    MinecraftClientDownloadFailureKind.SizeMismatch);
             }
 
             var actualSha256 = hash.GetHashAndReset();
@@ -567,8 +631,8 @@ internal sealed class OfficialMavenClientLoaderInstaller
             {
                 if (!CryptographicOperations.FixedTimeEquals(expectedSha256, actualSha256))
                 {
-                    throw new InvalidDataException(
-                        "The official loader installer failed SHA-256 verification and was not executed.");
+                    throw new DownloadedFileValidationException(
+                        MinecraftClientDownloadFailureKind.Sha256Mismatch);
                 }
             }
             finally
@@ -583,6 +647,74 @@ internal sealed class OfficialMavenClientLoaderInstaller
             throw new TimeoutException(
                 $"The official loader installer download exceeded the {DownloadTimeout.TotalMinutes:0}-minute limit.");
         }
+    }
+
+    private async Task<T> ExecuteDownloadWithRetryAsync<T>(
+        Uri uri,
+        string stage,
+        Func<CancellationToken, Task<T>> operation,
+        Action? cleanup,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= _reliabilityOptions.MaximumFileAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return await operation(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(exception);
+                cancellationToken.ThrowIfCancellationRequested();
+                cleanup?.Invoke();
+                var retryable = IsRetryableMavenDownloadFailure(exception);
+                if (!retryable || attempt >= _reliabilityOptions.MaximumFileAttempts)
+                {
+                    throw new MinecraftClientDownloadException(
+                        attempt,
+                        uri.IdnHost,
+                        CmlDownloadRetryPolicy.GetHttpStatusCode(exception),
+                        CmlDownloadRetryPolicy.GetFailureKind(exception),
+                        stage,
+                        exception);
+                }
+
+                await _delayAsync(
+                        _reliabilityOptions.GetDelayAfterAttempt(attempt),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        throw new InvalidOperationException("The bounded Maven retry loop did not complete.");
+    }
+
+    private static bool IsRetryableMavenDownloadFailure(Exception exception)
+    {
+        if (exception is AggregateException aggregate)
+        {
+            var failures = aggregate.Flatten().InnerExceptions;
+            return failures.Count > 0 && failures.All(IsRetryableMavenDownloadFailure);
+        }
+
+        if (exception is DownloadedFileValidationException)
+        {
+            return true;
+        }
+
+        if (exception is HttpRequestException or TimeoutException or TaskCanceledException or
+            HttpIOException or System.Net.Sockets.SocketException)
+        {
+            return CmlDownloadRetryPolicy.IsRetryable(exception, CancellationToken.None);
+        }
+
+        return exception is IOException { InnerException: { } inner } &&
+            IsRetryableMavenDownloadFailure(inner);
     }
 
     private static void ValidateResponse(
@@ -619,9 +751,13 @@ internal sealed class OfficialMavenClientLoaderInstaller
                 response.StatusCode);
         }
 
-        if (response.Content.Headers.ContentLength is not { } length ||
-            length <= 0 ||
-            length > maximumBytes)
+        if (response.Content.Headers.ContentLength is not { } length || length <= 0)
+        {
+            throw new DownloadedFileValidationException(
+                MinecraftClientDownloadFailureKind.InvalidResponse);
+        }
+
+        if (length > maximumBytes)
         {
             throw new InvalidDataException("The official Maven response has an invalid declared length.");
         }
@@ -796,6 +932,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(exception);
         }
     }
 }

@@ -29,9 +29,9 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         var unverifiedBytes = Encoding.UTF8.GetBytes("different unverified bytes");
         var transport = CreateTransport(artifactUri, expectedBytes, unverifiedBytes);
         var runner = new RecordingRunner();
-        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
 
-        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var exception = await Assert.ThrowsAsync<MinecraftClientDownloadException>(() =>
             installer.InstallAsync(
                 MinecraftClientLoader.Forge,
                 "1.21.1",
@@ -39,11 +39,171 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 _root,
                 Path.Combine(_root, "java.exe")));
 
-        Assert.Contains("SHA-256", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(4, exception.AttemptCount);
+        Assert.Equal(MinecraftClientDownloadFailureKind.Sha256Mismatch, exception.FailureKind);
+        Assert.Equal("maven.minecraftforge.net", exception.Host);
+        Assert.Equal("loader-installer", exception.Stage);
         Assert.Equal(0, runner.CallCount);
         Assert.Equal(
-            [artifactUri.AbsoluteUri + ".sha256", artifactUri.AbsoluteUri],
+            [
+                artifactUri.AbsoluteUri + ".sha256",
+                artifactUri.AbsoluteUri,
+                artifactUri.AbsoluteUri,
+                artifactUri.AbsoluteUri,
+                artifactUri.AbsoluteUri,
+            ],
             transport.Requests.Select(uri => uri.AbsoluteUri));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_TransientArtifactFailureRetriesDownloadButRunsJavaOnlyOnce()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0");
+        var sidecarUri = new Uri(artifactUri.AbsoluteUri + ".sha256");
+        var installerBytes = "verified installer"u8.ToArray();
+        var sidecarBytes = Encoding.ASCII.GetBytes(Convert.ToHexString(
+            SHA256.HashData(installerBytes)));
+        var artifactAttempts = 0;
+        var transport = new CallbackTransport(uri =>
+        {
+            if (uri == sidecarUri)
+            {
+                return CreateResponse(uri, sidecarBytes);
+            }
+
+            Assert.Equal(artifactUri, uri);
+            artifactAttempts++;
+            return artifactAttempts == 1
+                ? CreateResponse(uri, [], HttpStatusCode.ServiceUnavailable)
+                : CreateResponse(uri, installerBytes);
+        });
+        var runner = new RecordingRunner((_, instanceDirectory) =>
+            WriteProfile(
+                instanceDirectory,
+                "1.21.1-forge-52.1.0",
+                "net.minecraftforge:forge:1.21.1-52.1.0"));
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 3);
+
+        var profile = await installer.InstallAsync(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0",
+            _root,
+            Path.Combine(_root, "java.exe"));
+
+        Assert.Equal("1.21.1-forge-52.1.0", profile);
+        Assert.Equal(2, artifactAttempts);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal(
+            [sidecarUri, artifactUri, artifactUri],
+            transport.Requests);
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_TransientSidecarFailureRetriesBeforeDownloadingArtifact()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.102");
+        var sidecarUri = new Uri(artifactUri.AbsoluteUri + ".sha256");
+        var installerBytes = "verified NeoForge installer"u8.ToArray();
+        var sidecarBytes = Encoding.ASCII.GetBytes(Convert.ToHexString(
+            SHA256.HashData(installerBytes)));
+        var sidecarAttempts = 0;
+        var transport = new CallbackTransport(uri =>
+        {
+            if (uri == sidecarUri)
+            {
+                sidecarAttempts++;
+                return sidecarAttempts == 1
+                    ? CreateResponse(uri, [], HttpStatusCode.BadGateway)
+                    : CreateResponse(uri, sidecarBytes);
+            }
+
+            Assert.Equal(artifactUri, uri);
+            return CreateResponse(uri, installerBytes);
+        });
+        var runner = new RecordingRunner((_, instanceDirectory) =>
+            WriteProfile(
+                instanceDirectory,
+                "1.21.1-neoforge-21.1.102",
+                "net.neoforged:neoforge:21.1.102"));
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 3);
+
+        var profile = await installer.InstallAsync(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.102",
+            _root,
+            Path.Combine(_root, "java.exe"));
+
+        Assert.Equal("1.21.1-neoforge-21.1.102", profile);
+        Assert.Equal(2, sidecarAttempts);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal([sidecarUri, sidecarUri, artifactUri], transport.Requests);
+    }
+
+    [Fact]
+    public async Task InstallAsync_ProcessFailureIsNeverRetried()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0");
+        var installerBytes = "verified process failure fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var runner = new RecordingRunner((_, _) =>
+            throw new InvalidOperationException("simulated Java loader failure"));
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.Forge,
+                "1.21.1",
+                "52.1.0",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("loader-process", error.Stage);
+        Assert.Equal("maven.minecraftforge.net", error.Host);
+        Assert.DoesNotContain("simulated Java loader failure", error.Message, StringComparison.Ordinal);
+        Assert.IsType<InvalidOperationException>(error.InnerException);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal(2, transport.Requests.Count);
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_ProcessOutOfMemoryIsNeverWrappedOrRetried()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0");
+        var installerBytes = "verified process OOM fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var expected = new OutOfMemoryException("sensitive process diagnostic");
+        var runner = new RecordingRunner((_, _) => throw new AggregateException(
+            new IOException("process wrapper", expected)));
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
+
+        var error = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.Forge,
+                "1.21.1",
+                "52.1.0",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Same(expected, error);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal(2, transport.Requests.Count);
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
     }
 
@@ -64,7 +224,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         var runner = new RecordingRunner();
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+        var exception = await Assert.ThrowsAsync<MinecraftClientDownloadException>(() =>
             installer.InstallAsync(
                 MinecraftClientLoader.Forge,
                 "1.21.1",
@@ -72,9 +232,42 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 _root,
                 Path.Combine(_root, "java.exe")));
 
-        Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
+        Assert.Equal(1, exception.AttemptCount);
+        Assert.Equal(HttpStatusCode.NotFound, exception.HttpStatusCode);
+        Assert.Equal(MinecraftClientDownloadFailureKind.HttpStatus, exception.FailureKind);
+        Assert.Equal("loader-sidecar", exception.Stage);
+        Assert.Equal("maven.minecraftforge.net", exception.Host);
+        Assert.DoesNotContain(sidecarUri.AbsolutePath, exception.Message, StringComparison.Ordinal);
         Assert.Equal(0, runner.CallCount);
         Assert.Equal(sidecarUri, Assert.Single(transport.Requests));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_DownloadOutOfMemoryIsNeverWrappedOrRetried()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0");
+        var sidecarUri = new Uri(artifactUri.AbsoluteUri + ".sha256");
+        var expected = new OutOfMemoryException("sensitive download diagnostic");
+        var transport = new CallbackTransport(_ => throw new AggregateException(
+            new IOException("download wrapper", expected)));
+        var runner = new RecordingRunner();
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
+
+        var error = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.Forge,
+                "1.21.1",
+                "52.1.0",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Same(expected, error);
+        Assert.Equal(sidecarUri, Assert.Single(transport.Requests));
+        Assert.Equal(0, runner.CallCount);
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
     }
 
@@ -112,6 +305,34 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task InstallAsync_MissingInstalledProfileReturnsSafeLoaderVerificationFailure()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.Forge,
+            "1.21.1",
+            "52.1.0");
+        var installerBytes = "verified missing-profile fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var runner = new RecordingRunner();
+        var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.Forge,
+                "1.21.1",
+                "52.1.0",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("loader-profile-verification", error.Stage);
+        Assert.Equal("maven.minecraftforge.net", error.Host);
+        Assert.IsType<InvalidDataException>(error.InnerException);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal(2, transport.Requests.Count);
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
     public async Task InstallAsync_RedirectResponseNeverRunsInstaller()
     {
         var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
@@ -129,7 +350,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         var runner = new RecordingRunner();
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
-        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var exception = await Assert.ThrowsAsync<MinecraftClientDownloadException>(() =>
             installer.InstallAsync(
                 MinecraftClientLoader.NeoForge,
                 "1.21.1",
@@ -137,7 +358,11 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 _root,
                 Path.Combine(_root, "java.exe")));
 
-        Assert.Contains("redirect", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, exception.AttemptCount);
+        Assert.Equal("loader-sidecar", exception.Stage);
+        Assert.Equal("maven.neoforged.net", exception.Host);
+        Assert.Equal(MinecraftClientDownloadFailureKind.InvalidResponse, exception.FailureKind);
+        Assert.IsType<InvalidDataException>(exception.InnerException);
         Assert.Equal(0, runner.CallCount);
         Assert.Single(transport.Requests);
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
@@ -164,7 +389,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         var runner = new RecordingRunner();
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var exception = await Assert.ThrowsAsync<MinecraftClientDownloadException>(() =>
             installer.InstallAsync(
                 MinecraftClientLoader.Forge,
                 "1.20.1",
@@ -172,6 +397,11 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 _root,
                 Path.Combine(_root, "java.exe")));
 
+        Assert.Equal(1, exception.AttemptCount);
+        Assert.Equal("loader-installer", exception.Stage);
+        Assert.Equal("maven.minecraftforge.net", exception.Host);
+        Assert.Equal(MinecraftClientDownloadFailureKind.InvalidResponse, exception.FailureKind);
+        Assert.IsType<InvalidDataException>(exception.InnerException);
         Assert.Equal(0, runner.CallCount);
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
     }
@@ -305,6 +535,42 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         });
     }
 
+    private static OfficialMavenClientLoaderInstaller CreateRetryingInstaller(
+        IOfficialMavenClientLoaderHttpTransport transport,
+        IVerifiedMavenClientLoaderProcessRunner runner,
+        int maximumAttempts) =>
+        new(
+            transport,
+            runner,
+            new CmlDownloadReliabilityOptions
+            {
+                MaximumFileAttempts = maximumAttempts,
+                MaximumPhaseAttempts = 1,
+                MaximumConcurrentChecks = 1,
+                MaximumConcurrentDownloads = 1,
+                BoundedCapacity = 4,
+                RetryDelays = [TimeSpan.Zero],
+            },
+            (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            });
+
+    private static HttpResponseMessage CreateResponse(
+        Uri uri,
+        byte[] body,
+        HttpStatusCode statusCode = HttpStatusCode.OK)
+    {
+        var response = new HttpResponseMessage(statusCode)
+        {
+            RequestMessage = new HttpRequestMessage(HttpMethod.Get, uri),
+            Content = new ByteArrayContent(body),
+        };
+        response.Content.Headers.ContentLength = body.LongLength;
+        return response;
+    }
+
     private static void WriteProfile(
         string instanceDirectory,
         string profileId,
@@ -389,6 +655,34 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 specification.DeclaredLength ?? specification.Body.LongLength;
             response.Headers.Location = specification.RedirectLocation;
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class CallbackTransport(Func<Uri, HttpResponseMessage> callback)
+        : IOfficialMavenClientLoaderHttpTransport
+    {
+        private readonly List<Uri> _requests = [];
+
+        public IReadOnlyList<Uri> Requests
+        {
+            get
+            {
+                lock (_requests)
+                {
+                    return _requests.ToArray();
+                }
+            }
+        }
+
+        public Task<HttpResponseMessage> GetAsync(Uri uri, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_requests)
+            {
+                _requests.Add(uri);
+            }
+
+            return Task.FromResult(callback(uri));
         }
     }
 }

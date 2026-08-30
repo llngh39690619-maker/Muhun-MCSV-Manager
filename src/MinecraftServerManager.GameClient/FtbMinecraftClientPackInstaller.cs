@@ -292,11 +292,13 @@ public sealed class FtbMinecraftClientPackInstaller
                         if (commitState == RegistryCommitState.Committed)
                         {
                             registryCommitted = true;
+                            ExceptionGraphSafety.RethrowOutOfMemory(commitError);
                             Debug.WriteLine(
                                 $"FTB registry commit completed despite a caller-visible error: {commitError}");
                         }
                         else
                         {
+                            ExceptionGraphSafety.RethrowOutOfMemory(commitError);
                             ExceptionDispatchInfo.Capture(commitError).Throw();
                         }
                     }
@@ -305,10 +307,11 @@ public sealed class FtbMinecraftClientPackInstaller
                                commitError))
                     {
                         rollbackPermitted = false;
-                        throw new AggregateException(
-                            "The FTB registry commit outcome could not be proven; the durable promotion receipt was retained for recovery.",
-                            commitError,
-                            verificationError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(commitError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(verificationError);
+                        throw new FtbClientInstallRecoveryRequiredException(
+                            "registry-commit-verification",
+                            [commitError, verificationError]);
                     }
                 }
 
@@ -332,12 +335,14 @@ public sealed class FtbMinecraftClientPackInstaller
                     catch (Exception revocationError)
                     {
                         rollbackPermitted = false;
-                        throw new AggregateException(
-                            "The committed FTB tree failed its final security validation and registry revocation could not be proven; recovery is required.",
-                            integrityError,
-                            revocationError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(revocationError);
+                        throw new FtbClientInstallRecoveryRequiredException(
+                            "post-commit-revocation",
+                            [integrityError, revocationError]);
                     }
 
+                    ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
                     throw new InvalidDataException(
                         "The committed FTB tree changed during registry commit and was revoked.",
                         integrityError);
@@ -348,6 +353,7 @@ public sealed class FtbMinecraftClientPackInstaller
                 // observer can both mutate filesystem state and throw; the tree must still be
                 // validated/revoked before this method can return or propagate an installation
                 // failure. Observer failures alone are diagnostic and do not undo a safe commit.
+                OutOfMemoryException? completionOutOfMemory = null;
                 try
                 {
                     progress?.Report(new FtbClientPackInstallProgress(
@@ -357,8 +363,9 @@ public sealed class FtbMinecraftClientPackInstaller
                         1,
                         Fraction: 1d));
                 }
-                catch (Exception)
+                catch (Exception observerError)
                 {
+                    completionOutOfMemory = ExceptionGraphSafety.FindOutOfMemory(observerError);
                     // Observer failures cannot participate in the durable commit decision. Avoid
                     // even formatting the caller-provided exception before finalization because a
                     // custom Exception.ToString implementation can itself throw.
@@ -378,15 +385,32 @@ public sealed class FtbMinecraftClientPackInstaller
                     catch (Exception revocationError)
                     {
                         rollbackPermitted = false;
-                        throw new AggregateException(
-                            "The committed FTB tree failed its finalization invariant and registry revocation could not be proven; its ownership receipt was retained for recovery.",
-                            integrityError,
-                            revocationError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
+                        ExceptionGraphSafety.RethrowOutOfMemory(revocationError);
+                        if (completionOutOfMemory is not null)
+                        {
+                            ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
+                        }
+
+                        throw new FtbClientInstallRecoveryRequiredException(
+                            "finalization-revocation",
+                            [integrityError, revocationError]);
+                    }
+
+                    ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
+                    if (completionOutOfMemory is not null)
+                    {
+                        ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
                     }
 
                     throw new InvalidDataException(
                         "The committed FTB tree changed during finalization and was revoked.",
                         integrityError);
+                }
+
+                if (completionOutOfMemory is not null)
+                {
+                    ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
                 }
 
                 return new FtbClientPackInstallResult(
@@ -404,6 +428,7 @@ public sealed class FtbMinecraftClientPackInstaller
         }
         catch (Exception installError)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(installError);
             if (registryCommitted)
             {
                 ExceptionDispatchInfo.Capture(installError).Throw();
@@ -433,14 +458,15 @@ public sealed class FtbMinecraftClientPackInstaller
                 }
                 catch (Exception cleanupError)
                 {
+                    ExceptionGraphSafety.RethrowOutOfMemory(cleanupError);
                     rollbackErrors.Add(cleanupError);
                 }
             }
 
             if (rollbackErrors.Count > 0)
             {
-                throw new AggregateException(
-                    "The FTB client installation failed and durable rollback is incomplete; its receipt was retained for recovery.",
+                throw new FtbClientInstallRollbackIncompleteException(
+                    "rollback",
                     new[] { installError }.Concat(rollbackErrors));
             }
 
@@ -465,7 +491,9 @@ public sealed class FtbMinecraftClientPackInstaller
             .ToArray();
         if (receiptPaths.Length > MaximumPendingPromotionReceipts)
         {
-            throw new InvalidDataException("Too many pending FTB client promotion receipts were found.");
+            throw new FtbClientInstallRecoveryRequiredException(
+                "pending-recovery",
+                [new InvalidDataException("Too many pending FTB client promotion receipts were found.")]);
         }
 
         if (receiptPaths.Length == 0)
@@ -473,7 +501,22 @@ public sealed class FtbMinecraftClientPackInstaller
             return;
         }
 
-        var registry = await _registry.LoadAsync(cancellationToken).ConfigureAwait(false);
+        MinecraftClientRegistryDocument registry;
+        try
+        {
+            registry = await _registry.LoadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            ExceptionGraphSafety.RethrowOutOfMemory(error);
+            throw new FtbClientInstallRecoveryRequiredException(
+                "pending-recovery",
+                [error]);
+        }
         var failures = new List<Exception>();
         foreach (var receiptPath in receiptPaths.Order(StringComparer.OrdinalIgnoreCase))
         {
@@ -550,6 +593,7 @@ public sealed class FtbMinecraftClientPackInstaller
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
+                ExceptionGraphSafety.RethrowOutOfMemory(error);
                 failures.Add(new IOException(
                     $"Could not reconcile pending FTB promotion receipt '{receiptPath}'.",
                     error));
@@ -558,8 +602,8 @@ public sealed class FtbMinecraftClientPackInstaller
 
         if (failures.Count > 0)
         {
-            throw new AggregateException(
-                "One or more pending FTB client promotions require recovery before new installation can continue.",
+            throw new FtbClientInstallRecoveryRequiredException(
+                "pending-recovery",
                 failures);
         }
     }
@@ -663,6 +707,12 @@ public sealed class FtbMinecraftClientPackInstaller
         }
         catch (Exception verificationError)
         {
+            if (mutationError is not null)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(mutationError);
+            }
+
+            ExceptionGraphSafety.RethrowOutOfMemory(verificationError);
             throw mutationError is null
                 ? verificationError
                 : new AggregateException(
@@ -673,8 +723,18 @@ public sealed class FtbMinecraftClientPackInstaller
 
         if (state == RegistryCommitState.Committed)
         {
+            if (mutationError is not null)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(mutationError);
+            }
+
             throw mutationError ?? new IOException(
                 "The unsafe FTB registry entry remained committed after revocation.");
+        }
+
+        if (mutationError is not null)
+        {
+            ExceptionGraphSafety.RethrowOutOfMemory(mutationError);
         }
     }
 
@@ -739,6 +799,7 @@ public sealed class FtbMinecraftClientPackInstaller
             }
             catch (Exception cleanupError)
             {
+                ExceptionGraphSafety.RethrowOutOfMemory(cleanupError);
                 rollbackErrors.Add(cleanupError);
             }
         }
@@ -755,6 +816,7 @@ public sealed class FtbMinecraftClientPackInstaller
         }
         catch (Exception cleanupError)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(cleanupError);
             rollbackErrors.Add(cleanupError);
         }
 
@@ -766,6 +828,7 @@ public sealed class FtbMinecraftClientPackInstaller
             }
             catch (Exception cleanupError)
             {
+                ExceptionGraphSafety.RethrowOutOfMemory(cleanupError);
                 rollbackErrors.Add(cleanupError);
             }
         }
@@ -783,8 +846,9 @@ public sealed class FtbMinecraftClientPackInstaller
             await DeleteReceiptOperationRootIfPresentAsync(receipt, CancellationToken.None)
                 .ConfigureAwait(false);
         }
-        catch (Exception cleanupError) when (cleanupError is not OutOfMemoryException)
+        catch (Exception cleanupError)
         {
+            ExceptionGraphSafety.RethrowOutOfMemory(cleanupError);
             // The registry now durably owns the final tree. Its receipt is deliberately retained
             // for lifetime recovery, so operation cleanup can safely be retried at startup.
             Debug.WriteLine($"Committed FTB promotion receipt cleanup deferred: {cleanupError}");

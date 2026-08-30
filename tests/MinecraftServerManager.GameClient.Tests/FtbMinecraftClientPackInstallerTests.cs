@@ -383,6 +383,181 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task InstallAsync_UncertainRegistryCommitReturnsTypedRecoveryRequiredFailure()
+    {
+        var fixture = CreateFixture();
+        FileStream? registryLock = null;
+        using var registry = new MinecraftClientRegistry(
+            _registryPath,
+            () =>
+            {
+                registryLock = new FileStream(
+                    _registryPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.None);
+                throw new IOException($"Simulated commit uncertainty at {_root}?token=secret.");
+            });
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+
+        FtbClientInstallRecoveryRequiredException error;
+        try
+        {
+            error = await Assert.ThrowsAsync<FtbClientInstallRecoveryRequiredException>(() =>
+                installer.InstallAsync(Request(), javaExecutablePath: null));
+        }
+        finally
+        {
+            registryLock?.Dispose();
+        }
+
+        Assert.Equal("registry-commit-verification", error.Stage);
+        Assert.Equal(2, error.FailureCount);
+        Assert.True(error.RecoveryRequired);
+        Assert.False(error.RollbackCompleted);
+        Assert.DoesNotContain(_root, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("token", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, GetTransactionFailures(error).InnerExceptions.Count);
+        Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Single(Directory.EnumerateDirectories(_instances));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_CommitOutOfMemoryBubblesOriginalAndRetainsCommittedReceipt()
+    {
+        var fixture = CreateFixture();
+        var expected = new OutOfMemoryException($"Sensitive commit failure at {_root}.");
+        using var registry = new MinecraftClientRegistry(
+            _registryPath,
+            () => throw expected);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+
+        var error = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+            installer.InstallAsync(Request(), javaExecutablePath: null));
+
+        Assert.Same(expected, error);
+        Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Single(Directory.EnumerateDirectories(_instances));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_UncertainPostCommitRevocationReturnsTypedRecoveryRequiredFailure()
+    {
+        var fixture = CreateFixture();
+        var request = Request();
+        var finalRoot = Path.Combine(_instances, request.InstanceId.ToString("N"));
+        var movedOriginal = Path.Combine(_instances, "post-commit-original");
+        var replacement = Path.Combine(_root, "post-commit-replacement");
+        Directory.CreateDirectory(replacement);
+        await File.WriteAllTextAsync(
+            Path.Combine(replacement, "replacement-must-survive.txt"),
+            "replacement-content");
+        FileStream? registryLock = null;
+        using var registry = new MinecraftClientRegistry(
+            _registryPath,
+            () =>
+            {
+                Directory.Move(finalRoot, movedOriginal);
+                Directory.Move(replacement, finalRoot);
+                registryLock = new FileStream(
+                    _registryPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read);
+            });
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+
+        FtbClientInstallRecoveryRequiredException error;
+        try
+        {
+            error = await Assert.ThrowsAsync<FtbClientInstallRecoveryRequiredException>(() =>
+                installer.InstallAsync(request, javaExecutablePath: null));
+        }
+        finally
+        {
+            registryLock?.Dispose();
+        }
+
+        Assert.Equal("post-commit-revocation", error.Stage);
+        Assert.Equal(2, error.FailureCount);
+        Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.True(Directory.Exists(movedOriginal));
+        Assert.Equal(
+            "replacement-content",
+            await File.ReadAllTextAsync(Path.Combine(finalRoot, "replacement-must-survive.txt")));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_UncertainFinalizationRevocationReturnsTypedRecoveryRequiredFailure()
+    {
+        var fixture = CreateFixture();
+        var request = Request();
+        var finalRoot = Path.Combine(_instances, request.InstanceId.ToString("N"));
+        var movedOriginal = Path.Combine(_instances, "finalization-original");
+        var replacement = Path.Combine(_root, "finalization-replacement-locked");
+        Directory.CreateDirectory(replacement);
+        await File.WriteAllTextAsync(
+            Path.Combine(replacement, "replacement-must-survive.txt"),
+            "replacement-content");
+        FileStream? registryLock = null;
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            duringCommittedFinalization: promoted =>
+            {
+                Directory.Move(promoted, movedOriginal);
+                Directory.Move(replacement, promoted);
+                registryLock = new FileStream(
+                    _registryPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read);
+            });
+
+        FtbClientInstallRecoveryRequiredException error;
+        try
+        {
+            error = await Assert.ThrowsAsync<FtbClientInstallRecoveryRequiredException>(() =>
+                installer.InstallAsync(request, javaExecutablePath: null));
+        }
+        finally
+        {
+            registryLock?.Dispose();
+        }
+
+        Assert.Equal("finalization-revocation", error.Stage);
+        Assert.Equal(2, error.FailureCount);
+        Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.True(Directory.Exists(movedOriginal));
+        Assert.Equal(
+            "replacement-content",
+            await File.ReadAllTextAsync(Path.Combine(finalRoot, "replacement-must-survive.txt")));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
     public async Task InstallAsync_FinalRootSwapAcrossRegistryCommitIsRevokedWithoutDeletingReplacement()
     {
         var fixture = CreateFixture();
@@ -407,11 +582,14 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
             fixture,
             artifacts);
 
-        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRollbackIncompleteException>(() =>
             installer.InstallAsync(request, javaExecutablePath: null));
 
+        Assert.Equal("rollback", error.Stage);
+        Assert.True(error.RecoveryRequired);
+        Assert.False(error.RollbackCompleted);
         Assert.Contains(
-            error.InnerExceptions,
+            GetTransactionFailures(error).InnerExceptions,
             exception => exception is InvalidDataException &&
                          exception.Message.Contains("changed during registry commit", StringComparison.Ordinal));
         Assert.Empty((await registry.LoadAsync()).Instances);
@@ -483,9 +661,12 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
                 Directory.Move(replacement, promoted);
             });
 
-        await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRollbackIncompleteException>(() =>
             installer.InstallAsync(request, javaExecutablePath: null));
 
+        Assert.Equal("rollback", error.Stage);
+        Assert.True(error.RecoveryRequired);
+        Assert.False(error.RollbackCompleted);
         Assert.Empty((await registry.LoadAsync()).Instances);
         Assert.True(Directory.Exists(capturedOriginal));
         Assert.Equal("replacement-content", await File.ReadAllTextAsync(
@@ -518,11 +699,12 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
                 Directory.Move(replacement, promoted);
             });
 
-        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRollbackIncompleteException>(() =>
             installer.InstallAsync(request, javaExecutablePath: null));
 
+        Assert.Equal("rollback", error.Stage);
         Assert.Contains(
-            error.InnerExceptions,
+            GetTransactionFailures(error).InnerExceptions,
             exception => exception is InvalidDataException &&
                          exception.Message.Contains("changed during finalization", StringComparison.Ordinal));
         Assert.Empty((await registry.LoadAsync()).Instances);
@@ -562,11 +744,12 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
             }
         });
 
-        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRollbackIncompleteException>(() =>
             installer.InstallAsync(request, javaExecutablePath: null, progress));
 
+        Assert.Equal("rollback", error.Stage);
         Assert.Contains(
-            error.InnerExceptions,
+            GetTransactionFailures(error).InnerExceptions,
             exception => exception is InvalidDataException &&
                          exception.Message.Contains("changed during finalization", StringComparison.Ordinal));
         Assert.Empty((await registry.LoadAsync()).Instances);
@@ -641,11 +824,12 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
                     cancellationToken);
             });
 
-        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRollbackIncompleteException>(() =>
             installer.InstallAsync(Request(), javaExecutablePath: null));
 
+        Assert.Equal("rollback", error.Stage);
         Assert.Contains(
-            error.InnerExceptions,
+            GetTransactionFailures(error).InnerExceptions,
             exception => exception is IOException &&
                          exception.Message.Contains("sharing violation", StringComparison.Ordinal));
         var finalRoot = Path.Combine(_instances, Request().InstanceId.ToString("N"));
@@ -666,6 +850,42 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         Assert.False(Directory.Exists(finalRoot));
         Assert.Empty(Directory.EnumerateFileSystemEntries(_staging));
         Assert.Empty((await recoveredRegistry.LoadAsync()).Instances);
+    }
+
+    [Fact]
+    public async Task InstallAsync_RollbackCleanupOutOfMemoryBubblesOriginalAndRetainsReceipt()
+    {
+        var fixture = CreateFixture();
+        Directory.CreateDirectory(_registryPath);
+        using var failingRegistry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var expected = new OutOfMemoryException($"Sensitive cleanup failure at {_root}.");
+        var installer = CreateInstaller(
+            failingRegistry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            (trustedRoot, path, identity, cancellationToken) =>
+            {
+                if (PathsEqual(trustedRoot, _instances))
+                {
+                    throw expected;
+                }
+
+                return SafePath.DeleteTreeWithoutFollowingReparsePointsWithRetryAsync(
+                    trustedRoot,
+                    path,
+                    identity,
+                    protectedObjectIdentities: null,
+                    cancellationToken);
+            });
+
+        var error = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+            installer.InstallAsync(Request(), javaExecutablePath: null));
+
+        Assert.Same(expected, error);
+        Assert.Single(Directory.EnumerateDirectories(_instances));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
     }
 
     [Fact]
@@ -713,6 +933,35 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task RecoverPendingPromotionsAsync_OutOfMemoryBubblesOriginalAndRetainsReceipt()
+    {
+        var fixture = CreateFixture();
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+        var installed = await installer.InstallAsync(Request(), javaExecutablePath: null);
+        var expected = new OutOfMemoryException($"Sensitive recovery failure at {_root}.");
+        var recovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            duringRegisteredRecovery: _ => throw expected);
+
+        var error = await Assert.ThrowsAsync<OutOfMemoryException>(() =>
+            recovery.RecoverPendingPromotionsAsync());
+
+        Assert.Same(expected, error);
+        Assert.Equal(installed.Instance.Id, Assert.Single((await registry.LoadAsync()).Instances).Id);
+        Assert.True(Directory.Exists(installed.Instance.DirectoryPath));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
     public async Task RecoverPendingPromotionsAsync_SwapDuringCleanupFailsClosedAndRetainsReceipt()
     {
         var fixture = CreateFixture();
@@ -743,11 +992,14 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
                 Directory.Move(replacement, registered);
             });
 
-        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+        var error = await Assert.ThrowsAsync<FtbClientInstallRecoveryRequiredException>(() =>
             recovery.RecoverPendingPromotionsAsync());
 
+        Assert.Equal("pending-recovery", error.Stage);
+        Assert.True(error.RecoveryRequired);
+        Assert.False(error.RollbackCompleted);
         Assert.Contains(
-            error.InnerExceptions,
+            GetTransactionFailures(error).InnerExceptions,
             exception => exception.InnerException is UnauthorizedAccessException);
         Assert.Equal(installed.Instance.Id, Assert.Single((await registry.LoadAsync()).Instances).Id);
         Assert.True(Directory.Exists(movedOriginal));
@@ -807,6 +1059,9 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(first)).Equals(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(second)),
             StringComparison.OrdinalIgnoreCase);
+
+    private static AggregateException GetTransactionFailures(Exception exception) =>
+        Assert.IsType<AggregateException>(exception.InnerException);
 
     private static void CreateDirectoryJunction(string linkPath, string targetPath)
     {

@@ -63,6 +63,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly ModrinthClientContentInstaller _modrinthContentInstaller;
     private readonly FtbClientCatalog _ftbCatalog;
     private readonly FtbMinecraftClientPackInstaller _ftbInstaller;
+    private readonly ClientOperationDiagnosticStore _clientOperationDiagnosticStore;
     private readonly IOnlineModpackArtworkCache _artworkCache;
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
     private readonly SemaphoreSlim _contentGate = new(1, 1);
@@ -154,6 +155,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private int _catalogTotalHits;
     private int _catalogNextOffset;
     private string _catalogStatusText = string.Empty;
+    private string? _lastFtbInstallFailureLocalizationKey;
+    private string? _lastFtbInstallDiagnosticId;
+    private bool _isShowingFtbInstallFailure;
+    private bool _hasFtbInstallDiagnostic;
     private ClientModpackProjectItemViewModel? _selectedCatalogProject;
     private ClientCatalogVersionItemViewModel? _selectedCatalogVersion;
     private string _catalogInstanceName = string.Empty;
@@ -237,6 +242,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             payloadInstaller,
             _ftbCatalog,
             _gameHttpClient);
+        _clientOperationDiagnosticStore = new ClientOperationDiagnosticStore(_paths);
         _artworkCache = new OnlineModpackArtworkCache(_paths);
         _bedrockOfficialHandoff = new BedrockOfficialHandoffService();
         _statusText = L("client.vm.status.initial");
@@ -275,6 +281,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OpenFtbFallbackCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(OpenSelectedFtbFallbackAsync),
             CanOpenFtbFallback);
+        OpenClientDiagnosticsFolderCommand = new RelayCommand(
+            OpenClientDiagnosticsFolder,
+            () => HasFtbInstallDiagnostic);
         CloseCreateCommand = new RelayCommand(ShowSelectedInstance);
         CreateInstanceCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(CreateInstanceAsync),
@@ -456,6 +465,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand LoadMoreCatalogCommand { get; }
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
     public AsyncRelayCommand OpenFtbFallbackCommand { get; }
+    public RelayCommand OpenClientDiagnosticsFolderCommand { get; }
     public RelayCommand CloseCreateCommand { get; }
     public AsyncRelayCommand CreateInstanceCommand { get; }
     public RelayCommand CancelOperationCommand { get; }
@@ -1008,6 +1018,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             OnPropertyChanged(nameof(IsModrinthCatalogSource));
             OnPropertyChanged(nameof(IsFtbCatalogSource));
+            OnPropertyChanged(nameof(ShowsFtbInstallDiagnostic));
             OnPropertyChanged(nameof(IsBrowsableCatalogSource));
             OnPropertyChanged(nameof(IsUnavailableCatalogSource));
             OnPropertyChanged(nameof(ShowsCatalogSortFilter));
@@ -1029,6 +1040,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public bool IsModrinthCatalogSource => CatalogSourceId == "modrinth";
 
     public bool IsFtbCatalogSource => CatalogSourceId == "ftb";
+
+    public bool HasFtbInstallDiagnostic
+    {
+        get => _hasFtbInstallDiagnostic;
+        private set
+        {
+            if (SetProperty(ref _hasFtbInstallDiagnostic, value))
+            {
+                OnPropertyChanged(nameof(ShowsFtbInstallDiagnostic));
+                OpenClientDiagnosticsFolderCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool ShowsFtbInstallDiagnostic => IsFtbCatalogSource && HasFtbInstallDiagnostic;
 
     public bool IsBrowsableCatalogSource => IsModrinthCatalogSource || IsFtbCatalogSource;
 
@@ -2378,7 +2404,26 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         var operation = BeginOperation();
+        var progressTracker = new FtbInstallProgressTracker(
+            new Progress<FtbClientPackInstallProgress>(value =>
+            {
+                StatusText = LocalizeFtbInstallProgress(value);
+                if (value.Fraction is { } fraction)
+                {
+                    ProgressValue = Math.Clamp(fraction, 0d, 1d);
+                }
+                else if (value.TotalItems > 0)
+                {
+                    ProgressValue = Math.Clamp(
+                        value.CompletedItems / (double)value.TotalItems,
+                        0d,
+                        1d);
+                }
+            }));
+        progressTracker.SetStage("prepare-java");
+        int? diagnosticJavaMajor = null;
         IsBusy = true;
+        ClearFtbInstallFailureState();
         ErrorText = string.Empty;
         try
         {
@@ -2387,8 +2432,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                             _javaRecommendation.GetRecommendation(
                                 gameVersion,
                                 CoreType.Unknown).MajorVersion;
+            diagnosticJavaMajor = javaMajor;
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
             var java = await ResolveJavaAsync(javaMajor, operation.Token);
+            progressTracker.SetStage("cache-artwork");
             await CacheCatalogArtworkAsync([project], operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             var request = new FtbClientPackInstallRequest(
@@ -2414,25 +2461,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 JavaMajorVersion: javaMajor,
                 CatalogIconImagePath: project.IconImagePath,
                 CatalogPreviewImagePath: project.PreviewImagePath);
-            var progress = new Progress<FtbClientPackInstallProgress>(value =>
-            {
-                StatusText = LocalizeFtbInstallProgress(value);
-                if (value.Fraction is { } fraction)
-                {
-                    ProgressValue = Math.Clamp(fraction, 0d, 1d);
-                }
-                else if (value.TotalItems > 0)
-                {
-                    ProgressValue = Math.Clamp(
-                        value.CompletedItems / (double)value.TotalItems,
-                        0d,
-                        1d);
-                }
-            });
+            progressTracker.SetStage("install-game");
             var result = await _ftbInstaller.InstallAsync(
                 request,
                 java,
-                progress,
+                progressTracker,
                 operation.Token);
 
             var item = new ClientInstanceItemViewModel(result.Instance)
@@ -2445,14 +2478,54 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             CatalogStatusText = L("client.vm.catalog.ftb.directInstalled", item.Name);
             StatusText = CatalogStatusText;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
-            Debug.WriteLine($"FTB direct client-pack installation failed: {error}");
-            ErrorText = L("client.vm.catalog.ftb.directFailed");
+            var classification = FtbClientInstallFailurePolicy.Classify(
+                error,
+                progressTracker.LastStage);
+            ClientOperationDiagnosticReference? diagnostic = null;
+            try
+            {
+                diagnostic = await _clientOperationDiagnosticStore.WriteFailureAsync(
+                    new ClientOperationDiagnosticWriteRequest(
+                        "ftb-client-install",
+                        progressTracker.LastStage,
+                        classification.FailureCode,
+                        error,
+                        new Dictionary<string, string?>(StringComparer.Ordinal)
+                        {
+                            ["provider"] = "ftb",
+                            ["packId"] = ftbProject.PackId.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                            ["versionId"] = ftbVersion.VersionId.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                            ["gameVersion"] = gameVersion,
+                            ["loader"] = ftbVersion.LoaderName,
+                            ["loaderVersion"] = ftbVersion.LoaderVersion,
+                            ["javaVersion"] = diagnosticJavaMajor?.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                        }),
+                    CancellationToken.None);
+            }
+            catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException)
+            {
+                Debug.WriteLine($"FTB client diagnostic persistence failed: {diagnosticError.GetType().Name}");
+            }
+
+            var failureLocalizationKey = SelectFtbInstallFailureLocalizationKey(
+                classification,
+                progressTracker.LastStage);
+            _lastFtbInstallFailureLocalizationKey = failureLocalizationKey;
+            _lastFtbInstallDiagnosticId = diagnostic?.DiagnosticId;
+            HasFtbInstallDiagnostic = diagnostic is not null;
+            _isShowingFtbInstallFailure = true;
+            ErrorText = LocalizeFtbInstallFailure(
+                failureLocalizationKey,
+                diagnostic?.DiagnosticId);
             CatalogStatusText = L("client.vm.catalog.ftb.fallbackAvailable");
             StatusText = CatalogStatusText;
         }
@@ -4107,6 +4180,43 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         Process.Start(start);
     }
 
+    private void OpenClientDiagnosticsFolder()
+    {
+        if (!HasFtbInstallDiagnostic)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Directory.Exists(_clientOperationDiagnosticStore.DirectoryPath))
+            {
+                HasFtbInstallDiagnostic = false;
+                ShowClientDiagnosticsFolderError();
+                return;
+            }
+
+            var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            start.ArgumentList.Add(_clientOperationDiagnosticStore.DirectoryPath);
+            using var process = Process.Start(start);
+            if (process is null)
+            {
+                ShowClientDiagnosticsFolderError();
+            }
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Debug.WriteLine($"Opening the FTB client diagnostics folder failed: {error.GetType().Name}");
+            ShowClientDiagnosticsFolderError();
+        }
+    }
+
+    private void ShowClientDiagnosticsFolderError()
+    {
+        _isShowingFtbInstallFailure = false;
+        ErrorText = L("client.vm.catalog.ftb.diagnosticsFolderOpenFailed");
+    }
+
     private void OpenSelectedExternalInstaller()
     {
         if (SelectedLoaderVersion?.OfficialSourceUri is not { } uri)
@@ -4876,6 +4986,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     {
         try
         {
+            _isShowingFtbInstallFailure = false;
             ErrorText = string.Empty;
             await operation();
         }
@@ -4888,6 +4999,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             ErrorText = LocalizeFtbValidationFailure(error);
             StatusText = L("client.vm.status.operationFailed");
         }
+    }
+
+    private void ClearFtbInstallFailureState()
+    {
+        _lastFtbInstallFailureLocalizationKey = null;
+        _lastFtbInstallDiagnosticId = null;
+        _isShowingFtbInstallFailure = false;
+        HasFtbInstallDiagnostic = false;
     }
 
     internal static string LocalizeFtbValidationFailure(Exception error)
@@ -4949,6 +5068,38 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             "complete" => L("client.vm.progress.ftb.complete"),
             _ => L("client.vm.progress.working"),
         };
+
+    private static string LocalizeFtbInstallFailure(
+        string localizationKey,
+        string? diagnosticId) =>
+        string.IsNullOrWhiteSpace(diagnosticId)
+            ? L(localizationKey + ".withoutDiagnostic")
+            : L(localizationKey, diagnosticId);
+
+    internal static string SelectFtbInstallFailureLocalizationKey(
+        FtbClientInstallFailureClassification classification,
+        string lastStage)
+    {
+        ArgumentNullException.ThrowIfNull(classification);
+        if (classification.FailureCode == FtbClientInstallFailurePolicy.RollbackIncomplete)
+        {
+            return "client.vm.catalog.ftb.failure.rollback";
+        }
+
+        if (classification.FailureCode == FtbClientInstallFailurePolicy.RecoveryRequired)
+        {
+            return "client.vm.catalog.ftb.failure.recovery";
+        }
+
+        if (classification.FailureCode == FtbClientInstallFailurePolicy.Unknown &&
+            !string.IsNullOrWhiteSpace(lastStage) &&
+            lastStage.Contains("java", StringComparison.OrdinalIgnoreCase))
+        {
+            return "client.vm.catalog.ftb.failure.java";
+        }
+
+        return classification.LocalizationKey;
+    }
 
     private static int? TryParseFtbJavaMajor(string? value)
     {
@@ -5154,6 +5305,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(SelectedAccountExpirySummary));
         OnPropertyChanged(nameof(DeviceCodeExpirySummary));
         OnPropertyChanged(nameof(SelectedSkinFileName));
+        if (_isShowingFtbInstallFailure &&
+            !string.IsNullOrWhiteSpace(_lastFtbInstallFailureLocalizationKey))
+        {
+            ErrorText = LocalizeFtbInstallFailure(
+                _lastFtbInstallFailureLocalizationKey,
+                _lastFtbInstallDiagnosticId);
+        }
     }
 
     private static string L(string key, params object?[] arguments) =>
@@ -5265,4 +5423,31 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private sealed record ContentRefreshProjection(
         IReadOnlyList<ClientContentItemViewModel> Items,
         bool LimitReached);
+
+    private sealed class FtbInstallProgressTracker(
+        IProgress<FtbClientPackInstallProgress> presentationProgress)
+        : IProgress<FtbClientPackInstallProgress>
+    {
+        private string _lastStage = "prepare-java";
+
+        public string LastStage => Volatile.Read(ref _lastStage);
+
+        public void SetStage(string stage)
+        {
+            var normalized = !string.IsNullOrWhiteSpace(stage) &&
+                             stage.Length <= 64 &&
+                             stage.All(character =>
+                                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
+                ? stage
+                : "unknown";
+            Volatile.Write(ref _lastStage, normalized);
+        }
+
+        public void Report(FtbClientPackInstallProgress value)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            SetStage(value.Stage);
+            presentationProgress.Report(value);
+        }
+    }
 }
