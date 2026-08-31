@@ -8,8 +8,8 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProductMetadataTests
 {
-    private const string CurrentVersion = "1.2.5";
-    private const string CurrentAssemblyVersion = "1.2.5.0";
+    private const string CurrentVersion = "1.2.6";
+    private const string CurrentAssemblyVersion = "1.2.6.0";
     private static readonly string[] VersionedSourceProjects =
     [
         "MinecraftServerManager.App/MinecraftServerManager.App.csproj",
@@ -34,8 +34,8 @@ public sealed class ProductMetadataTests
         var versionInfo = FileVersionInfo.GetVersionInfo(assembly.Location);
 
         Assert.Equal("Muhun MCSV Manager", assembly.GetName().Name);
-        Assert.Equal("1.2.5.0", versionInfo.FileVersion);
-        Assert.Equal("1.2.5", versionInfo.ProductVersion);
+        Assert.Equal("1.2.6.0", versionInfo.FileVersion);
+        Assert.Equal("1.2.6", versionInfo.ProductVersion);
         Assert.Equal("X MCSV", versionInfo.ProductName);
         Assert.Equal("X MCSV", versionInfo.FileDescription);
         Assert.Equal("Copyright © Muhun 2026", versionInfo.LegalCopyright);
@@ -44,16 +44,16 @@ public sealed class ProductMetadataTests
             assembly.GetCustomAttribute<AssemblyTitleAttribute>()?.Title);
 
         var coreAssembly = typeof(MinecraftServerManager.Core.Models.ServerInstance).Assembly;
-        Assert.Equal("1.2.5.0", coreAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.2.6.0", coreAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.2.5",
+            "1.2.6",
             coreAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
 
         var remoteAssembly = typeof(MinecraftServerManager.Remote.RemoteControlOptions).Assembly;
-        Assert.Equal("1.2.5.0", remoteAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.2.6.0", remoteAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.2.5",
+            "1.2.6",
             remoteAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
     }
@@ -66,7 +66,7 @@ public sealed class ProductMetadataTests
         var identity = Assert.Single(document.Descendants(assembly + "assemblyIdentity"));
 
         Assert.Equal("Muhun.MCSV.Manager.app", (string?)identity.Attribute("name"));
-        Assert.Equal("1.2.5.0", (string?)identity.Attribute("version"));
+        Assert.Equal("1.2.6.0", (string?)identity.Attribute("version"));
     }
 
     [Fact]

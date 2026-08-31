@@ -68,6 +68,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly IOnlineModpackArtworkCache _artworkCache;
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
     private readonly SemaphoreSlim _contentGate = new(1, 1);
+    private readonly SemaphoreSlim _contentDownloadInstallGate = new(1, 1);
     private readonly LatestOperationCoordinator _contentRefreshCoordinator;
     private readonly BatchObservableCollection<ClientContentItemViewModel> _contentItems = [];
     private readonly Dictionary<Guid, MinecraftClientProcessSession> _runningSessions = [];
@@ -76,14 +77,22 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly object _runningSessionGate = new();
     private readonly HashSet<Task> _profileSynchronizationTasks = [];
     private readonly object _profileSynchronizationGate = new();
+    private readonly HashSet<Task> _contentDownloadInstallTasks = [];
+    private readonly object _contentDownloadInstallTaskGate = new();
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _operationCancellation;
     private CancellationTokenSource? _loaderRefreshCancellation;
     private CancellationTokenSource? _catalogBrowseCancellation;
     private CancellationTokenSource? _catalogVersionCancellation;
+    private CancellationTokenSource? _contentDownloadBrowseCancellation;
+    private CancellationTokenSource? _contentDownloadDetailsCancellation;
+    private CancellationTokenSource? _contentDownloadPlanCancellation;
     private Task _catalogBrowseTask = Task.CompletedTask;
     private Task _catalogArtworkTask = Task.CompletedTask;
     private Task _catalogVersionTask = Task.CompletedTask;
+    private Task _contentDownloadBrowseTask = Task.CompletedTask;
+    private Task _contentDownloadDetailsTask = Task.CompletedTask;
+    private Task _contentDownloadPlanTask = Task.CompletedTask;
     private Task _loaderRefreshTask = Task.CompletedTask;
     private MinecraftReleaseCatalogSnapshot? _releaseSnapshot;
     private MinecraftReleaseInfo? _selectedRelease;
@@ -141,11 +150,24 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _showRecycleBin;
     private string _contentStatusText = string.Empty;
     private bool _isContentDownloadOpen;
+    private bool _isContentDownloadBusy;
+    private bool _isContentDownloadDetailBusy;
+    private bool _isContentDownloadQueueExpanded;
     private MinecraftClientContentKind _contentDownloadKind = MinecraftClientContentKind.Mod;
     private string _contentDownloadSearchText = string.Empty;
     private string _contentDownloadStatusText = string.Empty;
+    private Guid? _contentDownloadTargetInstanceId;
+    private string _contentDownloadTargetInstanceName = string.Empty;
+    private string _contentDownloadTargetGameVersion = string.Empty;
+    private MinecraftClientLoader _contentDownloadTargetLoader = MinecraftClientLoader.Vanilla;
+    private int _contentDownloadTotalHits;
+    private int _contentDownloadNextOffset;
     private ClientContentDownloadProjectItemViewModel? _selectedContentDownloadProject;
+    private ClientContentDownloadVersionItemViewModel? _selectedContentDownloadVersion;
     private ClientContentDownloadLoaderChoice? _selectedContentDownloadLoader;
+    private ClientContentDownloadCategoryChoice? _selectedContentDownloadCategory;
+    private ClientContentDownloadSortChoice? _selectedContentDownloadSort;
+    private ClientContentInstallJobViewModel? _activeContentDownloadJob;
     private Uri? _contentDownloadFallbackUri;
     private ClientInstanceSettingsEditorViewModel? _settingsEditor;
     private bool _isClientSettingsClosePromptOpen;
@@ -170,10 +192,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _includeOptionalPackFiles;
     private bool _disposed;
     private readonly HashSet<ClientCatalogInstallJobViewModel> _observedCatalogInstallJobs = [];
+    private readonly HashSet<ClientContentInstallJobViewModel> _observedContentDownloadJobs = [];
     private IReadOnlyList<ClientCatalogLoaderChoice> _catalogLoaders = [];
     private IReadOnlyList<ClientCatalogCategoryChoice> _catalogCategories = [];
     private IReadOnlyList<ClientCatalogSortChoice> _catalogSortOptions = [];
     private IReadOnlyList<ClientContentDownloadLoaderChoice> _contentDownloadLoaders = [];
+    private IReadOnlyList<ClientContentDownloadCategoryChoice> _contentDownloadCategories = [];
+    private IReadOnlyList<ClientContentDownloadSortChoice> _contentDownloadSortOptions = [];
     private IReadOnlyList<BedrockChannelChoiceViewModel> _bedrockChannelChoices = [];
 
     public ClientWorkspaceViewModel(
@@ -375,21 +400,39 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OpenSelectedContentFolder,
             parameter => SelectedInstance is not null && parameter is string folder && IsAllowedContentFolder(folder));
         OpenContentDownloadCommand = new AsyncRelayCommand(
-            parameter => RunGuardedAsync(() => OpenContentDownloadAsync(parameter)),
+            parameter => _contentDownloadBrowseTask =
+                RunGuardedAsync(() => OpenContentDownloadAsync(parameter)),
             parameter => CanOpenContentDownload(parameter));
-        CloseContentDownloadCommand = new RelayCommand(CloseContentDownload, () => !IsBusy);
+        SelectContentDownloadKindCommand = new AsyncRelayCommand(
+            parameter => _contentDownloadBrowseTask =
+                RunGuardedAsync(() => SelectContentDownloadKindAsync(parameter)),
+            parameter => TryGetDownloadContentKind(parameter, out _));
+        CloseContentDownloadCommand = new RelayCommand(CloseContentDownload);
         SearchContentDownloadCommand = new AsyncRelayCommand(
-            () => RunGuardedAsync(SearchContentDownloadAsync),
-            () => IsContentDownloadOpen && SelectedInstance is not null && !IsBusy);
+            () => _contentDownloadBrowseTask =
+                RunGuardedAsync(() => LoadContentDownloadPageAsync(append: false)),
+            () => IsContentDownloadOpen && ContentDownloadTargetInstanceId is not null &&
+                  !IsContentDownloadBusy);
+        LoadMoreContentDownloadCommand = new AsyncRelayCommand(
+            () => _contentDownloadBrowseTask =
+                RunGuardedAsync(() => LoadContentDownloadPageAsync(append: true)),
+            () => IsContentDownloadOpen && HasMoreContentDownloadResults &&
+                  !IsContentDownloadBusy);
         InstallContentDownloadCommand = new AsyncRelayCommand(
-            () => RunGuardedAsync(InstallSelectedContentDownloadAsync),
+            () => StartSelectedContentDownloadInstallAsync(),
             CanInstallSelectedContentDownload);
         OpenSelectedContentProjectPageCommand = new RelayCommand(
             OpenSelectedContentProjectPage,
             () => SelectedContentDownloadProject is not null);
         OpenContentFallbackCommand = new RelayCommand(
             OpenContentFallback,
-            () => ContentDownloadFallbackUri is not null);
+            parameter => ResolveContentFallbackUri(parameter) is not null);
+        ToggleContentDownloadQueueCommand = new RelayCommand(
+            () => IsContentDownloadQueueExpanded = !IsContentDownloadQueueExpanded,
+            () => HasContentDownloadJobs);
+        ClearCompletedContentDownloadJobsCommand = new RelayCommand(
+            ClearCompletedContentDownloadJobs,
+            () => HasCompletedContentDownloadJobs);
         SelectJavaEditionCommand = new RelayCommand(() => IsJavaEdition = true);
         SelectBedrockEditionCommand = new RelayCommand(() => IsJavaEdition = false);
         OpenBedrockOfficialCommand = new RelayCommand(
@@ -435,6 +478,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             () => RunGuardedAsync(ChooseClientJavaAsync),
             () => SettingsEditor is not null && SelectedInstance is { IsRunning: false } && !IsBusy);
         CatalogInstallJobs.CollectionChanged += OnCatalogInstallJobsChanged;
+        ContentDownloadJobs.CollectionChanged += OnContentDownloadJobsChanged;
     }
 
     public ObservableCollection<ClientInstanceItemViewModel> Instances { get; } = [];
@@ -453,8 +497,22 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public ObservableCollection<ClientContentDownloadProjectItemViewModel> ContentDownloadResults { get; } = [];
 
+    public ObservableCollection<ClientContentDownloadVersionItemViewModel> ContentDownloadVersions { get; } = [];
+
+    public ObservableCollection<ClientContentDownloadDependencyItemViewModel> ContentDownloadDependencies { get; } = [];
+
+    public ObservableCollection<ClientContentDownloadFallbackItemViewModel> ContentDownloadFallbacks { get; } = [];
+
+    public ObservableCollection<ClientContentInstallJobViewModel> ContentDownloadJobs { get; } = [];
+
     public IReadOnlyList<ClientContentDownloadLoaderChoice> ContentDownloadLoaders =>
         _contentDownloadLoaders;
+
+    public IReadOnlyList<ClientContentDownloadCategoryChoice> ContentDownloadCategories =>
+        _contentDownloadCategories;
+
+    public IReadOnlyList<ClientContentDownloadSortChoice> ContentDownloadSortOptions =>
+        _contentDownloadSortOptions;
 
     public ObservableCollection<ClientModpackProjectItemViewModel> CatalogProjects { get; } = [];
 
@@ -520,11 +578,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand ApplyResolutionPresetCommand { get; }
     public RelayCommand OpenContentFolderCommand { get; }
     public AsyncRelayCommand OpenContentDownloadCommand { get; }
+    public AsyncRelayCommand SelectContentDownloadKindCommand { get; }
     public RelayCommand CloseContentDownloadCommand { get; }
     public AsyncRelayCommand SearchContentDownloadCommand { get; }
+    public AsyncRelayCommand LoadMoreContentDownloadCommand { get; }
     public AsyncRelayCommand InstallContentDownloadCommand { get; }
     public RelayCommand OpenSelectedContentProjectPageCommand { get; }
     public RelayCommand OpenContentFallbackCommand { get; }
+    public RelayCommand ToggleContentDownloadQueueCommand { get; }
+    public RelayCommand ClearCompletedContentDownloadJobsCommand { get; }
     public RelayCommand SelectJavaEditionCommand { get; }
     public RelayCommand SelectBedrockEditionCommand { get; }
     public RelayCommand OpenBedrockOfficialCommand { get; }
@@ -544,6 +606,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand CancelClientSettingsCloseCommand { get; }
     public RelayCommand ChooseClientIconCommand { get; }
     public AsyncRelayCommand ChooseClientJavaCommand { get; }
+
+    public event EventHandler? ContentDownloadCenterRequested;
 
     public MinecraftReleaseInfo? SelectedRelease
     {
@@ -669,11 +733,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _contentRefreshCoordinator.CancelCurrent();
             _contentItems.ReplaceAll([]);
             SelectedContentItem = null;
-            IsContentDownloadOpen = false;
-            ContentDownloadResults.Clear();
-            SelectedContentDownloadProject = null;
-            ContentDownloadFallbackUri = null;
-            OnPropertyChanged(nameof(ContentDownloadDescription));
             if (value is not null)
             {
                 _ = RunGuardedAsync(RefreshContentAsync);
@@ -1627,8 +1686,50 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         private set => SetProperty(ref _isContentDownloadOpen, value);
     }
 
+    public bool IsContentDownloadBusy
+    {
+        get => _isContentDownloadBusy;
+        private set
+        {
+            if (SetProperty(ref _isContentDownloadBusy, value))
+            {
+                SearchContentDownloadCommand.NotifyCanExecuteChanged();
+                LoadMoreContentDownloadCommand.NotifyCanExecuteChanged();
+                InstallContentDownloadCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsContentDownloadDetailBusy
+    {
+        get => _isContentDownloadDetailBusy;
+        private set => SetProperty(ref _isContentDownloadDetailBusy, value);
+    }
+
+    public Guid? ContentDownloadTargetInstanceId => _contentDownloadTargetInstanceId;
+
+    public string ContentDownloadTargetInstanceName => _contentDownloadTargetInstanceName;
+
+    public string ContentDownloadGameVersion => _contentDownloadTargetGameVersion;
+
+    public string ContentDownloadTargetSummary => string.IsNullOrWhiteSpace(_contentDownloadTargetInstanceName)
+        ? L("client.content.center.noTarget")
+        : L(
+            "client.content.center.target",
+            _contentDownloadTargetInstanceName,
+            _contentDownloadTargetGameVersion,
+            _contentDownloadTargetLoader == MinecraftClientLoader.Vanilla
+                ? L("client.vm.loader.vanilla")
+                : _contentDownloadTargetLoader.ToString());
+
     public bool IsModContentDownload =>
         ContentDownloadKind == MinecraftClientContentKind.Mod;
+
+    public bool IsResourcePackContentDownload =>
+        ContentDownloadKind == MinecraftClientContentKind.ResourcePack;
+
+    public bool IsShaderPackContentDownload =>
+        ContentDownloadKind == MinecraftClientContentKind.ShaderPack;
 
     public MinecraftClientContentKind ContentDownloadKind
     {
@@ -1638,8 +1739,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (SetProperty(ref _contentDownloadKind, value))
             {
                 OnPropertyChanged(nameof(IsModContentDownload));
+                OnPropertyChanged(nameof(IsResourcePackContentDownload));
+                OnPropertyChanged(nameof(IsShaderPackContentDownload));
                 OnPropertyChanged(nameof(ContentDownloadHeading));
                 OnPropertyChanged(nameof(ContentDownloadDescription));
+                RefreshLocalizedContentDownloadCategories();
+                OnPropertyChanged(nameof(ContentDownloadCategories));
             }
         }
     }
@@ -1653,7 +1758,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     };
 
     public string ContentDownloadDescription =>
-        L("client.content.download.description", SelectedInstance?.Model.GameVersion ?? string.Empty);
+        L("client.content.download.description", _contentDownloadTargetGameVersion);
 
     public string ContentDownloadSearchText
     {
@@ -1667,6 +1772,26 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         private set => SetProperty(ref _contentDownloadStatusText, value);
     }
 
+    public int ContentDownloadTotalHits
+    {
+        get => _contentDownloadTotalHits;
+        private set
+        {
+            if (SetProperty(ref _contentDownloadTotalHits, Math.Max(0, value)))
+            {
+                OnPropertyChanged(nameof(ContentDownloadResultsSummary));
+                OnPropertyChanged(nameof(HasMoreContentDownloadResults));
+                LoadMoreContentDownloadCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public string ContentDownloadResultsSummary =>
+        L("client.content.center.results", ContentDownloadResults.Count, ContentDownloadTotalHits);
+
+    public bool HasMoreContentDownloadResults =>
+        _contentDownloadNextOffset < ContentDownloadTotalHits;
+
     public ClientContentDownloadLoaderChoice? SelectedContentDownloadLoader
     {
         get => _selectedContentDownloadLoader;
@@ -1679,6 +1804,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    public ClientContentDownloadCategoryChoice? SelectedContentDownloadCategory
+    {
+        get => _selectedContentDownloadCategory;
+        set => SetProperty(ref _selectedContentDownloadCategory, value);
+    }
+
+    public ClientContentDownloadSortChoice? SelectedContentDownloadSort
+    {
+        get => _selectedContentDownloadSort;
+        set => SetProperty(ref _selectedContentDownloadSort, value);
+    }
+
     public ClientContentDownloadProjectItemViewModel? SelectedContentDownloadProject
     {
         get => _selectedContentDownloadProject;
@@ -1686,9 +1823,39 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedContentDownloadProject, value))
             {
+                CancelContentDownloadDetails();
+                ContentDownloadVersions.Clear();
+                ContentDownloadDependencies.Clear();
+                ContentDownloadFallbacks.Clear();
+                SelectedContentDownloadVersion = null;
                 ContentDownloadFallbackUri = null;
                 InstallContentDownloadCommand.NotifyCanExecuteChanged();
                 OpenSelectedContentProjectPageCommand.NotifyCanExecuteChanged();
+                if (value is not null && IsContentDownloadOpen)
+                {
+                    _contentDownloadDetailsTask = LoadSelectedContentDownloadDetailsAsync(value);
+                }
+            }
+        }
+    }
+
+    public ClientContentDownloadVersionItemViewModel? SelectedContentDownloadVersion
+    {
+        get => _selectedContentDownloadVersion;
+        set
+        {
+            if (SetProperty(ref _selectedContentDownloadVersion, value))
+            {
+                _contentDownloadPlanCancellation?.Cancel();
+                ContentDownloadDependencies.Clear();
+                ContentDownloadFallbacks.Clear();
+                ContentDownloadFallbackUri = null;
+                InstallContentDownloadCommand.NotifyCanExecuteChanged();
+                if (value is not null && SelectedContentDownloadProject is { } project &&
+                    IsContentDownloadOpen)
+                {
+                    _contentDownloadPlanTask = LoadContentDownloadPlanPreviewAsync(project, value);
+                }
             }
         }
     }
@@ -1707,6 +1874,54 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     }
 
     public bool HasContentDownloadFallback => ContentDownloadFallbackUri is not null;
+
+    public bool HasContentDownloadJobs => ContentDownloadJobs.Count > 0;
+
+    public bool HasCompletedContentDownloadJobs => ContentDownloadJobs.Any(job => job.IsTerminal);
+
+    public bool IsContentDownloadQueueExpanded
+    {
+        get => _isContentDownloadQueueExpanded;
+        set
+        {
+            if (SetProperty(ref _isContentDownloadQueueExpanded, value))
+            {
+                OnPropertyChanged(nameof(ContentDownloadQueueToggleText));
+            }
+        }
+    }
+
+    public string ContentDownloadQueueToggleText => IsContentDownloadQueueExpanded
+        ? L("client.catalog.jobs.collapse")
+        : L("client.catalog.jobs.expand");
+
+    public ClientContentInstallJobViewModel? ActiveContentDownloadJob
+    {
+        get => _activeContentDownloadJob;
+        private set
+        {
+            if (SetProperty(ref _activeContentDownloadJob, value))
+            {
+                OnPropertyChanged(nameof(ContentDownloadQueueSummary));
+                OnPropertyChanged(nameof(ContentDownloadQueueProgressValue));
+                OnPropertyChanged(nameof(ContentDownloadQueueIsProgressIndeterminate));
+                OnPropertyChanged(nameof(IsContentDownloadQueueProgressIndeterminate));
+            }
+        }
+    }
+
+    public string ContentDownloadQueueSummary =>
+        (ActiveContentDownloadJob ?? ContentDownloadJobs.FirstOrDefault())?.StatusText
+        ?? L("client.content.center.jobs.empty");
+
+    public double ContentDownloadQueueProgressValue =>
+        (ActiveContentDownloadJob ?? ContentDownloadJobs.FirstOrDefault())?.ProgressValue ?? 0d;
+
+    public bool ContentDownloadQueueIsProgressIndeterminate =>
+        (ActiveContentDownloadJob ?? ContentDownloadJobs.FirstOrDefault())?.IsProgressIndeterminate == true;
+
+    public bool IsContentDownloadQueueProgressIndeterminate =>
+        ContentDownloadQueueIsProgressIndeterminate;
 
     public ClientInstanceSettingsEditorViewModel? SettingsEditor
     {
@@ -2912,6 +3127,110 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         IsCatalogInstallRunning = CatalogInstallJobs.Any(item => item.IsRunning);
+    }
+
+    private void ClearCompletedContentDownloadJobs()
+    {
+        foreach (var job in ContentDownloadJobs.Where(item => item.IsTerminal).ToArray())
+        {
+            ContentDownloadJobs.Remove(job);
+            job.Dispose();
+        }
+
+        if (ContentDownloadJobs.Count == 0)
+        {
+            IsContentDownloadQueueExpanded = false;
+        }
+    }
+
+    private void OnContentDownloadJobsChanged(
+        object? sender,
+        NotifyCollectionChangedEventArgs eventArgs)
+    {
+        var currentJobs = ContentDownloadJobs.ToHashSet();
+        foreach (var job in _observedContentDownloadJobs
+                     .Where(job => !currentJobs.Contains(job)).ToArray())
+        {
+            job.PropertyChanged -= OnContentDownloadJobPropertyChanged;
+            _observedContentDownloadJobs.Remove(job);
+        }
+
+        foreach (var job in currentJobs.Where(job => !_observedContentDownloadJobs.Contains(job)))
+        {
+            job.PropertyChanged += OnContentDownloadJobPropertyChanged;
+            _observedContentDownloadJobs.Add(job);
+        }
+
+        OnPropertyChanged(nameof(HasContentDownloadJobs));
+        OnPropertyChanged(nameof(HasCompletedContentDownloadJobs));
+        OnPropertyChanged(nameof(ContentDownloadQueueSummary));
+        OnPropertyChanged(nameof(ContentDownloadQueueProgressValue));
+        OnPropertyChanged(nameof(ContentDownloadQueueIsProgressIndeterminate));
+        OnPropertyChanged(nameof(IsContentDownloadQueueProgressIndeterminate));
+        if (ActiveContentDownloadJob is { } active && !currentJobs.Contains(active))
+        {
+            ActiveContentDownloadJob = currentJobs.FirstOrDefault(job => job.IsRunning);
+        }
+
+        ToggleContentDownloadQueueCommand.NotifyCanExecuteChanged();
+        ClearCompletedContentDownloadJobsCommand.NotifyCanExecuteChanged();
+        InstallContentDownloadCommand.NotifyCanExecuteChanged();
+    }
+
+    private void OnContentDownloadJobPropertyChanged(
+        object? sender,
+        PropertyChangedEventArgs eventArgs)
+    {
+        if (eventArgs.PropertyName is nameof(ClientContentInstallJobViewModel.StatusText)
+            or nameof(ClientContentInstallJobViewModel.ProgressValue)
+            or nameof(ClientContentInstallJobViewModel.IsProgressIndeterminate)
+            or nameof(ClientContentInstallJobViewModel.State)
+            or nameof(ClientContentInstallJobViewModel.IsTerminal))
+        {
+            OnPropertyChanged(nameof(ContentDownloadQueueSummary));
+            OnPropertyChanged(nameof(ContentDownloadQueueProgressValue));
+            OnPropertyChanged(nameof(ContentDownloadQueueIsProgressIndeterminate));
+            OnPropertyChanged(nameof(IsContentDownloadQueueProgressIndeterminate));
+            OnPropertyChanged(nameof(HasCompletedContentDownloadJobs));
+            ClearCompletedContentDownloadJobsCommand.NotifyCanExecuteChanged();
+            InstallContentDownloadCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private CancellationTokenSource ReplaceContentDownloadBrowseCancellation()
+    {
+        _contentDownloadBrowseCancellation?.Cancel();
+        _contentDownloadBrowseCancellation?.Dispose();
+        _contentDownloadBrowseCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _lifetimeCancellation.Token);
+        return _contentDownloadBrowseCancellation;
+    }
+
+    private CancellationTokenSource ReplaceContentDownloadDetailsCancellation()
+    {
+        CancelContentDownloadDetails();
+        _contentDownloadDetailsCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _lifetimeCancellation.Token);
+        return _contentDownloadDetailsCancellation;
+    }
+
+    private void CancelContentDownloadBrowse()
+    {
+        _contentDownloadBrowseCancellation?.Cancel();
+        _contentDownloadBrowseCancellation?.Dispose();
+        _contentDownloadBrowseCancellation = null;
+        IsContentDownloadBusy = false;
+    }
+
+    private void CancelContentDownloadDetails()
+    {
+        _contentDownloadDetailsCancellation?.Cancel();
+        _contentDownloadDetailsCancellation?.Dispose();
+        _contentDownloadDetailsCancellation = null;
+        _contentDownloadPlanCancellation?.Cancel();
+        _contentDownloadPlanCancellation?.Dispose();
+        _contentDownloadPlanCancellation = null;
+        IsContentDownloadDetailBusy = false;
     }
 
     private CancellationTokenSource ReplaceCatalogBrowseCancellation()
@@ -4623,10 +4942,26 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             throw new InvalidOperationException(L("client.vm.validation.contentDownload"));
         }
 
+        CancelContentDownloadBrowse();
+        CancelContentDownloadDetails();
+        _contentDownloadTargetInstanceId = instance.Id;
+        _contentDownloadTargetInstanceName = instance.Name;
+        _contentDownloadTargetGameVersion = instance.Model.GameVersion;
+        _contentDownloadTargetLoader = instance.Model.Loader;
+        OnPropertyChanged(nameof(ContentDownloadTargetInstanceId));
+        OnPropertyChanged(nameof(ContentDownloadTargetInstanceName));
+        OnPropertyChanged(nameof(ContentDownloadGameVersion));
+        OnPropertyChanged(nameof(ContentDownloadTargetSummary));
         ContentDownloadKind = kind;
         ContentDownloadSearchText = string.Empty;
         ContentDownloadResults.Clear();
+        ContentDownloadVersions.Clear();
+        ContentDownloadDependencies.Clear();
+        ContentDownloadFallbacks.Clear();
+        ContentDownloadTotalHits = 0;
+        _contentDownloadNextOffset = 0;
         SelectedContentDownloadProject = null;
+        SelectedContentDownloadVersion = null;
         ContentDownloadFallbackUri = null;
         var preferredLoader = kind == MinecraftClientContentKind.Mod &&
                               IsSupportedDownloadLoader(instance.Model.Loader)
@@ -4635,70 +4970,148 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         SelectedContentDownloadLoader =
             ContentDownloadLoaders.FirstOrDefault(choice => choice.Loader == preferredLoader)
             ?? ContentDownloadLoaders[0];
+        SelectedContentDownloadCategory = ContentDownloadCategories.FirstOrDefault();
+        SelectedContentDownloadSort = ContentDownloadSortOptions.FirstOrDefault(choice =>
+                                          choice.Sort == ModrinthClientContentSort.Downloads)
+                                      ?? ContentDownloadSortOptions.FirstOrDefault();
         ContentDownloadStatusText = L("client.vm.contentDownload.initial");
         IsContentDownloadOpen = true;
         OnPropertyChanged(nameof(ContentDownloadDescription));
-        await SearchContentDownloadAsync();
+        ContentDownloadCenterRequested?.Invoke(this, EventArgs.Empty);
+        await LoadContentDownloadPageAsync(append: false);
+    }
+
+    private async Task SelectContentDownloadKindAsync(object? parameter)
+    {
+        if (!IsContentDownloadOpen ||
+            ContentDownloadTargetInstanceId is null ||
+            !TryGetDownloadContentKind(parameter, out var kind) ||
+            kind == ContentDownloadKind)
+        {
+            return;
+        }
+
+        CancelContentDownloadBrowse();
+        CancelContentDownloadDetails();
+        ContentDownloadKind = kind;
+        ContentDownloadSearchText = string.Empty;
+        ContentDownloadResults.Clear();
+        ContentDownloadVersions.Clear();
+        ContentDownloadDependencies.Clear();
+        ContentDownloadFallbacks.Clear();
+        ContentDownloadTotalHits = 0;
+        _contentDownloadNextOffset = 0;
+        SelectedContentDownloadProject = null;
+        SelectedContentDownloadVersion = null;
+        ContentDownloadFallbackUri = null;
+        var preferredLoader = kind == MinecraftClientContentKind.Mod &&
+                              IsSupportedDownloadLoader(_contentDownloadTargetLoader)
+            ? _contentDownloadTargetLoader
+            : (MinecraftClientLoader?)null;
+        SelectedContentDownloadLoader =
+            ContentDownloadLoaders.FirstOrDefault(choice => choice.Loader == preferredLoader)
+            ?? ContentDownloadLoaders[0];
+        SelectedContentDownloadCategory = ContentDownloadCategories.FirstOrDefault();
+        ContentDownloadStatusText = L("client.vm.contentDownload.initial");
+        await LoadContentDownloadPageAsync(append: false);
     }
 
     private void CloseContentDownload()
     {
-        if (IsBusy)
-        {
-            return;
-        }
-
+        CancelContentDownloadBrowse();
+        CancelContentDownloadDetails();
         IsContentDownloadOpen = false;
         ContentDownloadResults.Clear();
+        ContentDownloadVersions.Clear();
+        ContentDownloadDependencies.Clear();
+        ContentDownloadFallbacks.Clear();
+        ContentDownloadTotalHits = 0;
+        _contentDownloadNextOffset = 0;
         SelectedContentDownloadProject = null;
+        SelectedContentDownloadVersion = null;
         ContentDownloadFallbackUri = null;
         ContentDownloadStatusText = L("client.vm.contentDownload.initial");
     }
 
-    private async Task SearchContentDownloadAsync()
+    private async Task LoadContentDownloadPageAsync(bool append)
     {
-        var instance = SelectedInstance
-                       ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
-        if (!IsContentDownloadOpen)
+        if (!IsContentDownloadOpen ||
+            ContentDownloadTargetInstanceId is not { } targetInstanceId)
         {
             return;
         }
 
-        var instanceId = instance.Id;
         var kind = ContentDownloadKind;
-        var loader = ResolveRequestedContentLoader(instance, kind);
-        var operation = BeginOperation();
-        IsBusy = true;
+        var query = ContentDownloadSearchText.Trim();
+        var loader = ResolveRequestedContentLoader(kind);
+        var category = SelectedContentDownloadCategory?.Category;
+        var sort = SelectedContentDownloadSort?.Sort ?? ModrinthClientContentSort.Downloads;
+        var offset = append ? _contentDownloadNextOffset : 0;
+        var cancellation = ReplaceContentDownloadBrowseCancellation();
+        IsContentDownloadBusy = true;
         try
         {
-            ContentDownloadFallbackUri = null;
-            ContentDownloadStatusText = L("client.vm.contentDownload.searching");
+            if (!append)
+            {
+                ContentDownloadResults.Clear();
+                SelectedContentDownloadProject = null;
+                ContentDownloadFallbackUri = null;
+                ContentDownloadTotalHits = 0;
+                _contentDownloadNextOffset = 0;
+                ContentDownloadStatusText = L("client.vm.contentDownload.searching");
+            }
+            else
+            {
+                ContentDownloadStatusText = L("client.content.center.loadingMore");
+            }
+
             var page = await _modrinthContentCatalog.SearchAsync(
                 new ModrinthClientContentSearchRequest(
                     kind,
-                    ContentDownloadSearchText.Trim(),
-                    instance.Model.GameVersion,
+                    query,
+                    _contentDownloadTargetGameVersion,
                     loader,
-                    ModrinthClientContentSort.Relevance,
-                    Offset: 0,
-                    Limit: 20),
-                operation.Token);
+                    sort,
+                    Offset: offset,
+                    Limit: 20,
+                    Category: category),
+                cancellation.Token);
             if (!IsContentDownloadOpen ||
-                SelectedInstance?.Id != instanceId ||
-                ContentDownloadKind != kind)
+                ContentDownloadTargetInstanceId != targetInstanceId ||
+                ContentDownloadKind != kind ||
+                !string.Equals(ContentDownloadSearchText.Trim(), query, StringComparison.Ordinal) ||
+                ResolveRequestedContentLoader(ContentDownloadKind) != loader ||
+                !string.Equals(
+                    SelectedContentDownloadCategory?.Category,
+                    category,
+                    StringComparison.Ordinal) ||
+                (SelectedContentDownloadSort?.Sort ?? ModrinthClientContentSort.Downloads) != sort ||
+                !ReferenceEquals(cancellation, _contentDownloadBrowseCancellation))
             {
                 return;
             }
 
-            ContentDownloadResults.Clear();
+            var knownIds = append
+                ? ContentDownloadResults.Select(item => item.ProjectId).ToHashSet(StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
             foreach (var project in page.Projects)
             {
-                ContentDownloadResults.Add(CreateContentDownloadProjectItem(
-                    project,
-                    instance.Model.GameVersion));
+                if (knownIds.Add(project.ProjectId))
+                {
+                    ContentDownloadResults.Add(CreateContentDownloadProjectItem(
+                        project,
+                        _contentDownloadTargetGameVersion));
+                }
             }
 
-            SelectedContentDownloadProject = ContentDownloadResults.FirstOrDefault();
+            ContentDownloadTotalHits = page.TotalHits;
+            _contentDownloadNextOffset = Math.Min(
+                page.TotalHits,
+                checked(page.Offset + Math.Max(1, page.Limit)));
+            OnPropertyChanged(nameof(ContentDownloadResultsSummary));
+            OnPropertyChanged(nameof(HasMoreContentDownloadResults));
+            LoadMoreContentDownloadCommand.NotifyCanExecuteChanged();
+            SelectedContentDownloadProject ??= ContentDownloadResults.FirstOrDefault();
             ContentDownloadStatusText = ContentDownloadResults.Count == 0
                 ? L("client.vm.contentDownload.noResults")
                 : L(
@@ -4706,72 +5119,139 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                     ContentDownloadResults.Count,
                     page.TotalHits);
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
         finally
         {
-            IsBusy = false;
-            CompleteOperation(operation);
+            if (ReferenceEquals(cancellation, _contentDownloadBrowseCancellation))
+            {
+                IsContentDownloadBusy = false;
+            }
         }
     }
 
-    private bool CanInstallSelectedContentDownload() =>
-        IsContentDownloadOpen &&
-        SelectedInstance is { IsRunning: false } &&
-        SelectedContentDownloadProject is not null &&
-        !IsBusy;
-
-    private async Task InstallSelectedContentDownloadAsync()
+    private bool CanInstallSelectedContentDownload()
     {
-        var instance = SelectedInstance
-                       ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
+        var target = ContentDownloadTargetInstanceId is { } targetId
+            ? Instances.FirstOrDefault(instance => instance.Id == targetId)
+            : null;
+        return IsContentDownloadOpen &&
+        target is { IsRunning: false } &&
+        SelectedContentDownloadProject is not null &&
+        SelectedContentDownloadVersion is not null &&
+        !IsContentDownloadDetailBusy &&
+        !ContentDownloadJobs.Any(job =>
+            job.IsRunning &&
+            job.TargetInstanceId == ContentDownloadTargetInstanceId &&
+            string.Equals(
+                job.ProjectId,
+                SelectedContentDownloadProject.ProjectId,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                job.VersionId,
+                SelectedContentDownloadVersion.VersionId,
+                StringComparison.Ordinal));
+    }
+
+    private Task StartSelectedContentDownloadInstallAsync()
+    {
+        var targetInstanceId = ContentDownloadTargetInstanceId
+                               ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
+        var targetInstanceName = _contentDownloadTargetInstanceName;
         var project = SelectedContentDownloadProject
                       ?? throw new InvalidOperationException(L("client.vm.validation.contentDownloadProject"));
+        var version = SelectedContentDownloadVersion
+                      ?? throw new InvalidOperationException(L("client.content.center.validation.version"));
         var kind = ContentDownloadKind;
-        var loader = ResolveRequestedContentLoader(instance, kind);
-        var effectiveLoader = loader;
-        var operation = BeginOperation();
-        IsBusy = true;
+        var loader = ResolveRequestedContentLoader(kind);
+        var job = new ClientContentInstallJobViewModel(
+            Guid.NewGuid(),
+            targetInstanceId,
+            targetInstanceName,
+            project.ProjectId,
+            project.Title,
+            version.VersionId,
+            version.DisplayName,
+            L("client.content.center.jobs.queued"),
+            _lifetimeCancellation.Token);
+        ContentDownloadJobs.Insert(0, job);
+        ActiveContentDownloadJob = job;
+        IsContentDownloadQueueExpanded = true;
+        var task = RunContentDownloadInstallJobAsync(
+            job,
+            kind,
+            _contentDownloadTargetGameVersion,
+            loader);
+        TrackContentDownloadInstallTask(task);
+        return Task.CompletedTask;
+    }
+
+    private async Task RunContentDownloadInstallJobAsync(
+        ClientContentInstallJobViewModel job,
+        MinecraftClientContentKind kind,
+        string gameVersion,
+        MinecraftClientLoader? loader)
+    {
+        var gateHeld = false;
         try
         {
-            ContentDownloadFallbackUri = null;
-            ContentDownloadStatusText = L("client.vm.contentDownload.planning", project.Title);
-            await EnsureContentMutationAllowedAsync(instance, operation.Token);
-            var plan = await _modrinthContentInstaller.PlanAsync(
-                project.ProjectId,
+            await _contentDownloadInstallGate.WaitAsync(job.CancellationToken);
+            gateHeld = true;
+            var instance = Instances.FirstOrDefault(item => item.Id == job.TargetInstanceId)
+                           ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
+            if (instance.IsRunning)
+            {
+                throw new InvalidOperationException(L("client.vm.validation.contentWhileRunning"));
+            }
+
+            job.Report(
+                "planning",
+                L("client.vm.contentDownload.planning", job.ProjectTitle));
+            UpdateVisibleContentDownloadStatus(job, job.StatusText);
+            await EnsureContentMutationAllowedAsync(instance, job.CancellationToken);
+            var plan = await _modrinthContentInstaller.PlanVersionAsync(
+                job.ProjectId,
                 kind,
-                instance.Model.GameVersion,
+                gameVersion,
+                job.VersionId,
                 loader,
-                operation.Token);
+                job.CancellationToken);
 
             if (!plan.CanInstallAutomatically)
             {
-                ApplyContentDownloadFallback(plan.Fallbacks, plan.Project.ProjectPageUri);
+                ApplyVisibleContentDownloadFallbacks(job, plan.Fallbacks, plan.Project.ProjectPageUri);
+                job.MarkFailed(L("client.content.center.jobs.fallback"));
                 return;
             }
 
+            var effectiveLoader = loader;
             if (kind == MinecraftClientContentKind.Mod &&
                 plan.RequiredLoader is { } requiredLoader)
             {
                 effectiveLoader = requiredLoader;
                 if (instance.Model.Loader != requiredLoader)
                 {
-                    ContentDownloadFallbackUri =
-                        plan.Artifacts.FirstOrDefault()?.VersionPageUri ??
-                        plan.Project.ProjectPageUri;
-                    ContentDownloadStatusText = L(
-                        "client.vm.contentDownload.installingLoader",
-                        requiredLoader);
+                    job.Report(
+                        "loader",
+                        L("client.vm.contentDownload.installingLoader", requiredLoader));
+                    UpdateVisibleContentDownloadStatus(job, job.StatusText);
                     try
                     {
                         var switched = await SwitchContentLoaderAsync(
                             instance,
                             requiredLoader,
-                            operation.Token);
+                            job.CancellationToken);
                         instance.ReplaceModel(switched.Instance);
-                        SelectedContentDownloadLoader =
-                            ContentDownloadLoaders.FirstOrDefault(
-                                choice => choice.Loader == requiredLoader)
-                            ?? SelectedContentDownloadLoader;
-                        ContentDownloadFallbackUri = null;
+                        if (ContentDownloadTargetInstanceId == instance.Id)
+                        {
+                            _contentDownloadTargetLoader = requiredLoader;
+                            OnPropertyChanged(nameof(ContentDownloadTargetSummary));
+                            SelectedContentDownloadLoader =
+                                ContentDownloadLoaders.FirstOrDefault(
+                                    choice => choice.Loader == requiredLoader)
+                                ?? SelectedContentDownloadLoader;
+                        }
                     }
                     catch (Exception error) when (
                         error is HttpRequestException or IOException or InvalidDataException or
@@ -4779,9 +5259,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                             NotSupportedException or ArgumentException or
                             System.ComponentModel.Win32Exception)
                     {
-                        ContentDownloadStatusText = L(
+                        ApplyVisibleContentDownloadFallbacks(
+                            job,
+                            plan.Fallbacks,
+                            plan.Artifacts.FirstOrDefault()?.VersionPageUri ??
+                            plan.Project.ProjectPageUri,
+                            useProjectPageWhenEmpty: true);
+                        job.MarkFailed(L(
                             "client.vm.contentDownload.loaderInstallFailed",
-                            requiredLoader);
+                            requiredLoader));
                         return;
                     }
                 }
@@ -4789,7 +5275,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             var progress = new Progress<ModrinthClientContentInstallProgress>(value =>
             {
-                ContentDownloadStatusText = value.Stage switch
+                var status = value.Stage switch
                 {
                     "commit" => L("client.vm.contentDownload.committing"),
                     "complete" => L("client.vm.contentDownload.finishing"),
@@ -4798,34 +5284,262 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                         Math.Min(value.CompletedItems + 1, Math.Max(1, value.TotalItems)),
                         Math.Max(1, value.TotalItems)),
                 };
+                var fraction = value.Stage switch
+                {
+                    "complete" => 1d,
+                    "commit" => 0.95d,
+                    _ when value.TotalItems > 0 =>
+                        Math.Clamp((double)value.CompletedItems / value.TotalItems, 0d, 0.9d),
+                    _ => (double?)null,
+                };
+                job.Report(value.Stage, status, fraction);
+                UpdateVisibleContentDownloadStatus(job, status);
             });
-            await EnsureContentMutationAllowedAsync(instance, operation.Token);
+            await EnsureContentMutationAllowedAsync(instance, job.CancellationToken);
             var result = await _modrinthContentInstaller.InstallAsync(
                 new ModrinthClientContentInstallRequest(
                     instance.Model.DirectoryPath,
-                    project.ProjectId,
+                    job.ProjectId,
                     kind,
                     instance.Model.GameVersion,
-                    effectiveLoader),
+                    effectiveLoader,
+                    VersionId: job.VersionId),
                 progress,
-                operation.Token);
+                job.CancellationToken);
             if (!result.Installed)
             {
-                ApplyContentDownloadFallback(result.Fallbacks, result.Plan.Project.ProjectPageUri);
+                ApplyVisibleContentDownloadFallbacks(
+                    job,
+                    result.Fallbacks,
+                    result.Plan.Project.ProjectPageUri);
+                job.MarkFailed(L("client.content.center.jobs.fallback"));
                 return;
             }
 
-            SelectedContentKind = kind;
-            await RefreshContentAsync();
-            ContentDownloadStatusText = L(
+            if (SelectedInstance?.Id == instance.Id)
+            {
+                SelectedContentKind = kind;
+                await RefreshContentAsync();
+            }
+
+            var completedStatus = L(
                 "client.vm.contentDownload.installed",
                 result.InstalledEntries.Count,
-                project.Title);
+                job.ProjectTitle);
+            job.MarkCompleted(completedStatus);
+            UpdateVisibleContentDownloadStatus(job, completedStatus);
+        }
+        catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)
+        {
+            job.MarkCanceled(L("client.content.center.jobs.canceled"));
+            UpdateVisibleContentDownloadStatus(job, job.StatusText);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            job.MarkFailed(L("client.content.center.jobs.failed"));
+            UpdateVisibleContentDownloadStatus(job, error.Message);
         }
         finally
         {
-            IsBusy = false;
-            CompleteOperation(operation);
+            if (gateHeld)
+            {
+                _contentDownloadInstallGate.Release();
+            }
+
+            if (ReferenceEquals(ActiveContentDownloadJob, job))
+            {
+                ActiveContentDownloadJob = ContentDownloadJobs.FirstOrDefault(item => item.IsRunning);
+            }
+
+            InstallContentDownloadCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private async Task LoadSelectedContentDownloadDetailsAsync(
+        ClientContentDownloadProjectItemViewModel project)
+    {
+        if (ContentDownloadTargetInstanceId is not { } targetInstanceId)
+        {
+            return;
+        }
+
+        var kind = ContentDownloadKind;
+        var gameVersion = _contentDownloadTargetGameVersion;
+        var loader = ResolveRequestedContentLoader(kind);
+        var cancellation = ReplaceContentDownloadDetailsCancellation();
+        IsContentDownloadDetailBusy = true;
+        InstallContentDownloadCommand.NotifyCanExecuteChanged();
+        try
+        {
+            ContentDownloadStatusText = L("client.content.center.details.loading", project.Title);
+            var detailsTask = LoadOptionalCatalogDetailsAsync(
+                token => _modrinthContentCatalog.GetProjectAsync(project.ProjectId, token),
+                cancellation.Token);
+            var versionsTask = _modrinthContentCatalog.GetStableVersionsAsync(
+                project.ProjectId,
+                gameVersion,
+                loader,
+                cancellation.Token);
+            var details = await detailsTask;
+            var versions = await versionsTask;
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!IsContentDownloadOpen ||
+                ContentDownloadTargetInstanceId != targetInstanceId ||
+                ContentDownloadKind != kind ||
+                !ReferenceEquals(project, SelectedContentDownloadProject) ||
+                !ReferenceEquals(cancellation, _contentDownloadDetailsCancellation))
+            {
+                return;
+            }
+
+            if (details is not null)
+            {
+                project.ApplyDetails(details);
+            }
+
+            ContentDownloadVersions.Clear();
+            foreach (var version in versions)
+            {
+                ContentDownloadVersions.Add(new ClientContentDownloadVersionItemViewModel(version));
+            }
+
+            SelectedContentDownloadVersion = ContentDownloadVersions.FirstOrDefault();
+            ContentDownloadStatusText = ContentDownloadVersions.Count == 0
+                ? L("client.content.center.details.noVersions", project.Title)
+                : L(
+                    "client.content.center.details.ready",
+                    project.Title,
+                    ContentDownloadVersions.Count);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(cancellation, _contentDownloadDetailsCancellation))
+            {
+                IsContentDownloadDetailBusy = false;
+                InstallContentDownloadCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    private async Task LoadContentDownloadPlanPreviewAsync(
+        ClientContentDownloadProjectItemViewModel project,
+        ClientContentDownloadVersionItemViewModel version)
+    {
+        if (ContentDownloadTargetInstanceId is not { } targetInstanceId)
+        {
+            return;
+        }
+
+        _contentDownloadPlanCancellation?.Cancel();
+        _contentDownloadPlanCancellation?.Dispose();
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _lifetimeCancellation.Token);
+        _contentDownloadPlanCancellation = cancellation;
+        try
+        {
+            var plan = await _modrinthContentInstaller.PlanVersionAsync(
+                project.ProjectId,
+                ContentDownloadKind,
+                _contentDownloadTargetGameVersion,
+                version.VersionId,
+                ResolveRequestedContentLoader(ContentDownloadKind),
+                cancellation.Token);
+            if (!IsContentDownloadOpen ||
+                ContentDownloadTargetInstanceId != targetInstanceId ||
+                !ReferenceEquals(project, SelectedContentDownloadProject) ||
+                !ReferenceEquals(version, SelectedContentDownloadVersion) ||
+                !ReferenceEquals(cancellation, _contentDownloadPlanCancellation))
+            {
+                return;
+            }
+
+            ContentDownloadDependencies.Clear();
+            foreach (var artifact in plan.Artifacts.Where(item => item.IsDependency))
+            {
+                ContentDownloadDependencies.Add(new ClientContentDownloadDependencyItemViewModel(
+                    artifact.ProjectId,
+                    artifact.ProjectTitle,
+                    artifact.VersionNumber));
+            }
+
+            ApplyContentDownloadFallbacks(plan.Fallbacks, plan.Project.ProjectPageUri);
+            if (plan.CanInstallAutomatically)
+            {
+                ContentDownloadStatusText = ContentDownloadDependencies.Count == 0
+                    ? L("client.content.center.dependencies.none")
+                    : L("client.content.center.dependencies.ready", ContentDownloadDependencies.Count);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (ReferenceEquals(cancellation, _contentDownloadPlanCancellation))
+            {
+                ContentDownloadStatusText = error.Message;
+            }
+        }
+    }
+
+    private void TrackContentDownloadInstallTask(Task task)
+    {
+        lock (_contentDownloadInstallTaskGate)
+        {
+            _contentDownloadInstallTasks.Add(task);
+        }
+
+        _ = ObserveContentDownloadInstallTaskAsync(task);
+    }
+
+    private async Task ObserveContentDownloadInstallTaskAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        finally
+        {
+            lock (_contentDownloadInstallTaskGate)
+            {
+                _contentDownloadInstallTasks.Remove(task);
+            }
+        }
+    }
+
+    private void UpdateVisibleContentDownloadStatus(
+        ClientContentInstallJobViewModel job,
+        string status)
+    {
+        if (ContentDownloadTargetInstanceId == job.TargetInstanceId &&
+            string.Equals(
+                SelectedContentDownloadProject?.ProjectId,
+                job.ProjectId,
+                StringComparison.Ordinal))
+        {
+            ContentDownloadStatusText = status;
+        }
+    }
+
+    private void ApplyVisibleContentDownloadFallbacks(
+        ClientContentInstallJobViewModel job,
+        IReadOnlyList<ModrinthClientContentFallback> fallbacks,
+        Uri projectPageUri,
+        bool useProjectPageWhenEmpty = false)
+    {
+        if (ContentDownloadTargetInstanceId == job.TargetInstanceId &&
+            string.Equals(
+                SelectedContentDownloadProject?.ProjectId,
+                job.ProjectId,
+                StringComparison.Ordinal))
+        {
+            ApplyContentDownloadFallbacks(
+                fallbacks,
+                projectPageUri,
+                useProjectPageWhenEmpty);
         }
     }
 
@@ -4895,16 +5609,45 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private void ApplyContentDownloadFallback(
         IReadOnlyList<ModrinthClientContentFallback> fallbacks,
         Uri projectPageUri)
+        => ApplyContentDownloadFallbacks(fallbacks, projectPageUri);
+
+    private void ApplyContentDownloadFallbacks(
+        IReadOnlyList<ModrinthClientContentFallback> fallbacks,
+        Uri projectPageUri,
+        bool useProjectPageWhenEmpty = false)
     {
-        var fallback = fallbacks.FirstOrDefault();
-        ContentDownloadFallbackUri =
-            fallback?.DirectDownloadUri ??
-            fallback?.VersionPageUri ??
-            projectPageUri;
+        ContentDownloadFallbacks.Clear();
+        foreach (var fallback in fallbacks)
+        {
+            ContentDownloadFallbacks.Add(new ClientContentDownloadFallbackItemViewModel(
+                fallback.DisplayName,
+                fallback.Message,
+                fallback.DirectDownloadUri ?? fallback.VersionPageUri));
+        }
+
+        ContentDownloadFallbackUri = ResolveContentDownloadFallbackUri(
+            fallbacks,
+            projectPageUri,
+            useProjectPageWhenEmpty);
+        if (fallbacks.Count == 0)
+        {
+            return;
+        }
+
         ContentDownloadStatusText = L(
             "client.vm.contentDownload.fallback",
-            fallback?.DisplayName ?? SelectedContentDownloadProject?.Title ?? string.Empty);
+            fallbacks[0].DisplayName ?? SelectedContentDownloadProject?.Title ?? string.Empty);
     }
+
+    internal static Uri? ResolveContentDownloadFallbackUri(
+        IReadOnlyList<ModrinthClientContentFallback> fallbacks,
+        Uri projectPageUri,
+        bool useProjectPageWhenEmpty) =>
+        fallbacks.FirstOrDefault() is { } fallback
+            ? fallback.DirectDownloadUri ?? fallback.VersionPageUri
+            : useProjectPageWhenEmpty
+                ? projectPageUri
+                : null;
 
     private void OpenSelectedContentProjectPage()
     {
@@ -4914,13 +5657,20 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
-    private void OpenContentFallback()
+    private void OpenContentFallback(object? parameter)
     {
-        if (ContentDownloadFallbackUri is { } uri)
+        if (ResolveContentFallbackUri(parameter) is { } uri)
         {
             OpenVerifiedModrinthUri(uri);
         }
     }
+
+    private Uri? ResolveContentFallbackUri(object? parameter) => parameter switch
+    {
+        ClientContentDownloadFallbackItemViewModel fallback => fallback.OpenUri,
+        Uri uri => uri,
+        _ => ContentDownloadFallbackUri,
+    };
 
     private static void OpenVerifiedModrinthUri(Uri uri)
     {
@@ -4941,7 +5691,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         string.Equals(host, "cdn.modrinth.com", StringComparison.OrdinalIgnoreCase);
 
     private MinecraftClientLoader? ResolveRequestedContentLoader(
-        ClientInstanceItemViewModel instance,
         MinecraftClientContentKind kind)
     {
         if (kind != MinecraftClientContentKind.Mod)
@@ -4950,8 +5699,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         return SelectedContentDownloadLoader?.Loader ??
-               (IsSupportedDownloadLoader(instance.Model.Loader)
-                   ? instance.Model.Loader
+               (IsSupportedDownloadLoader(_contentDownloadTargetLoader)
+                   ? _contentDownloadTargetLoader
                    : null);
     }
 
@@ -5256,6 +6005,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private void NotifyContentMutationStateChanged()
     {
+        InstallContentDownloadCommand.NotifyCanExecuteChanged();
         ImportContentCommand.NotifyCanExecuteChanged();
         ToggleContentEnabledCommand.NotifyCanExecuteChanged();
         RecycleContentCommand.NotifyCanExecuteChanged();
@@ -5483,6 +6233,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private void RefreshLocalizedContentDownloadChoices()
     {
         var selectedLoader = _selectedContentDownloadLoader?.Loader;
+        var selectedSort = _selectedContentDownloadSort?.Sort ?? ModrinthClientContentSort.Downloads;
         _contentDownloadLoaders =
         [
             new(null, L("client.content.download.loader.auto")),
@@ -5494,6 +6245,59 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _selectedContentDownloadLoader =
             _contentDownloadLoaders.FirstOrDefault(choice => choice.Loader == selectedLoader)
             ?? _contentDownloadLoaders[0];
+        _contentDownloadSortOptions =
+        [
+            new(ModrinthClientContentSort.Downloads, L("client.content.center.sort.downloads")),
+            new(ModrinthClientContentSort.Relevance, L("client.content.center.sort.relevance")),
+            new(ModrinthClientContentSort.Updated, L("client.content.center.sort.updated")),
+            new(ModrinthClientContentSort.Newest, L("client.content.center.sort.newest")),
+            new(ModrinthClientContentSort.Follows, L("client.content.center.sort.follows")),
+        ];
+        _selectedContentDownloadSort =
+            _contentDownloadSortOptions.First(choice => choice.Sort == selectedSort);
+        RefreshLocalizedContentDownloadCategories();
+    }
+
+    private void RefreshLocalizedContentDownloadCategories()
+    {
+        var selectedCategory = _selectedContentDownloadCategory?.Category;
+        _contentDownloadCategories = ContentDownloadKind switch
+        {
+            MinecraftClientContentKind.Mod =>
+            [
+                new(null, L("client.content.center.category.all")),
+                new("adventure", L("client.content.center.category.adventure")),
+                new("technology", L("client.content.center.category.technology")),
+                new("magic", L("client.content.center.category.magic")),
+                new("optimization", L("client.content.center.category.optimization")),
+                new("utility", L("client.content.center.category.utility")),
+                new("library", L("client.content.center.category.library")),
+            ],
+            MinecraftClientContentKind.ResourcePack =>
+            [
+                new(null, L("client.content.center.category.all")),
+                new("audio", L("client.content.center.category.audio")),
+                new("blocks", L("client.content.center.category.blocks")),
+                new("gui", L("client.content.center.category.interface")),
+                new("mobs", L("client.content.center.category.mobs")),
+                new("themed", L("client.content.center.category.themed")),
+            ],
+            MinecraftClientContentKind.ShaderPack =>
+            [
+                new(null, L("client.content.center.category.all")),
+                new("fantasy", L("client.content.center.category.fantasy")),
+                new("realistic", L("client.content.center.category.realistic")),
+                new("vanilla-like", L("client.content.center.category.vanillaLike")),
+                new("lightweight", L("client.content.center.category.lightweight")),
+                new("atmospheric", L("client.content.center.category.atmospheric")),
+            ],
+            _ => [new(null, L("client.content.center.category.all"))],
+        };
+        _selectedContentDownloadCategory =
+            _contentDownloadCategories.FirstOrDefault(choice =>
+                string.Equals(choice.Category, selectedCategory, StringComparison.Ordinal))
+            ?? _contentDownloadCategories[0];
+        OnPropertyChanged(nameof(SelectedContentDownloadCategory));
     }
 
     private static ClientContentDownloadProjectItemViewModel CreateContentDownloadProjectItem(
@@ -5568,14 +6372,22 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(SelectedCatalogSort));
         OnPropertyChanged(nameof(ContentDownloadLoaders));
         OnPropertyChanged(nameof(SelectedContentDownloadLoader));
+        OnPropertyChanged(nameof(ContentDownloadCategories));
+        OnPropertyChanged(nameof(SelectedContentDownloadCategory));
+        OnPropertyChanged(nameof(ContentDownloadSortOptions));
+        OnPropertyChanged(nameof(SelectedContentDownloadSort));
         OnPropertyChanged(nameof(BedrockChannelChoices));
         OnPropertyChanged(nameof(SelectedBedrockChannel));
         OnPropertyChanged(nameof(ContentDownloadHeading));
         OnPropertyChanged(nameof(ContentDownloadDescription));
+        OnPropertyChanged(nameof(ContentDownloadTargetSummary));
+        OnPropertyChanged(nameof(ContentDownloadResultsSummary));
+        OnPropertyChanged(nameof(ContentDownloadQueueSummary));
+        OnPropertyChanged(nameof(ContentDownloadQueueToggleText));
 
         if (downloadProjects.Length > 0)
         {
-            var gameVersion = SelectedInstance?.Model.GameVersion ?? string.Empty;
+            var gameVersion = _contentDownloadTargetGameVersion;
             ContentDownloadResults.Clear();
             foreach (var project in downloadProjects)
             {
@@ -5675,6 +6487,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _operationCancellation?.Cancel();
         _catalogBrowseCancellation?.Cancel();
         _catalogVersionCancellation?.Cancel();
+        _contentDownloadBrowseCancellation?.Cancel();
+        _contentDownloadDetailsCancellation?.Cancel();
+        _contentDownloadPlanCancellation?.Cancel();
         _accountLoginCancellation?.Cancel();
         _skinTextureLoadCancellation?.Cancel();
         await _contentRefreshCoordinator.DisposeAsync();
@@ -5690,13 +6505,23 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             profileSynchronizationTasks = _profileSynchronizationTasks.ToArray();
         }
 
+        Task[] contentDownloadInstallTasks;
+        lock (_contentDownloadInstallTaskGate)
+        {
+            contentDownloadInstallTasks = _contentDownloadInstallTasks.ToArray();
+        }
+
         try
         {
             await Task.WhenAll(
                 observerTasks.Concat(profileSynchronizationTasks)
+                    .Concat(contentDownloadInstallTasks)
                     .Append(_catalogBrowseTask)
                     .Append(_catalogArtworkTask)
                     .Append(_catalogVersionTask)
+                    .Append(_contentDownloadBrowseTask)
+                    .Append(_contentDownloadDetailsTask)
+                    .Append(_contentDownloadPlanTask)
                     .Append(_accountRefreshTask)
                     .Append(_accountLoginTask));
         }
@@ -5724,6 +6549,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _operationCancellation?.Dispose();
         _catalogBrowseCancellation?.Dispose();
         _catalogVersionCancellation?.Dispose();
+        _contentDownloadBrowseCancellation?.Dispose();
+        _contentDownloadDetailsCancellation?.Dispose();
+        _contentDownloadPlanCancellation?.Dispose();
         _accountLoginCancellation?.Dispose();
         _skinTextureLoadCancellation?.Dispose();
         _lifetimeCancellation.Dispose();
@@ -5733,6 +6561,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             job.PropertyChanged -= OnCatalogInstallJobPropertyChanged;
         }
         _observedCatalogInstallJobs.Clear();
+        ContentDownloadJobs.CollectionChanged -= OnContentDownloadJobsChanged;
+        foreach (var job in _observedContentDownloadJobs)
+        {
+            job.PropertyChanged -= OnContentDownloadJobPropertyChanged;
+        }
+        _observedContentDownloadJobs.Clear();
+        foreach (var job in ContentDownloadJobs)
+        {
+            job.Dispose();
+        }
+        ContentDownloadCenterRequested = null;
 
         if (_artworkCache is IDisposable disposableArtworkCache)
         {
@@ -5747,6 +6586,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _gameHttpClient.Dispose();
         _authenticationHttpClient.Dispose();
         _contentGate.Dispose();
+        _contentDownloadInstallGate.Dispose();
     }
 
     private sealed record ContentRefreshRequest(

@@ -41,15 +41,49 @@ public sealed class ModrinthClientContentInstaller : IDisposable
             maxRedirects: 0);
     }
 
-    public async Task<ModrinthClientContentInstallPlan> PlanAsync(
+    public Task<ModrinthClientContentInstallPlan> PlanAsync(
         string projectId,
         MinecraftClientContentKind kind,
         string gameVersion,
         MinecraftClientLoader? loader = null,
         CancellationToken cancellationToken = default)
+        => PlanCoreAsync(
+            projectId,
+            kind,
+            gameVersion,
+            versionId: null,
+            loader,
+            cancellationToken);
+
+    public Task<ModrinthClientContentInstallPlan> PlanVersionAsync(
+        string projectId,
+        MinecraftClientContentKind kind,
+        string gameVersion,
+        string versionId,
+        MinecraftClientLoader? loader = null,
+        CancellationToken cancellationToken = default)
+        => PlanCoreAsync(
+            projectId,
+            kind,
+            gameVersion,
+            versionId,
+            loader,
+            cancellationToken);
+
+    private async Task<ModrinthClientContentInstallPlan> PlanCoreAsync(
+        string projectId,
+        MinecraftClientContentKind kind,
+        string gameVersion,
+        string? versionId,
+        MinecraftClientLoader? loader,
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         ValidateSelection(projectId, kind, gameVersion, loader);
+        var normalizedGameVersion = gameVersion.Trim();
+        var normalizedVersionId = versionId is null
+            ? null
+            : ValidateVersionIdentifier(versionId);
         var project = await _catalog.GetProjectAsync(projectId, cancellationToken)
             .ConfigureAwait(false);
         if (project.Kind != kind)
@@ -57,12 +91,27 @@ public sealed class ModrinthClientContentInstaller : IDisposable
             throw new InvalidOperationException("The selected Modrinth project has a different content type.");
         }
 
-        var version = await _catalog.SelectStableVersionAsync(
-                project.ProjectId,
-                gameVersion.Trim(),
-                loader,
-                cancellationToken)
-            .ConfigureAwait(false);
+        var version = normalizedVersionId is null
+            ? await _catalog.SelectStableVersionAsync(
+                    project.ProjectId,
+                    normalizedGameVersion,
+                    loader,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : await _catalog.GetStableVersionAsync(normalizedVersionId, cancellationToken)
+                .ConfigureAwait(false);
+        if (!string.Equals(project.ProjectId, version.ProjectId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The selected Modrinth version belongs to a different project.");
+        }
+
+        if (!IsCompatible(version, normalizedGameVersion, loader, kind))
+        {
+            throw new InvalidOperationException(
+                "The selected Modrinth version is not compatible with the requested Minecraft version and loader.");
+        }
+
         var compatibleLoaders = version.Loaders
             .Select(static value => ModrinthClientContentCatalog.TryGetLoader(value, out var parsed)
                 ? (MinecraftClientLoader?)parsed
@@ -75,7 +124,7 @@ public sealed class ModrinthClientContentInstaller : IDisposable
             ? loader ?? SelectPreferredLoader(compatibleLoaders)
             : null;
 
-        var state = new PlanningState(gameVersion.Trim(), requiredLoader);
+        var state = new PlanningState(normalizedGameVersion, requiredLoader);
         if (kind == MinecraftClientContentKind.Mod && requiredLoader is null)
         {
             state.Fallbacks.Add(CreateFallback(
@@ -114,10 +163,11 @@ public sealed class ModrinthClientContentInstaller : IDisposable
     {
         ThrowIfDisposed();
         ValidateInstallRequest(request);
-        var plan = await PlanAsync(
+        var plan = await PlanCoreAsync(
                 request.ProjectId,
                 request.Kind,
                 request.GameVersion,
+                request.VersionId,
                 request.Loader,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -508,6 +558,11 @@ public sealed class ModrinthClientContentInstaller : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateSelection(request.ProjectId, request.Kind, request.GameVersion, request.Loader);
+        if (request.VersionId is not null)
+        {
+            _ = ValidateVersionIdentifier(request.VersionId);
+        }
+
         if (request.Kind == MinecraftClientContentKind.Mod && request.Loader is null)
         {
             throw new ArgumentException(
@@ -551,6 +606,18 @@ public sealed class ModrinthClientContentInstaller : IDisposable
         {
             _ = ModrinthClientContentCatalog.GetLoaderName(selectedLoader);
         }
+    }
+
+    private static string ValidateVersionIdentifier(string versionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(versionId);
+        var normalized = versionId.Trim();
+        if (normalized.Length is < 1 or > 64 || !normalized.All(char.IsAsciiLetterOrDigit))
+        {
+            throw new ArgumentException("Modrinth version identifier is invalid.", nameof(versionId));
+        }
+
+        return normalized;
     }
 
     private static void EnsureRootsDoNotOverlap(string first, string second)

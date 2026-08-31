@@ -55,6 +55,12 @@ public sealed class ModrinthClientContentCatalog : IModrinthClientContentCatalog
             facets.Add(new[] { $"categories:{GetLoaderName(loader)}" });
         }
 
+        if (request.Category is not null)
+        {
+            var category = NormalizeFacet(request.Category, "category").ToLowerInvariant();
+            facets.Add(new[] { $"categories:{category}" });
+        }
+
         var uri = BuildUri(
             "search",
             new Dictionary<string, string>
@@ -309,6 +315,7 @@ public sealed class ModrinthClientContentCatalog : IModrinthClientContentCatalog
     {
         var id = ValidateIdentifier(ReadRequiredString(root, "id"), "project id");
         var slug = ValidateSlug(ReadOptionalString(root, "slug") ?? id);
+        var description = ReadOptionalString(root, "description") ?? string.Empty;
         var loaders = ReadStringArray(root, "loaders");
         if (loaders.Count == 0)
         {
@@ -320,14 +327,15 @@ public sealed class ModrinthClientContentCatalog : IModrinthClientContentCatalog
             slug,
             kind,
             ReadRequiredString(root, "title"),
-            ReadOptionalString(root, "description") ?? string.Empty,
+            description,
             ReadOptionalString(root, "team") ?? string.Empty,
             ParseOfficialCdnUri(ReadOptionalString(root, "icon_url")),
             ReadStringArray(root, "game_versions"),
             loaders,
             Math.Max(0, ReadOptionalInt64(root, "downloads") ?? 0),
             ReadOptionalDate(root, "updated") ?? DateTimeOffset.MinValue,
-            BuildProjectPageUri(kind, slug));
+            BuildProjectPageUri(kind, slug),
+            ReadOptionalString(root, "body") ?? description);
     }
 
     private static ModrinthClientContentVersion? ParseStableVersion(JsonElement root)
@@ -487,6 +495,11 @@ public sealed class ModrinthClientContentCatalog : IModrinthClientContentCatalog
         if (request.Loader is { } loader)
         {
             _ = GetLoaderName(loader);
+        }
+
+        if (request.Category is not null)
+        {
+            _ = NormalizeFacet(request.Category, "category");
         }
     }
 

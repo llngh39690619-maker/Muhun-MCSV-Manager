@@ -1,0 +1,413 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.ClientContentDownloadCenterWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource L10n.client.content.center.title}"
+        Width="1280" Height="720" MinWidth="1024" MinHeight="576"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Tag="{Binding CloseContentDownloadCommand}"
+        Closing="OnWindowClosing">
+    <Window.Resources>
+        <Style x:Key="DownloadCenterPanel" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+        <Style x:Key="DownloadResultItem" TargetType="ListBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="ResultSurface"
+                                Background="{DynamicResource PanelRaisedBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1" CornerRadius="9" Padding="12">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ResultSurface" Property="BorderBrush"
+                                        Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ResultSurface" Property="Background"
+                                        Value="{DynamicResource AccentDarkBrush}" />
+                                <Setter TargetName="ResultSurface" Property="BorderBrush"
+                                        Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ProgressBar">
+            <Setter Property="Height" Value="7" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="Background" Value="{DynamicResource WindowBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="ContentDownloadCenterLayout" Background="{DynamicResource WindowBrush}">
+        <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
+        <Rectangle Fill="{DynamicResource WindowPatternBrush}" IsHitTestVisible="False" />
+
+        <Grid x:Name="ContentDownloadRoot" Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid x:Name="ContentDownloadHeader" Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="{DynamicResource L10n.client.content.center.title}"
+                               FontSize="25" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding ContentDownloadTargetSummary}"
+                               Style="{StaticResource MutedText}" Margin="0,5,0,0"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <TabControl x:Name="ContentDownloadTabs" Grid.Column="1"
+                            Height="46" Margin="20,0,16,0" VerticalAlignment="Center"
+                            SelectionChanged="OnContentDownloadTabSelectionChanged">
+                    <TabItem x:Name="ModContentDownloadTab"
+                             IsSelected="{Binding IsModContentDownload, Mode=OneWay}">
+                        <TabItem.Header>
+                            <Button Content="{DynamicResource L10n.client.vm.content.kind.mod}"
+                                    Command="{Binding SelectContentDownloadKindCommand}"
+                                    CommandParameter="Mod"
+                                    Background="Transparent" BorderThickness="0" Padding="6,1" />
+                        </TabItem.Header>
+                    </TabItem>
+                    <TabItem x:Name="ResourcePackContentDownloadTab"
+                             IsSelected="{Binding IsResourcePackContentDownload, Mode=OneWay}">
+                        <TabItem.Header>
+                            <Button Content="{DynamicResource L10n.client.vm.content.kind.resourcePack}"
+                                    Command="{Binding SelectContentDownloadKindCommand}"
+                                    CommandParameter="ResourcePack"
+                                    Background="Transparent" BorderThickness="0" Padding="6,1" />
+                        </TabItem.Header>
+                    </TabItem>
+                    <TabItem x:Name="ShaderPackContentDownloadTab"
+                             IsSelected="{Binding IsShaderPackContentDownload, Mode=OneWay}">
+                        <TabItem.Header>
+                            <Button Content="{DynamicResource L10n.client.vm.content.kind.shaderPack}"
+                                    Command="{Binding SelectContentDownloadKindCommand}"
+                                    CommandParameter="ShaderPack"
+                                    Background="Transparent" BorderThickness="0" Padding="6,1" />
+                        </TabItem.Header>
+                    </TabItem>
+                </TabControl>
+
+                <Button Grid.Column="2" Content="{DynamicResource L10n.common.close}"
+                        Click="OnCloseClick" MinWidth="82" VerticalAlignment="Center" />
+            </Grid>
+
+            <Border x:Name="ContentDownloadToolbar" Grid.Row="1"
+                    Style="{StaticResource DownloadCenterPanel}" Margin="0,14,0,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="210" />
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox Text="{Binding ContentDownloadSearchText, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="{DynamicResource L10n.client.content.download.searchHint}"
+                             VerticalContentAlignment="Center" />
+                    <ComboBox Grid.Column="1" Margin="10,0,0,0"
+                              ItemsSource="{Binding ContentDownloadLoaders}"
+                              SelectedItem="{Binding SelectedContentDownloadLoader}"
+                              DisplayMemberPath="DisplayName"
+                              Visibility="{Binding IsModContentDownload, Converter={StaticResource BoolToVisibility}}" />
+                    <ComboBox Grid.Column="2" Margin="10,0,0,0"
+                              ItemsSource="{Binding ContentDownloadCategories}"
+                              SelectedItem="{Binding SelectedContentDownloadCategory}"
+                              DisplayMemberPath="DisplayName"
+                              ToolTip="{DynamicResource L10n.client.catalog.category}" />
+                    <ComboBox Grid.Column="3" Margin="10,0,0,0"
+                              ItemsSource="{Binding ContentDownloadSortOptions}"
+                              SelectedItem="{Binding SelectedContentDownloadSort}"
+                              DisplayMemberPath="DisplayName"
+                              ToolTip="{DynamicResource L10n.client.catalog.sort}" />
+                    <Button Grid.Column="4" Content="{DynamicResource L10n.client.content.download.search}"
+                            Command="{Binding SearchContentDownloadCommand}"
+                            IsEnabled="{Binding IsContentDownloadBusy, Converter={StaticResource InverseBool}}"
+                            Style="{StaticResource PrimaryButton}" Margin="10,0,0,0" MinWidth="94" />
+                </Grid>
+            </Border>
+
+            <Grid x:Name="ContentDownloadMainSplit" Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="3*" MinWidth="470" />
+                    <ColumnDefinition Width="10" />
+                    <ColumnDefinition Width="2*" MinWidth="350" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource DownloadCenterPanel}" Padding="10">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <ListBox x:Name="ContentDownloadResultsList"
+                                 Grid.Row="0"
+                                 Tag="{Binding LoadMoreContentDownloadCommand}"
+                                 ItemsSource="{Binding ContentDownloadResults}"
+                                 SelectedItem="{Binding SelectedContentDownloadProject}"
+                                 ItemContainerStyle="{StaticResource DownloadResultItem}"
+                                 Background="Transparent" BorderThickness="0" Padding="2"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.CanContentScroll="True"
+                                 ScrollViewer.ScrollChanged="OnResultsScrollChanged"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 VirtualizingPanel.ScrollUnit="Pixel">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <VirtualizingStackPanel />
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="64" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="52" Height="52" CornerRadius="7"
+                                                Background="{DynamicResource WindowBrush}" ClipToBounds="True">
+                                            <Grid>
+                                                <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}"
+                                                           FontSize="23" FontWeight="Bold"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                <Image Source="{Binding IconUri}" Stretch="UniformToFill" />
+                                            </Grid>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                                            <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Summary}" Style="{StaticResource MutedText}"
+                                                       Margin="0,4,0,0" TextWrapping="Wrap" MaxHeight="38"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding CompatibilityText}"
+                                                       Foreground="{DynamicResource AccentBrush}"
+                                                       FontSize="11" Margin="0,5,0,0"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <StackPanel Grid.Row="1" Margin="0,8,0,0"
+                                    Visibility="{Binding HasMoreContentDownloadResults, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="{DynamicResource L10n.client.content.center.loadMoreHint}"
+                                       Style="{StaticResource MutedText}" HorizontalAlignment="Center" />
+                            <Button Content="{DynamicResource L10n.client.action.loadMore}"
+                                    Command="{Binding LoadMoreContentDownloadCommand}"
+                                    HorizontalAlignment="Center" MinWidth="140" Margin="0,5,0,0" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center"
+                              Background="{DynamicResource BorderBrush}" />
+
+                <Border x:Name="ContentDownloadDetailsPanel" Grid.Column="2"
+                        Style="{StaticResource DownloadCenterPanel}" Padding="0">
+                    <ScrollViewer x:Name="ContentDownloadDetailsScrollViewer"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="16">
+                            <Border Height="150" CornerRadius="8" ClipToBounds="True"
+                                    Background="{DynamicResource WindowBrush}">
+                                <Grid>
+                                    <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}"
+                                               FontSize="42" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    <Image Source="{Binding SelectedContentDownloadProject.IconUri}"
+                                           Stretch="Uniform" />
+                                </Grid>
+                            </Border>
+                            <TextBlock Text="{Binding SelectedContentDownloadProject.Title}"
+                                       FontSize="21" FontWeight="SemiBold" Margin="0,14,0,0"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding SelectedContentDownloadProject.Author}"
+                                       Style="{StaticResource MutedText}" Margin="0,5,0,0" />
+                            <TextBlock Text="{Binding SelectedContentDownloadProject.CompatibilityText}"
+                                       Foreground="{DynamicResource AccentBrush}" Margin="0,7,0,0"
+                                       TextWrapping="Wrap" />
+
+                            <TextBlock Text="{DynamicResource L10n.client.catalog.fullDescription}"
+                                       FontSize="16" FontWeight="SemiBold" Margin="0,18,0,7" />
+                            <TextBlock Text="{Binding SelectedContentDownloadProject.FullDescription}"
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+
+                            <TextBlock Text="{DynamicResource L10n.client.catalog.availableVersions}"
+                                       FontSize="16" FontWeight="SemiBold" Margin="0,18,0,7" />
+                            <ComboBox ItemsSource="{Binding ContentDownloadVersions}"
+                                      SelectedItem="{Binding SelectedContentDownloadVersion}"
+                                      DisplayMemberPath="DisplayName" />
+
+                            <TextBlock Text="{DynamicResource L10n.client.content.center.dependencies}"
+                                       FontSize="16" FontWeight="SemiBold" Margin="0,18,0,5" />
+                            <ItemsControl ItemsSource="{Binding ContentDownloadDependencies}" Margin="0,5,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayText}" Style="{StaticResource MutedText}"
+                                                   Margin="0,2,0,0" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <ItemsControl ItemsSource="{Binding ContentDownloadFallbacks}" Margin="0,10,0,0">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="9" Margin="0,3,0,0" CornerRadius="6"
+                                                Background="{DynamicResource WindowBrush}"
+                                                BorderBrush="{DynamicResource WarningBrush}" BorderThickness="1">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Message}" Foreground="{DynamicResource WarningBrush}"
+                                                           TextWrapping="Wrap" />
+                                                <Button Grid.Column="1"
+                                                        Content="{DynamicResource L10n.client.content.download.openFallback}"
+                                                        Command="{Binding DataContext.OpenContentFallbackCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                        CommandParameter="{Binding}" Margin="10,0,0,0" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <Border x:Name="ContentDownloadQueuePanel" Grid.Row="3"
+                    Style="{StaticResource DownloadCenterPanel}" Margin="0,12,0,0" Padding="12"
+                    Visibility="{Binding HasContentDownloadJobs, Converter={StaticResource BoolToVisibility}}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource L10n.client.content.center.jobs.heading}"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding ContentDownloadQueueSummary}"
+                                       Style="{StaticResource MutedText}" Margin="0,3,0,0"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <WrapPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                            <Button Content="{Binding ContentDownloadQueueToggleText}"
+                                    Command="{Binding ToggleContentDownloadQueueCommand}" Margin="0,0,8,0" />
+                            <Button Content="{DynamicResource L10n.client.catalog.jobs.clearCompleted}"
+                                    Command="{Binding ClearCompletedContentDownloadJobsCommand}" />
+                        </WrapPanel>
+                    </Grid>
+
+                    <Border Grid.Row="1" Margin="0,10,0,0" MaxHeight="210"
+                            Background="{DynamicResource WindowBrush}" CornerRadius="7"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            Visibility="{Binding IsContentDownloadQueueExpanded, Converter={StaticResource BoolToVisibility}}">
+                        <ListBox ItemsSource="{Binding ContentDownloadJobs}"
+                                 Background="Transparent" BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="10,7">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="220" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}"
+                                                       Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <ProgressBar Grid.Column="1" Margin="12,0,0,0"
+                                                     Minimum="0" Maximum="1" VerticalAlignment="Center"
+                                                     Value="{Binding ProgressValue, Mode=OneWay}"
+                                                     IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}" />
+                                        <Button Grid.Column="2" Content="{DynamicResource L10n.common.cancel}"
+                                                Command="{Binding CancelCommand}" Margin="10,0,0,0"
+                                                VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Border x:Name="FixedContentDownloadBar" Grid.Row="4"
+                    Background="{DynamicResource PanelRaisedBrush}"
+                    BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1"
+                    CornerRadius="10" Padding="14,10" Margin="0,12,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="330" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                        <TextBlock Text="{Binding ContentDownloadTargetSummary}" FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding ContentDownloadStatusText}" Style="{StaticResource MutedText}"
+                                   Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0">
+                        <TextBlock Text="{Binding ContentDownloadQueueSummary}" Style="{StaticResource MutedText}"
+                                   FontSize="11" TextTrimming="CharacterEllipsis" />
+                        <ProgressBar Margin="0,6,0,0" Minimum="0" Maximum="1"
+                                     Value="{Binding ContentDownloadQueueProgressValue, Mode=OneWay}"
+                                     IsIndeterminate="{Binding IsContentDownloadQueueProgressIndeterminate, Mode=OneWay}" />
+                    </StackPanel>
+                    <WrapPanel Grid.Column="2" VerticalAlignment="Center">
+                        <Button Content="{DynamicResource L10n.client.content.download.openProject}"
+                                Command="{Binding OpenSelectedContentProjectPageCommand}" Margin="0,0,8,0" />
+                        <Button Content="{DynamicResource L10n.client.content.download.openFallback}"
+                                Command="{Binding OpenContentFallbackCommand}" Margin="0,0,8,0"
+                                Visibility="{Binding HasContentDownloadFallback, Converter={StaticResource BoolToVisibility}}" />
+                        <Button Content="{DynamicResource L10n.client.content.download.install}"
+                                Command="{Binding InstallContentDownloadCommand}"
+                                Style="{StaticResource PrimaryButton}" MinWidth="130" />
+                    </WrapPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

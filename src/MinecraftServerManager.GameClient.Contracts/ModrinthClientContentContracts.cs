@@ -35,7 +35,8 @@ public sealed record ModrinthClientContentSearchRequest(
     MinecraftClientLoader? Loader = null,
     ModrinthClientContentSort Sort = ModrinthClientContentSort.Relevance,
     int Offset = 0,
-    int Limit = 20);
+    int Limit = 20,
+    string? Category = null);
 
 public sealed record ModrinthClientContentProject(
     string ProjectId,
@@ -49,7 +50,8 @@ public sealed record ModrinthClientContentProject(
     IReadOnlyList<string> Loaders,
     long Downloads,
     DateTimeOffset DateModified,
-    Uri ProjectPageUri);
+    Uri ProjectPageUri,
+    string? FullDescription = null);
 
 public sealed record ModrinthClientContentSearchPage(
     IReadOnlyList<ModrinthClientContentProject> Projects,
@@ -119,7 +121,8 @@ public sealed record ModrinthClientContentInstallRequest(
     string ProjectId,
     MinecraftClientContentKind Kind,
     string GameVersion,
-    MinecraftClientLoader? Loader = null);
+    MinecraftClientLoader? Loader = null,
+    string? VersionId = null);
 
 public sealed record ModrinthClientContentInstallProgress(
     string Stage,

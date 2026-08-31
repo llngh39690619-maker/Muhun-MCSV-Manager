@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.GameClient.Tests;
@@ -46,7 +47,8 @@ public sealed class ModrinthClientContentTests : IDisposable
             "storage",
             "1.21.1",
             MinecraftClientLoader.NeoForge,
-            ModrinthClientContentSort.Updated));
+            ModrinthClientContentSort.Updated,
+            Category: "Technology"));
 
         var project = Assert.Single(result.Projects);
         Assert.Equal(MinecraftClientContentKind.Mod, project.Kind);
@@ -56,7 +58,69 @@ public sealed class ModrinthClientContentTests : IDisposable
         Assert.Contains("project_type:mod", query, StringComparison.Ordinal);
         Assert.Contains("versions:1.21.1", query, StringComparison.Ordinal);
         Assert.Contains("categories:neoforge", query, StringComparison.Ordinal);
+        Assert.Contains("categories:technology", query, StringComparison.Ordinal);
         Assert.Contains("index=updated", query, StringComparison.Ordinal);
+        var facetsParameter = Assert.Single(
+            query.TrimStart('?').Split('&'),
+            static part => part.StartsWith("facets=", StringComparison.Ordinal));
+        using var facets = JsonDocument.Parse(facetsParameter["facets=".Length..]);
+        var groups = facets.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(4, groups.Length);
+        Assert.Contains(groups, group =>
+            group.GetArrayLength() == 1 &&
+            group[0].GetString() == "categories:neoforge");
+        Assert.Contains(groups, group =>
+            group.GetArrayLength() == 1 &&
+            group[0].GetString() == "categories:technology");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("invalid category")]
+    [InlineData("technology:downloads")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public async Task SearchAsync_RejectsInvalidCategoryBeforeNetwork(string category)
+    {
+        var handler = new RecordingHandler(request => Json(request, "{}"));
+        using var client = new HttpClient(handler);
+        var catalog = new ModrinthClientContentCatalog(client, "X-MCSV-Tests/1.0");
+
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => catalog.SearchAsync(
+            new ModrinthClientContentSearchRequest(
+                MinecraftClientContentKind.Mod,
+                Category: category)));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task GetProjectAsync_ParsesFullDescriptionBody()
+    {
+        var handler = new RecordingHandler(request => Json(request, """
+            {
+              "id": "ProjectA",
+              "project_type": "mod",
+              "status": "approved",
+              "client_side": "required",
+              "slug": "project-a",
+              "title": "Project A",
+              "description": "Short description.",
+              "body": "# Complete overview\nDetailed installation notes.",
+              "team": "TeamA",
+              "icon_url": "https://cdn.modrinth.com/data/ProjectA/icon.png",
+              "game_versions": ["1.21.1"],
+              "loaders": ["neoforge"],
+              "downloads": 42,
+              "updated": "2026-08-01T00:00:00Z"
+            }
+            """));
+        using var client = new HttpClient(handler);
+        var catalog = new ModrinthClientContentCatalog(client, "X-MCSV-Tests/1.0");
+
+        var project = await catalog.GetProjectAsync("ProjectA");
+
+        Assert.Equal("Short description.", project.Description);
+        Assert.Equal("# Complete overview\nDetailed installation notes.", project.FullDescription);
     }
 
     [Fact]
@@ -177,6 +241,120 @@ public sealed class ModrinthClientContentTests : IDisposable
     }
 
     [Fact]
+    public async Task PlanVersionAsync_UsesRequestedStableRelease()
+    {
+        var project = Project("RootProject", "root", "Root", MinecraftClientContentKind.Mod);
+        var latest = Version(
+            project.ProjectId,
+            "LatestVersion",
+            "latest.jar",
+            new string('a', 128));
+        var requested = Version(
+            project.ProjectId,
+            "RequestedVersion",
+            "requested.jar",
+            new string('b', 128));
+        var catalog = new FakeCatalog([project], [latest, requested]);
+        using var installer = CreateInstaller(
+            catalog,
+            new DownloadHandler(new Dictionary<string, byte[]>()));
+
+        var plan = await installer.PlanVersionAsync(
+            project.ProjectId,
+            project.Kind,
+            "1.21.1",
+            requested.VersionId,
+            MinecraftClientLoader.Forge);
+
+        Assert.Equal(requested.VersionId, plan.Version.VersionId);
+        Assert.Equal("requested.jar", Assert.Single(plan.Artifacts).File.FileName);
+    }
+
+    [Fact]
+    public async Task PlanVersionAsync_RejectsProjectKindGameVersionAndLoaderMismatches()
+    {
+        var project = Project("RootProject", "root", "Root", MinecraftClientContentKind.Mod);
+
+        var wrongKindProject = Project(
+            project.ProjectId,
+            project.Slug,
+            project.Title,
+            MinecraftClientContentKind.ResourcePack);
+        var wrongKindVersion = Version(
+            project.ProjectId,
+            "WrongKindVersion",
+            "wrong-kind.zip",
+            new string('d', 128),
+            loaders: []);
+        using (var installer = CreateInstaller(
+                   new FakeCatalog([wrongKindProject], [wrongKindVersion]),
+                   new DownloadHandler(new Dictionary<string, byte[]>())))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => installer.PlanVersionAsync(
+                project.ProjectId,
+                project.Kind,
+                "1.21.1",
+                wrongKindVersion.VersionId,
+                MinecraftClientLoader.Forge));
+        }
+
+        var wrongProjectVersion = Version(
+            "OtherProject",
+            "WrongProjectVersion",
+            "wrong-project.jar",
+            new string('a', 128));
+        using (var installer = CreateInstaller(
+                   new FakeCatalog([project], [wrongProjectVersion]),
+                   new DownloadHandler(new Dictionary<string, byte[]>())))
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => installer.PlanVersionAsync(
+                project.ProjectId,
+                project.Kind,
+                "1.21.1",
+                wrongProjectVersion.VersionId,
+                MinecraftClientLoader.Forge));
+        }
+
+        var wrongGameVersion = Version(
+            project.ProjectId,
+            "WrongGameVersion",
+            "wrong-game.jar",
+            new string('b', 128)) with
+        {
+            GameVersions = ["1.20.1"],
+        };
+        using (var installer = CreateInstaller(
+                   new FakeCatalog([project], [wrongGameVersion]),
+                   new DownloadHandler(new Dictionary<string, byte[]>())))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => installer.PlanVersionAsync(
+                project.ProjectId,
+                project.Kind,
+                "1.21.1",
+                wrongGameVersion.VersionId,
+                MinecraftClientLoader.Forge));
+        }
+
+        var wrongLoaderVersion = Version(
+            project.ProjectId,
+            "WrongLoaderVersion",
+            "wrong-loader.jar",
+            new string('c', 128),
+            loaders: ["fabric"]);
+        using (var installer = CreateInstaller(
+                   new FakeCatalog([project], [wrongLoaderVersion]),
+                   new DownloadHandler(new Dictionary<string, byte[]>())))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => installer.PlanVersionAsync(
+                project.ProjectId,
+                project.Kind,
+                "1.21.1",
+                wrongLoaderVersion.VersionId,
+                MinecraftClientLoader.Forge));
+        }
+    }
+
+    [Fact]
     public async Task InstallAsync_VerifiesHashesAndAtomicallyInstallsModWithDependency()
     {
         var rootPayload = Encoding.UTF8.GetBytes("root mod payload");
@@ -225,6 +403,74 @@ public sealed class ModrinthClientContentTests : IDisposable
         Assert.Equal(
             dependencyPayload,
             await File.ReadAllBytesAsync(Path.Combine(instance, "mods", "dependency.jar")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "staging")));
+    }
+
+    [Fact]
+    public async Task InstallAsync_InstallsRequestedStableVersionAndItsDependencies()
+    {
+        var requestedPayload = Encoding.UTF8.GetBytes("requested root payload");
+        var latestPayload = Encoding.UTF8.GetBytes("latest root payload");
+        var dependencyPayload = Encoding.UTF8.GetBytes("requested dependency payload");
+        var project = Project("RootProject", "root", "Root", MinecraftClientContentKind.Mod);
+        var dependency = Project(
+            "DependencyB",
+            "dependency-b",
+            "Dependency B",
+            MinecraftClientContentKind.Mod);
+        var latest = Version(
+            project.ProjectId,
+            "LatestVersion",
+            "latest.jar",
+            Sha512(latestPayload),
+            size: latestPayload.Length,
+            sha1: Sha1(latestPayload));
+        var requested = Version(
+            project.ProjectId,
+            "RequestedVersion",
+            "requested.jar",
+            Sha512(requestedPayload),
+            [Required(projectId: dependency.ProjectId)],
+            requestedPayload.Length,
+            Sha1(requestedPayload));
+        var dependencyVersion = Version(
+            dependency.ProjectId,
+            "DependencyVersion",
+            "dependency.jar",
+            Sha512(dependencyPayload),
+            size: dependencyPayload.Length,
+            sha1: Sha1(dependencyPayload));
+        var catalog = new FakeCatalog(
+            [project, dependency],
+            [latest, requested, dependencyVersion]);
+        using var installer = CreateInstaller(
+            catalog,
+            new DownloadHandler(new Dictionary<string, byte[]>
+            {
+                ["latest.jar"] = latestPayload,
+                ["requested.jar"] = requestedPayload,
+                ["dependency.jar"] = dependencyPayload,
+            }));
+        var instance = Path.Combine(_root, "exact-version-instance");
+        Directory.CreateDirectory(instance);
+
+        var result = await installer.InstallAsync(new ModrinthClientContentInstallRequest(
+            instance,
+            project.ProjectId,
+            project.Kind,
+            "1.21.1",
+            MinecraftClientLoader.Forge,
+            requested.VersionId));
+
+        Assert.True(result.Installed);
+        Assert.Equal(requested.VersionId, result.Plan.Version.VersionId);
+        Assert.Equal(
+            requestedPayload,
+            await File.ReadAllBytesAsync(Path.Combine(instance, "mods", "requested.jar")));
+        Assert.Equal(
+            dependencyPayload,
+            await File.ReadAllBytesAsync(Path.Combine(instance, "mods", "dependency.jar")));
+        Assert.False(File.Exists(Path.Combine(instance, "mods", "latest.jar")));
         Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "staging")));
     }
 
