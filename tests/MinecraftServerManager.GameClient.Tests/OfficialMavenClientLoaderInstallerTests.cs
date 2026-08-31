@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -158,8 +159,11 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             "52.1.0");
         var installerBytes = "verified process failure fixture"u8.ToArray();
         var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
-        var runner = new RecordingRunner((_, _) =>
-            throw new InvalidOperationException("simulated Java loader failure"));
+        var runner = new RecordingRunner((artifact, _) =>
+        {
+            File.WriteAllText(artifact.Path + ".log", "bounded installer log fixture");
+            throw new InvalidOperationException("simulated Java loader failure");
+        });
         var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 4);
 
         var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
@@ -176,6 +180,277 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         Assert.IsType<InvalidOperationException>(error.InnerException);
         Assert.Equal(1, runner.CallCount);
         Assert.Equal(2, transport.Requests.Count);
+        Assert.False(File.Exists(Path.Combine(_root, "launcher_profiles.json")));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".loader-*.log",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Theory]
+    [InlineData(
+        MinecraftClientLoader.Forge,
+        "1.21.1",
+        "52.1.0",
+        "1.21.1-forge-52.1.0",
+        "net.minecraftforge:forge:1.21.1-52.1.0")]
+    [InlineData(
+        MinecraftClientLoader.NeoForge,
+        "1.21.1",
+        "21.1.248",
+        "1.21.1-neoforge-21.1.248",
+        "net.neoforged:neoforge:21.1.248")]
+    public async Task InstallAsync_MissingLauncherProfilesUsesTemporaryMinimalProfile(
+        MinecraftClientLoader loader,
+        string gameVersion,
+        string loaderVersion,
+        string installedProfileId,
+        string expectedLibrary)
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            loader,
+            gameVersion,
+            loaderVersion);
+        var installerBytes = "verified official loader fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var temporaryProfile = Path.Combine(_root, "launcher_profiles.json");
+        var runner = new RecordingRunner((artifact, instanceDirectory) =>
+        {
+            Assert.True(File.Exists(temporaryProfile));
+            using var document = JsonDocument.Parse(ReadSharedText(temporaryProfile));
+            Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+            Assert.True(document.RootElement.TryGetProperty("profiles", out var profiles));
+            Assert.Equal(JsonValueKind.Object, profiles.ValueKind);
+            Assert.Empty(profiles.EnumerateObject());
+            File.WriteAllText(artifact.Path + ".log", "bounded installer log fixture");
+            WriteProfile(instanceDirectory, installedProfileId, expectedLibrary);
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var result = await installer.InstallAsync(
+            loader,
+            gameVersion,
+            loaderVersion,
+            _root,
+            Path.Combine(_root, "java.exe"));
+
+        Assert.Equal(installedProfileId, result);
+        Assert.Equal(1, runner.CallCount);
+        Assert.False(File.Exists(temporaryProfile));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".loader-*.log",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_TemporaryProfileReplacementIsDetectedAndNotDeletedAsOwned()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified replacement fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var temporaryProfile = Path.Combine(_root, "launcher_profiles.json");
+        const string replacementJson = "{\"profiles\":{\"replacement\":{}}}";
+        var runner = new RecordingRunner((_, _) =>
+        {
+            Assert.True(File.Exists(temporaryProfile));
+            File.Delete(temporaryProfile);
+            File.WriteAllText(temporaryProfile, replacementJson);
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        var aggregate = Assert.IsType<AggregateException>(error.InnerException);
+        Assert.Contains(
+            aggregate.Flatten().InnerExceptions,
+            exception => exception is InvalidDataException);
+        Assert.Equal(1, runner.CallCount);
+        Assert.Equal(replacementJson, File.ReadAllText(temporaryProfile));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_ReplacedInstallerLogIsNotDeletedAsOwned()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified log replacement fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        string? replacementLog = null;
+        var runner = new RecordingRunner((artifact, instanceDirectory) =>
+        {
+            replacementLog = artifact.Path + ".log";
+            File.Delete(replacementLog);
+            File.WriteAllText(replacementLog, "unowned replacement");
+            WriteProfile(
+                instanceDirectory,
+                "1.21.1-neoforge-21.1.248",
+                "net.neoforged:neoforge:21.1.248");
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("SafePathSecurityException", error.InnerException?.GetType().Name);
+        Assert.NotNull(replacementLog);
+        Assert.Equal("unowned replacement", File.ReadAllText(replacementLog));
+    }
+
+    [Theory]
+    [InlineData("launcher_profiles.json")]
+    [InlineData("launcher_profiles_microsoft_store.json")]
+    public async Task InstallAsync_ExistingLauncherProfileIsNotReplacedOrRemoved(string fileName)
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified existing profile fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        const string existingJson = "{\"profiles\":{\"existing\":{\"name\":\"keep\"}}}";
+        var existingProfile = Path.Combine(_root, fileName);
+        File.WriteAllText(existingProfile, existingJson);
+        var runner = new RecordingRunner((_, instanceDirectory) =>
+        {
+            Assert.Equal(existingJson, ReadSharedText(existingProfile));
+            WriteProfile(
+                instanceDirectory,
+                "1.21.1-neoforge-21.1.248",
+                "net.neoforged:neoforge:21.1.248");
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var result = await installer.InstallAsync(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248",
+            _root,
+            Path.Combine(_root, "java.exe"));
+
+        Assert.Equal("1.21.1-neoforge-21.1.248", result);
+        Assert.Equal(existingJson, File.ReadAllText(existingProfile));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_CancellationDuringProcessRemovesTemporaryLauncherProfile()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified cancellation fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var temporaryProfile = Path.Combine(_root, "launcher_profiles.json");
+        using var cancellation = new CancellationTokenSource();
+        var runner = new RecordingRunner((artifact, _) =>
+        {
+            Assert.True(File.Exists(temporaryProfile));
+            File.WriteAllText(artifact.Path + ".log", "bounded cancellation log fixture");
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe"),
+                cancellationToken: cancellation.Token));
+
+        Assert.Equal(1, runner.CallCount);
+        Assert.False(File.Exists(temporaryProfile));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".loader-*.log",
+            SearchOption.TopDirectoryOnly));
+        Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_RejectsLauncherProfileReparsePointWithoutFollowingIt()
+    {
+        var outsideProfile = Path.Combine(_root, "outside-profile.json");
+        const string outsideJson = "{\"profiles\":{\"outside\":{}}}";
+        File.WriteAllText(outsideProfile, outsideJson);
+        var linkedProfile = Path.Combine(_root, "launcher_profiles.json");
+        try
+        {
+            File.CreateSymbolicLink(linkedProfile, outsideProfile);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            return;
+        }
+
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified reparse fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var runner = new RecordingRunner();
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.IsType<IOException>(error.InnerException);
+        Assert.Equal(0, runner.CallCount);
+        Assert.Equal(outsideJson, File.ReadAllText(outsideProfile));
+        Assert.True(File.GetAttributes(linkedProfile).HasFlag(FileAttributes.ReparsePoint));
+        Assert.Empty(Directory.EnumerateFiles(
+            _root,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
     }
 
@@ -205,6 +480,39 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         Assert.Equal(1, runner.CallCount);
         Assert.Equal(2, transport.Requests.Count);
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task CleanupCollectorCapturesWin32FailureAndContinues()
+    {
+        var secondCleanupRan = false;
+
+        var failures = await OfficialMavenClientLoaderInstaller.CollectCleanupFailuresAsync(
+            () => Task.FromException(new Win32Exception(32)),
+            () =>
+            {
+                secondCleanupRan = true;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(secondCleanupRan);
+        Assert.IsType<Win32Exception>(Assert.Single(failures));
+    }
+
+    [Fact]
+    public void CallerCancellationRemainsPrimaryWhenCleanupFails()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var expected = new OperationCanceledException(cancellation.Token);
+
+        var error = Assert.Throws<OperationCanceledException>(() =>
+            OfficialMavenClientLoaderInstaller.ThrowPrimaryFailure(
+                expected,
+                [new Win32Exception(32)],
+                cancellation.Token));
+
+        Assert.Same(expected, error);
     }
 
     [Fact]
@@ -584,6 +892,29 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             libraries = new[] { new { name = library } },
         });
         File.WriteAllText(Path.Combine(profileDirectory, profileId + ".json"), json);
+    }
+
+    private static string ReadSharedText(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
+    private static void WriteSharedText(string path, string contents)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Write,
+            FileShare.ReadWrite | FileShare.Delete);
+        stream.SetLength(0);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        writer.Write(contents);
     }
 
     private sealed class RecordingRunner(

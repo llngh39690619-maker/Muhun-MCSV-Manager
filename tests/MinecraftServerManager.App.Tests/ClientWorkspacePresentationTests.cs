@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Xml.Linq;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.GameClient.Contracts;
 
@@ -179,6 +180,37 @@ public sealed class ClientWorkspacePresentationTests
             source,
             StringComparison.Ordinal);
         Assert.Contains("CloseCatalogCommand.NotifyCanExecuteChanged();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogResults_LetMouseWheelReachThePageScrollViewer()
+    {
+        var document = XDocument.Load(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var pageScrollViewer = document
+            .Descendants(presentation + "ScrollViewer")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogPageScrollViewer",
+                StringComparison.Ordinal));
+        var resultsList = pageScrollViewer
+            .Descendants(presentation + "ListBox")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogResultsList",
+                StringComparison.Ordinal));
+        var listTemplate = resultsList
+            .Element(presentation + "ListBox.Template")?
+            .Element(presentation + "ControlTemplate");
+
+        Assert.Equal("Auto", (string?)pageScrollViewer.Attribute("VerticalScrollBarVisibility"));
+        Assert.NotNull(listTemplate);
+        Assert.Empty(listTemplate.Descendants(presentation + "ScrollViewer"));
+        Assert.Single(listTemplate.Descendants(presentation + "ItemsPresenter"));
     }
 
     [Fact]

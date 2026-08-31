@@ -33,6 +33,35 @@ public sealed class SafePathTests
         Assert.False(File.Exists(file));
     }
 
+    [Fact]
+    public void NoFollowFileIdentityLeaseAllowsWritesAndKeepsStableIdentity()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        using var directory = new TemporaryDirectory();
+        var file = Path.Combine(directory.Path, "launcher_profiles.json");
+        File.WriteAllText(file, "{\"profiles\":{}}");
+        var expectedIdentity = SafePath.GetExistingObjectIdentity(file);
+
+        using (var lease = SafePath.AcquireNoFollowFileIdentityLease(file, expectedIdentity))
+        {
+            Assert.Equal(expectedIdentity, lease.Identity);
+            using (var writer = new FileStream(
+                       file,
+                       FileMode.Open,
+                       FileAccess.Write,
+                       FileShare.ReadWrite))
+            {
+                writer.SetLength(0);
+                writer.Write("{\"profiles\":{\"updated\":{}}}"u8);
+            }
+
+            Assert.Equal(expectedIdentity, SafePath.GetExistingObjectIdentity(file));
+        }
+
+        Assert.True(File.Exists(file));
+    }
+
     [Theory]
     [InlineData("Paper: 1.21?", "Paper_ 1.21_")]
     [InlineData("CON", "_CON")]

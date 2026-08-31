@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using MinecraftServerManager.Core.Services;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.GameClient;
@@ -298,6 +300,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
     internal const int MaximumSidecarBytes = 256;
     internal const int MaximumVersionProfiles = 256;
     internal const long MaximumVersionProfileBytes = 4L * 1024 * 1024;
+    internal const long MaximumLauncherProfileBytes = 4L * 1024 * 1024;
     internal static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IOfficialMavenClientLoaderHttpTransport _transport;
@@ -354,6 +357,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         var operationId = Guid.NewGuid().ToString("N");
         var partialPath = Path.Combine(fullStagingDirectory, $".loader-{operationId}.partial");
         var verifiedPath = Path.Combine(fullStagingDirectory, $".loader-{operationId}.verified.jar");
+        var installerLogPath = verifiedPath + ".log";
         byte[]? expectedSha256 = null;
         try
         {
@@ -388,10 +392,11 @@ internal sealed class OfficialMavenClientLoaderInstaller
                 length);
             try
             {
-                await _processRunner.RunAsync(
+                await RunVerifiedInstallerWithLauncherProfileAsync(
                         artifact,
                         javaExecutablePath,
                         fullStagingDirectory,
+                        installerLogPath,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -442,6 +447,363 @@ internal sealed class OfficialMavenClientLoaderInstaller
 
             TryDelete(partialPath);
             TryDelete(verifiedPath);
+        }
+    }
+
+    private async Task RunVerifiedInstallerWithLauncherProfileAsync(
+        VerifiedMavenClientLoaderArtifact artifact,
+        string javaExecutablePath,
+        string stagingDirectory,
+        string installerLogPath,
+        CancellationToken cancellationToken)
+    {
+        // Forge and NeoForge's official client installers intentionally refuse to run unless
+        // the target looks like an official-launcher directory. CmlLib installs the complete
+        // vanilla payload needed by X MCSV, but it does not create either launcher profile file.
+        // Supply the smallest valid profile only for the duration of the verified Java process;
+        // this is compatibility metadata, not an account or authentication profile.
+        var preparedFiles = await PrepareLoaderProcessFilesAsync(
+                stagingDirectory,
+                installerLogPath,
+                cancellationToken)
+            .ConfigureAwait(false);
+        Exception? processFailure = null;
+        IReadOnlyList<Exception> cleanupFailures = [];
+        try
+        {
+            try
+            {
+                await _processRunner.RunAsync(
+                        artifact,
+                        javaExecutablePath,
+                        stagingDirectory,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(exception);
+                processFailure = exception;
+            }
+
+            try
+            {
+                preparedFiles.ValidateProfileIdentities();
+            }
+            catch (Exception identityFailure)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(identityFailure);
+                if (processFailure is not OperationCanceledException ||
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    processFailure = processFailure is null
+                        ? identityFailure
+                        : new AggregateException(processFailure, identityFailure);
+                }
+            }
+        }
+        finally
+        {
+            preparedFiles.Dispose();
+            cleanupFailures = await CollectCleanupFailuresAsync(
+                    () => RemoveOwnedProcessFileAsync(preparedFiles.TemporaryLauncherProfile),
+                    () => RemoveOwnedProcessFileAsync(preparedFiles.InstallerLog))
+                .ConfigureAwait(false);
+        }
+
+        if (processFailure is not null)
+        {
+            ThrowPrimaryFailure(processFailure, cleanupFailures, cancellationToken);
+        }
+
+        if (cleanupFailures.Count > 0)
+        {
+            throw CreateCleanupFailure(cleanupFailures);
+        }
+    }
+
+    private static async Task<PreparedLoaderProcessFiles> PrepareLoaderProcessFilesAsync(
+        string stagingDirectory,
+        string installerLogPath,
+        CancellationToken cancellationToken)
+    {
+        var profileGuards = new List<GuardedProcessFile>(2);
+        OwnedProcessFile? temporaryProfile = null;
+        OwnedProcessFile? installerLog = null;
+        Exception? preparationFailure = null;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var legacyProfile = Path.Combine(stagingDirectory, "launcher_profiles.json");
+            var storeProfile = Path.Combine(
+                stagingDirectory,
+                "launcher_profiles_microsoft_store.json");
+            var legacyGuard = AcquireExistingLauncherProfileLease(legacyProfile);
+            if (legacyGuard is not null)
+            {
+                profileGuards.Add(legacyGuard);
+            }
+
+            var storeGuard = AcquireExistingLauncherProfileLease(storeProfile);
+            if (storeGuard is not null)
+            {
+                profileGuards.Add(storeGuard);
+            }
+
+            if (legacyGuard is null && storeGuard is null)
+            {
+                temporaryProfile = CreateOwnedProcessFile(
+                    stagingDirectory,
+                    legacyProfile,
+                    "launcher-profile",
+                    "{\"profiles\":{}}"u8,
+                    cancellationToken);
+                profileGuards.Add(new GuardedProcessFile(
+                    temporaryProfile.Path,
+                    SafePath.AcquireNoFollowFileIdentityLease(
+                        temporaryProfile.Path,
+                        temporaryProfile.Identity)));
+            }
+
+            installerLog = CreateOwnedProcessFile(
+                stagingDirectory,
+                installerLogPath,
+                "loader-log",
+                ReadOnlySpan<byte>.Empty,
+                cancellationToken);
+            return new PreparedLoaderProcessFiles(
+                temporaryProfile,
+                installerLog,
+                profileGuards);
+        }
+        catch (Exception exception)
+        {
+            ExceptionGraphSafety.RethrowOutOfMemory(exception);
+            preparationFailure = exception;
+        }
+
+        for (var index = profileGuards.Count - 1; index >= 0; index--)
+        {
+            profileGuards[index].Lease.Dispose();
+        }
+
+        var cleanupFailures = await CollectCleanupFailuresAsync(
+                () => RemoveOwnedProcessFileAsync(temporaryProfile),
+                () => RemoveOwnedProcessFileAsync(installerLog))
+            .ConfigureAwait(false);
+        ThrowPrimaryFailure(
+            preparationFailure ?? new InvalidOperationException(
+                "The loader process file preparation did not complete."),
+            cleanupFailures,
+            cancellationToken);
+        throw new UnreachableException();
+    }
+
+    private static GuardedProcessFile? AcquireExistingLauncherProfileLease(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path))
+        {
+            return null;
+        }
+
+        var lease = SafePath.AcquireNoFollowFileIdentityLease(path);
+        try
+        {
+            ValidateLauncherProfile(path);
+            EnsureIdentityUnchanged(path, lease.Identity);
+            return new GuardedProcessFile(path, lease);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    private static OwnedProcessFile CreateOwnedProcessFile(
+        string stagingDirectory,
+        string destinationPath,
+        string partialLabel,
+        ReadOnlySpan<byte> contents,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureOwnedOutputPathDoesNotExist(destinationPath);
+        var partialPath = Path.Combine(
+            stagingDirectory,
+            $".{partialLabel}-{Guid.NewGuid():N}.partial");
+        try
+        {
+            using (var stream = new FileStream(
+                       partialPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       4_096,
+                       FileOptions.WriteThrough))
+            {
+                stream.Write(contents);
+                stream.Flush(flushToDisk: true);
+            }
+
+            RejectReparsePoint(partialPath, "temporary loader process file");
+            var identity = SafePath.GetExistingObjectIdentity(partialPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(partialPath, destinationPath, overwrite: false);
+            return new OwnedProcessFile(stagingDirectory, destinationPath, identity);
+        }
+        finally
+        {
+            TryDelete(partialPath);
+        }
+    }
+
+    private static void ValidateLauncherProfile(string path)
+    {
+        var file = new FileInfo(path);
+        if (file.Length is <= 0 or > MaximumLauncherProfileBytes)
+        {
+            throw new InvalidDataException("The launcher profile exceeds its safety limits.");
+        }
+
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            16 * 1024,
+            FileOptions.SequentialScan);
+        using var document = JsonDocument.Parse(
+            stream,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32,
+            });
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException("The launcher profile root must be a JSON object.");
+        }
+    }
+
+    private static Task RemoveOwnedProcessFileAsync(OwnedProcessFile? file) =>
+        file is null
+            ? Task.CompletedTask
+            : SafePath.DeleteTreeWithoutFollowingReparsePointsWithRetryAsync(
+                file.TrustedRoot,
+                file.Path,
+                file.Identity,
+                protectedObjectIdentities: null,
+                CancellationToken.None);
+
+    internal static async Task<IReadOnlyList<Exception>> CollectCleanupFailuresAsync(
+        params Func<Task>[] cleanupOperations)
+    {
+        ArgumentNullException.ThrowIfNull(cleanupOperations);
+        var failures = new List<Exception>(cleanupOperations.Length);
+        foreach (var operation in cleanupOperations)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            try
+            {
+                await operation().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(exception);
+                failures.Add(exception);
+            }
+        }
+
+        return failures;
+    }
+
+    internal static void ThrowPrimaryFailure(
+        Exception primaryFailure,
+        IReadOnlyList<Exception> cleanupFailures,
+        CancellationToken cancellationToken)
+    {
+        ExceptionGraphSafety.RethrowOutOfMemory(primaryFailure);
+        if (primaryFailure is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+        }
+
+        if (cleanupFailures.Count > 0)
+        {
+            throw new AggregateException([primaryFailure, .. cleanupFailures]);
+        }
+
+        ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+    }
+
+    private static Exception CreateCleanupFailure(IReadOnlyList<Exception> cleanupFailures) =>
+        cleanupFailures.Count switch
+        {
+            1 => cleanupFailures[0],
+            _ => new AggregateException(cleanupFailures),
+        };
+
+    private static void EnsureOwnedOutputPathDoesNotExist(string path)
+    {
+        if (File.Exists(path) || Directory.Exists(path))
+        {
+            throw new IOException("A verified loader installer output path already exists.");
+        }
+    }
+
+    private sealed record OwnedProcessFile(
+        string TrustedRoot,
+        string Path,
+        SafePathObjectIdentity Identity);
+
+    private sealed record GuardedProcessFile(
+        string Path,
+        SafePathObjectIdentityLease Lease);
+
+    private sealed class PreparedLoaderProcessFiles(
+        OwnedProcessFile? temporaryLauncherProfile,
+        OwnedProcessFile installerLog,
+        IReadOnlyList<GuardedProcessFile> profileGuards) : IDisposable
+    {
+        private IReadOnlyList<GuardedProcessFile>? _profileGuards = profileGuards;
+
+        public OwnedProcessFile? TemporaryLauncherProfile { get; } = temporaryLauncherProfile;
+
+        public OwnedProcessFile InstallerLog { get; } = installerLog;
+
+        public void ValidateProfileIdentities()
+        {
+            foreach (var guard in _profileGuards ?? [])
+            {
+                EnsureIdentityUnchanged(guard.Path, guard.Lease.Identity);
+            }
+        }
+
+        public void Dispose()
+        {
+            var current = Interlocked.Exchange(ref _profileGuards, null);
+            if (current is null)
+            {
+                return;
+            }
+
+            for (var index = current.Count - 1; index >= 0; index--)
+            {
+                current[index].Lease.Dispose();
+            }
+        }
+    }
+
+    private static void EnsureIdentityUnchanged(
+        string path,
+        SafePathObjectIdentity expectedIdentity)
+    {
+        if (SafePath.GetExistingObjectIdentity(path) != expectedIdentity)
+        {
+            throw new InvalidDataException(
+                "A launcher profile changed filesystem identity during loader installation.");
         }
     }
 
@@ -930,7 +1292,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
                 File.Delete(path);
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception)
         {
             ExceptionGraphSafety.RethrowOutOfMemory(exception);
         }

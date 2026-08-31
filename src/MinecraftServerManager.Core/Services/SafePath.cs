@@ -558,6 +558,54 @@ public static class SafePath
         }
     }
 
+    /// <summary>
+    /// Opens one existing regular file without following a reparse point and captures its stable
+    /// filesystem identity while permitting legacy readers and in-place writers. Callers must
+    /// compare the identity again after an external process and use identity-bound cleanup.
+    /// </summary>
+    public static SafePathObjectIdentityLease AcquireNoFollowFileIdentityLease(
+        string path,
+        SafePathObjectIdentity? expectedIdentity = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException(
+                "No-follow file identity leases are currently available only on Windows.");
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        var handle = OpenWindowsPathHandle(
+            fullPath,
+            WindowsFileAccess.ReadAttributes,
+            FileShare.Read | FileShare.Write,
+            openReparsePoint: true);
+        try
+        {
+            var attributes = GetWindowsHandleAttributes(handle);
+            if (attributes.HasFlag(FileAttributes.Directory) ||
+                attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new UnauthorizedAccessException(
+                    $"Rejected file lease because the path is not a direct regular file: '{fullPath}'.");
+            }
+
+            var identity = GetWindowsHandleIdentity(handle);
+            if (expectedIdentity is { } expected && identity != expected)
+            {
+                throw new SafePathSecurityException(
+                    $"Rejected file lease because its filesystem identity changed: '{fullPath}'.");
+            }
+
+            return new SafePathObjectIdentityLease(handle, identity);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
     private static SafeFileHandle OpenExistingWindowsPathForIdentity(
         string path,
         bool openReparsePoint)

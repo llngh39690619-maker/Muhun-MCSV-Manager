@@ -8,6 +8,25 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProductMetadataTests
 {
+    private const string CurrentVersion = "1.2.4";
+    private const string CurrentAssemblyVersion = "1.2.4.0";
+    private static readonly string[] VersionedSourceProjects =
+    [
+        "MinecraftServerManager.App/MinecraftServerManager.App.csproj",
+        "MinecraftServerManager.BuiltinProvider/MinecraftServerManager.BuiltinProvider.csproj",
+        "MinecraftServerManager.Client/MinecraftServerManager.Client.csproj",
+        "MinecraftServerManager.Contracts/MinecraftServerManager.Contracts.csproj",
+        "MinecraftServerManager.Core/MinecraftServerManager.Core.csproj",
+        "MinecraftServerManager.Data/MinecraftServerManager.Data.csproj",
+        "MinecraftServerManager.GameClient.Contracts/MinecraftServerManager.GameClient.Contracts.csproj",
+        "MinecraftServerManager.GameClient/MinecraftServerManager.GameClient.csproj",
+        "MinecraftServerManager.Notifications/MinecraftServerManager.Notifications.csproj",
+        "MinecraftServerManager.ProviderHost/MinecraftServerManager.ProviderHost.csproj",
+        "MinecraftServerManager.Remote/MinecraftServerManager.Remote.csproj",
+        "MinecraftServerManager.Service/MinecraftServerManager.Service.csproj",
+        "MinecraftServerManager.Updater/MinecraftServerManager.Updater.csproj",
+    ];
+
     [Fact]
     public void ApplicationAssembly_UsesXBrandAndKeepsCompatibleOutputName()
     {
@@ -15,8 +34,8 @@ public sealed class ProductMetadataTests
         var versionInfo = FileVersionInfo.GetVersionInfo(assembly.Location);
 
         Assert.Equal("Muhun MCSV Manager", assembly.GetName().Name);
-        Assert.Equal("1.2.3.0", versionInfo.FileVersion);
-        Assert.Equal("1.2.3", versionInfo.ProductVersion);
+        Assert.Equal("1.2.4.0", versionInfo.FileVersion);
+        Assert.Equal("1.2.4", versionInfo.ProductVersion);
         Assert.Equal("X MCSV", versionInfo.ProductName);
         Assert.Equal("X MCSV", versionInfo.FileDescription);
         Assert.Equal("Copyright © Muhun 2026", versionInfo.LegalCopyright);
@@ -25,16 +44,16 @@ public sealed class ProductMetadataTests
             assembly.GetCustomAttribute<AssemblyTitleAttribute>()?.Title);
 
         var coreAssembly = typeof(MinecraftServerManager.Core.Models.ServerInstance).Assembly;
-        Assert.Equal("1.2.3.0", coreAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.2.4.0", coreAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.2.3",
+            "1.2.4",
             coreAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
 
         var remoteAssembly = typeof(MinecraftServerManager.Remote.RemoteControlOptions).Assembly;
-        Assert.Equal("1.2.3.0", remoteAssembly.GetName().Version?.ToString());
+        Assert.Equal("1.2.4.0", remoteAssembly.GetName().Version?.ToString());
         Assert.Equal(
-            "1.2.3",
+            "1.2.4",
             remoteAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion);
     }
@@ -47,39 +66,35 @@ public sealed class ProductMetadataTests
         var identity = Assert.Single(document.Descendants(assembly + "assemblyIdentity"));
 
         Assert.Equal("Muhun.MCSV.Manager.app", (string?)identity.Attribute("name"));
-        Assert.Equal("1.2.3.0", (string?)identity.Attribute("version"));
+        Assert.Equal("1.2.4.0", (string?)identity.Attribute("version"));
     }
 
     [Fact]
     public void ProjectMetadata_UsesCurrentVersionAndKeepsWindowsFormsTraySupport()
     {
+        var sourceRoot = Path.GetFullPath(Path.Combine(GetAppSourcePath("."), ".."));
+        foreach (var relativePath in VersionedSourceProjects)
+        {
+            var project = XDocument.Load(Path.Combine(
+                sourceRoot,
+                relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var properties = project.Root!.Elements("PropertyGroup").Elements().ToArray();
+
+            Assert.Equal(CurrentVersion, SingleProperty(properties, "Version"));
+            Assert.Equal(CurrentAssemblyVersion, SingleProperty(properties, "AssemblyVersion"));
+            Assert.Equal(CurrentAssemblyVersion, SingleProperty(properties, "FileVersion"));
+            Assert.Equal(CurrentVersion, SingleProperty(properties, "InformationalVersion"));
+        }
+
         var appProject = XDocument.Load(GetAppSourcePath("MinecraftServerManager.App.csproj"));
         var appProperties = appProject.Root!.Elements("PropertyGroup").Elements().ToArray();
 
         Assert.Equal("Muhun MCSV Manager", SingleProperty(appProperties, "AssemblyName"));
-        Assert.Equal("1.2.3", SingleProperty(appProperties, "Version"));
-        Assert.Equal("1.2.3.0", SingleProperty(appProperties, "AssemblyVersion"));
-        Assert.Equal("1.2.3.0", SingleProperty(appProperties, "FileVersion"));
-        Assert.Equal("1.2.3", SingleProperty(appProperties, "InformationalVersion"));
         Assert.Equal("true", SingleProperty(appProperties, "UseWindowsForms"));
         var mailKit = Assert.Single(
             appProject.Descendants("PackageReference"),
             element => (string?)element.Attribute("Include") == "MailKit");
         Assert.Equal("4.17.0", (string?)mailKit.Attribute("Version"));
-
-        var coreProject = XDocument.Load(GetCoreSourcePath("MinecraftServerManager.Core.csproj"));
-        var coreProperties = coreProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.2.3", SingleProperty(coreProperties, "Version"));
-        Assert.Equal("1.2.3.0", SingleProperty(coreProperties, "AssemblyVersion"));
-        Assert.Equal("1.2.3.0", SingleProperty(coreProperties, "FileVersion"));
-        Assert.Equal("1.2.3", SingleProperty(coreProperties, "InformationalVersion"));
-
-        var remoteProject = XDocument.Load(GetRemoteSourcePath("MinecraftServerManager.Remote.csproj"));
-        var remoteProperties = remoteProject.Root!.Elements("PropertyGroup").Elements().ToArray();
-        Assert.Equal("1.2.3", SingleProperty(remoteProperties, "Version"));
-        Assert.Equal("1.2.3.0", SingleProperty(remoteProperties, "AssemblyVersion"));
-        Assert.Equal("1.2.3.0", SingleProperty(remoteProperties, "FileVersion"));
-        Assert.Equal("1.2.3", SingleProperty(remoteProperties, "InformationalVersion"));
     }
 
     [Fact]
@@ -272,9 +287,6 @@ public sealed class ProductMetadataTests
 
     private static string GetAppSourcePath(string relativePath)
         => TestRepositoryPaths.AppSource(relativePath);
-
-    private static string GetCoreSourcePath(string relativePath)
-        => TestRepositoryPaths.CoreSource(relativePath);
 
     private static string GetRemoteSourcePath(string relativePath)
         => TestRepositoryPaths.RemoteSource(relativePath);

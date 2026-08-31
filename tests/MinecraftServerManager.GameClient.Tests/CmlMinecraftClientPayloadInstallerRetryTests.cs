@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using MinecraftServerManager.GameClient.Contracts;
 
@@ -345,6 +347,92 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
         Assert.Equal(1, profileCalls);
     }
 
+    [Fact]
+    public async Task InstallAsync_NeoForgeBlankRootBridgesCmlAndOfficialInstallerContract()
+    {
+        const string gameVersion = "1.21.1";
+        const string loaderVersion = "21.1.248";
+        const string installedProfile = "1.21.1-neoforge-21.1.248";
+        var staging = Path.Combine(_root, "neoforge-blank-root");
+        var java = Path.Combine(_root, "java.exe");
+        File.WriteAllBytes(java, [0]);
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            gameVersion,
+            loaderVersion);
+        var installerBytes = "verified Cml to NeoForge bridge fixture"u8.ToArray();
+        var transport = new OfficialLoaderTransport(artifactUri, installerBytes);
+        var runner = new OfficialLoaderRunner((_, instanceDirectory) =>
+        {
+            var compatibilityProfile = Path.Combine(
+                instanceDirectory,
+                "launcher_profiles.json");
+            Assert.True(File.Exists(compatibilityProfile));
+            using var stream = new FileStream(
+                compatibilityProfile,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var document = JsonDocument.Parse(stream);
+            Assert.True(document.RootElement.TryGetProperty("profiles", out var profiles));
+            Assert.Equal(JsonValueKind.Object, profiles.ValueKind);
+            WriteOfficialProfile(
+                instanceDirectory,
+                installedProfile,
+                $"net.neoforged:neoforge:{loaderVersion}");
+        });
+        var officialInstaller = new OfficialMavenClientLoaderInstaller(transport, runner);
+        var launcherVersions = new List<string>();
+        using var client = new HttpClient(new RejectUnexpectedHttpHandler());
+        var installer = new CmlMinecraftClientPayloadInstaller(
+            client,
+            officialInstaller,
+            new CmlDownloadReliabilityOptions
+            {
+                MaximumFileAttempts = 1,
+                MaximumPhaseAttempts = 1,
+                MaximumConcurrentChecks = 1,
+                MaximumConcurrentDownloads = 1,
+                BoundedCapacity = 4,
+                RetryDelays = [TimeSpan.Zero],
+            },
+            (_, versionId, _, _, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                launcherVersions.Add(versionId);
+                return ValueTask.CompletedTask;
+            },
+            (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            });
+        var request = new MinecraftClientInstallRequest(
+            Guid.NewGuid(),
+            "neoforge-contract",
+            MinecraftClientEdition.Java,
+            gameVersion,
+            MinecraftClientLoader.NeoForge,
+            loaderVersion,
+            MinecraftClientMemoryMode.Automatic,
+            1024,
+            4096,
+            1280,
+            720,
+            false);
+
+        var result = await installer.InstallAsync(request, staging, java);
+
+        Assert.Equal(installedProfile, result);
+        Assert.Equal([gameVersion, installedProfile], launcherVersions);
+        Assert.Equal(1, runner.CallCount);
+        Assert.False(File.Exists(Path.Combine(staging, "launcher_profiles.json")));
+        Assert.Empty(Directory.EnumerateFiles(
+            staging,
+            ".launcher-profile-*",
+            SearchOption.TopDirectoryOnly));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -408,5 +496,69 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The injected phase must prevent real HTTP calls.");
+    }
+
+    private static void WriteOfficialProfile(
+        string instanceDirectory,
+        string profileId,
+        string library)
+    {
+        var profileDirectory = Path.Combine(instanceDirectory, "versions", profileId);
+        Directory.CreateDirectory(profileDirectory);
+        File.WriteAllText(
+            Path.Combine(profileDirectory, profileId + ".json"),
+            JsonSerializer.Serialize(new
+            {
+                id = profileId,
+                libraries = new[] { new { name = library } },
+            }));
+    }
+
+    private sealed class OfficialLoaderRunner(
+        Action<VerifiedMavenClientLoaderArtifact, string> run)
+        : IVerifiedMavenClientLoaderProcessRunner
+    {
+        private int _callCount;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task RunAsync(
+            VerifiedMavenClientLoaderArtifact artifact,
+            string javaExecutablePath,
+            string instanceDirectory,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _callCount);
+            run(artifact, instanceDirectory);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class OfficialLoaderTransport(Uri artifactUri, byte[] artifactBytes)
+        : IOfficialMavenClientLoaderHttpTransport
+    {
+        private readonly Uri _sidecarUri = new(artifactUri.AbsoluteUri + ".sha256");
+        private readonly byte[] _sidecarBytes = Encoding.ASCII.GetBytes(
+            Convert.ToHexString(SHA256.HashData(artifactBytes)));
+
+        public Task<HttpResponseMessage> GetAsync(
+            Uri uri,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var bytes = uri == artifactUri
+                ? artifactBytes
+                : uri == _sidecarUri
+                    ? _sidecarBytes
+                    : throw new InvalidOperationException("Unexpected official Maven URI.");
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = new HttpRequestMessage(HttpMethod.Get, uri),
+                Content = new ByteArrayContent(bytes),
+            };
+            response.Content.Headers.ContentLength = bytes.LongLength;
+            return Task.FromResult(response);
+        }
     }
 }

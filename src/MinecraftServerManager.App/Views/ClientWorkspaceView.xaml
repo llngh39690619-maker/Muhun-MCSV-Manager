@@ -524,7 +524,8 @@
                                   Visibility="{Binding IsJavaEdition, Converter={StaticResource BoolToVisibility}}" />
                 </Grid>
 
-                <ScrollViewer Visibility="{Binding IsCatalogPage, Converter={StaticResource BoolToVisibility}}"
+                <ScrollViewer x:Name="CatalogPageScrollViewer"
+                              Visibility="{Binding IsCatalogPage, Converter={StaticResource BoolToVisibility}}"
                               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="26" HorizontalAlignment="Stretch">
                         <Grid Margin="0,0,0,18">
@@ -660,11 +661,17 @@
                                         <Button Grid.Column="1" Content="{DynamicResource L10n.client.action.reloadNow}" Command="{Binding SearchCatalogCommand}" />
                                     </Grid>
 
-                                    <ListBox Grid.Row="1" Margin="0,15,0,0" ItemsSource="{Binding CatalogProjects}"
+                                    <ListBox x:Name="CatalogResultsList" Grid.Row="1" Margin="0,15,0,0"
+                                             ItemsSource="{Binding CatalogProjects}"
                                              SelectedItem="{Binding SelectedCatalogProject}"
-                                             Background="Transparent" BorderThickness="0"
-                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                             ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                             Background="Transparent" BorderThickness="0">
+                                        <ListBox.Template>
+                                            <!-- The page owns vertical scrolling. Omitting the ListBox's nested
+                                                 ScrollViewer lets wheel input over a result card bubble to it. -->
+                                            <ControlTemplate TargetType="{x:Type ListBox}">
+                                                <ItemsPresenter />
+                                            </ControlTemplate>
+                                        </ListBox.Template>
                                         <ListBox.ItemContainerStyle>
                                             <Style TargetType="ListBoxItem">
                                                 <Setter Property="Padding" Value="0" />
