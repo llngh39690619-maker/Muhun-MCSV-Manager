@@ -85,6 +85,7 @@ public sealed class ModrinthClientModpackCatalogTests
         var project = await catalog.GetProjectAsync("PackGood1");
 
         Assert.Equal("Good Client Pack", project.Title);
+        Assert.Equal("# Complete overview\nThis is the full project description.", project.FullDescription);
         Assert.Single(project.GalleryImageUris);
         Assert.All(project.GalleryImageUris, uri => Assert.Equal("cdn.modrinth.com", uri.Host));
     }

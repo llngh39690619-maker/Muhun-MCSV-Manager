@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
@@ -115,6 +116,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _isSettingsPage;
     private bool _isCatalogPage;
     private bool _isCatalogBusy;
+    private bool _isCatalogDetailOpen;
+    private bool _isCatalogInstallQueueExpanded;
+    private bool _isCatalogInstallRunning;
     private bool _suppressSelectedInstanceNavigation;
     private bool _changingClientSelection;
     private bool _isJavaEdition = true;
@@ -161,9 +165,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _hasFtbInstallDiagnostic;
     private ClientModpackProjectItemViewModel? _selectedCatalogProject;
     private ClientCatalogVersionItemViewModel? _selectedCatalogVersion;
+    private ClientCatalogInstallJobViewModel? _activeCatalogInstallJob;
     private string _catalogInstanceName = string.Empty;
     private bool _includeOptionalPackFiles;
     private bool _disposed;
+    private readonly HashSet<ClientCatalogInstallJobViewModel> _observedCatalogInstallJobs = [];
     private IReadOnlyList<ClientCatalogLoaderChoice> _catalogLoaders = [];
     private IReadOnlyList<ClientCatalogCategoryChoice> _catalogCategories = [];
     private IReadOnlyList<ClientCatalogSortChoice> _catalogSortOptions = [];
@@ -266,7 +272,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         NewInstanceCommand = new RelayCommand(ShowCreatePage);
         OpenCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(OpenCatalogAsync));
-        CloseCatalogCommand = new RelayCommand(ShowSelectedInstance, () => !IsBusy);
+        CloseCatalogCommand = new RelayCommand(
+            ShowSelectedInstance,
+            () => !IsBusy || IsCatalogInstallRunning);
+        CloseCatalogDetailsCommand = new RelayCommand(
+            CloseCatalogDetails,
+            () => IsCatalogDetailOpen);
         SelectCatalogSourceCommand = new AsyncRelayCommand(
             parameter => RunGuardedAsync(() => SelectCatalogSourceAsync(parameter)));
         SearchCatalogCommand = new AsyncRelayCommand(
@@ -284,6 +295,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OpenClientDiagnosticsFolderCommand = new RelayCommand(
             OpenClientDiagnosticsFolder,
             () => HasFtbInstallDiagnostic);
+        ToggleCatalogInstallQueueCommand = new RelayCommand(
+            () => IsCatalogInstallQueueExpanded = !IsCatalogInstallQueueExpanded,
+            () => HasCatalogInstallJobs);
+        ClearCompletedCatalogInstallJobsCommand = new RelayCommand(
+            ClearCompletedCatalogInstallJobs,
+            () => HasCompletedCatalogInstallJobs);
         CloseCreateCommand = new RelayCommand(ShowSelectedInstance);
         CreateInstanceCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(CreateInstanceAsync),
@@ -417,6 +434,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ChooseClientJavaCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(ChooseClientJavaAsync),
             () => SettingsEditor is not null && SelectedInstance is { IsRunning: false } && !IsBusy);
+        CatalogInstallJobs.CollectionChanged += OnCatalogInstallJobsChanged;
     }
 
     public ObservableCollection<ClientInstanceItemViewModel> Instances { get; } = [];
@@ -442,6 +460,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public ObservableCollection<ClientCatalogVersionItemViewModel> CatalogVersions { get; } = [];
 
+    public ObservableCollection<ClientCatalogInstallJobViewModel> CatalogInstallJobs { get; } = [];
+
     public ObservableCollection<ClientCatalogGameVersionChoice> CatalogGameVersions { get; } = [];
 
     public IReadOnlyList<ClientCatalogLoaderChoice> CatalogLoaders => _catalogLoaders;
@@ -460,12 +480,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand NewInstanceCommand { get; }
     public AsyncRelayCommand OpenCatalogCommand { get; }
     public RelayCommand CloseCatalogCommand { get; }
+    public RelayCommand CloseCatalogDetailsCommand { get; }
     public AsyncRelayCommand SelectCatalogSourceCommand { get; }
     public AsyncRelayCommand SearchCatalogCommand { get; }
     public AsyncRelayCommand LoadMoreCatalogCommand { get; }
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
     public AsyncRelayCommand OpenFtbFallbackCommand { get; }
     public RelayCommand OpenClientDiagnosticsFolderCommand { get; }
+    public RelayCommand ToggleCatalogInstallQueueCommand { get; }
+    public RelayCommand ClearCompletedCatalogInstallJobsCommand { get; }
     public RelayCommand CloseCreateCommand { get; }
     public AsyncRelayCommand CreateInstanceCommand { get; }
     public RelayCommand CancelOperationCommand { get; }
@@ -984,6 +1007,87 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    public bool IsCatalogDetailOpen
+    {
+        get => _isCatalogDetailOpen;
+        private set
+        {
+            if (!SetProperty(ref _isCatalogDetailOpen, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(IsCatalogBrowseView));
+            OnPropertyChanged(nameof(IsCatalogResultsView));
+            CloseCatalogDetailsCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    public bool IsCatalogBrowseView => !IsCatalogDetailOpen;
+
+    public bool IsCatalogResultsView => IsBrowsableCatalogSource && IsCatalogBrowseView;
+
+    public bool IsCatalogInstallQueueExpanded
+    {
+        get => _isCatalogInstallQueueExpanded;
+        set
+        {
+            if (SetProperty(ref _isCatalogInstallQueueExpanded, value))
+            {
+                OnPropertyChanged(nameof(CatalogInstallQueueToggleText));
+            }
+        }
+    }
+
+    public bool IsCatalogInstallRunning
+    {
+        get => _isCatalogInstallRunning;
+        private set
+        {
+            if (!SetProperty(ref _isCatalogInstallRunning, value))
+            {
+                return;
+            }
+
+            CloseCatalogCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CatalogInstallQueueSummary));
+        }
+    }
+
+    public bool HasCatalogInstallJobs => CatalogInstallJobs.Count > 0;
+
+    public bool HasCompletedCatalogInstallJobs => CatalogInstallJobs.Any(job => job.IsTerminal);
+
+    public ClientCatalogInstallJobViewModel? ActiveCatalogInstallJob
+    {
+        get => _activeCatalogInstallJob;
+        private set
+        {
+            if (!SetProperty(ref _activeCatalogInstallJob, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(CatalogInstallQueueSummary));
+            OnPropertyChanged(nameof(CatalogInstallQueueProgressValue));
+            OnPropertyChanged(nameof(IsCatalogInstallQueueProgressIndeterminate));
+        }
+    }
+
+    public string CatalogInstallQueueToggleText => IsCatalogInstallQueueExpanded
+        ? L("client.catalog.jobs.collapse")
+        : L("client.catalog.jobs.expand");
+
+    public string CatalogInstallQueueSummary =>
+        (ActiveCatalogInstallJob ?? CatalogInstallJobs.FirstOrDefault())?.StatusText
+        ?? L("client.catalog.jobs.empty");
+
+    public double CatalogInstallQueueProgressValue =>
+        (ActiveCatalogInstallJob ?? CatalogInstallJobs.FirstOrDefault())?.ProgressValue ?? 0d;
+
+    public bool IsCatalogInstallQueueProgressIndeterminate =>
+        (ActiveCatalogInstallJob ?? CatalogInstallJobs.FirstOrDefault())?.IsProgressIndeterminate == true;
+
     public bool IsDashboardPage =>
         HasSelectedInstance && !IsCreatePage && !IsSettingsPage && !IsCatalogPage;
 
@@ -1021,6 +1125,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(ShowsFtbInstallDiagnostic));
             OnPropertyChanged(nameof(IsBrowsableCatalogSource));
             OnPropertyChanged(nameof(IsUnavailableCatalogSource));
+            OnPropertyChanged(nameof(IsCatalogResultsView));
             OnPropertyChanged(nameof(ShowsCatalogSortFilter));
             OnPropertyChanged(nameof(ShowsCatalogCategoryFilter));
             OnPropertyChanged(nameof(CatalogResultsHeading));
@@ -1191,6 +1296,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             CatalogVersions.Clear();
             SelectedCatalogVersion = null;
+            IsCatalogDetailOpen = value is not null;
             if (value is not null)
             {
                 CatalogInstanceName = value.Title;
@@ -1973,6 +2079,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task OpenCatalogAsync()
     {
+        CloseCatalogDetails();
         IsCreatePage = false;
         IsSettingsPage = false;
         IsCatalogPage = true;
@@ -2132,7 +2239,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(CatalogResultsSummary));
             OnPropertyChanged(nameof(HasMoreCatalogResults));
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
-            SelectedCatalogProject ??= CatalogProjects.FirstOrDefault();
             CatalogStatusText = CatalogProjects.Count == 0
                 ? L("client.vm.catalog.noResults")
                 : L("client.vm.catalog.loaded", CatalogProjects.Count);
@@ -2184,7 +2290,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(CatalogResultsSummary));
         OnPropertyChanged(nameof(HasMoreCatalogResults));
         LoadMoreCatalogCommand.NotifyCanExecuteChanged();
-        SelectedCatalogProject ??= CatalogProjects.FirstOrDefault();
         CatalogStatusText = CatalogProjects.Count == 0
             ? L("client.vm.catalog.ftb.noResults")
             : L("client.vm.catalog.ftb.loaded", CatalogProjects.Count);
@@ -2264,11 +2369,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
-            var versions = await _modrinthCatalog.GetStableVersionsAsync(
+            var detailsTask = LoadOptionalCatalogDetailsAsync(
+                token => _modrinthCatalog.GetProjectAsync(project.ProjectId, token),
+                cancellation.Token);
+            var versionsTask = _modrinthCatalog.GetStableVersionsAsync(
                 project.ProjectId,
                 SelectedCatalogGameVersion?.Version,
                 SelectedCatalogLoader?.Loader,
                 cancellation.Token);
+            await Task.WhenAll(detailsTask, versionsTask);
+            var details = await detailsTask;
+            var versions = await versionsTask;
             cancellation.Token.ThrowIfCancellationRequested();
             if (!ReferenceEquals(project, SelectedCatalogProject) ||
                 !ReferenceEquals(cancellation, _catalogVersionCancellation))
@@ -2276,6 +2387,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
+            if (details is not null)
+            {
+                project.ApplyDetails(details);
+            }
             CatalogVersions.Clear();
             foreach (var version in versions)
             {
@@ -2306,12 +2421,59 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                       ?? throw new InvalidOperationException(L("client.vm.validation.pack"));
         var version = SelectedCatalogVersion
                       ?? throw new InvalidOperationException(L("client.vm.validation.packVersion"));
-        if (IsFtbCatalogSource)
+        var defaults = _getGlobalDefaults();
+        var settings = new CatalogInstallSettingsSnapshot(
+            CatalogInstanceName.Trim(),
+            MemoryMode,
+            MinimumMemoryMb,
+            MaximumMemoryMb,
+            WindowWidth,
+            WindowHeight,
+            FullScreen,
+            IncludeOptionalPackFiles,
+            defaults.EnableQuickLaunch,
+            defaults.HideLauncherAfterGameStarts,
+            defaults.ShowGameLog,
+            defaults.EnableDedicatedGpu,
+            defaults.EnableDiscordPresence);
+        var job = StartCatalogInstallJob(project, version);
+        try
         {
-            await InstallSelectedFtbPackAsync(project, version);
-            return;
+            if (project.FtbProject is not null)
+            {
+                await InstallSelectedFtbPackAsync(project, version, settings, job);
+            }
+            else
+            {
+                await InstallSelectedModrinthPackAsync(project, version, settings, job);
+            }
         }
+        catch (OperationCanceledException)
+        {
+            if (job.IsRunning)
+            {
+                job.MarkCanceled(L("client.vm.catalog.jobs.canceled"));
+            }
 
+            throw;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException && job.IsRunning)
+        {
+            job.MarkFailed(L("client.vm.catalog.jobs.failed"));
+            throw;
+        }
+        finally
+        {
+            FinishCatalogInstallJob(job);
+        }
+    }
+
+    private async Task InstallSelectedModrinthPackAsync(
+        ClientModpackProjectItemViewModel project,
+        ClientCatalogVersionItemViewModel version,
+        CatalogInstallSettingsSnapshot settings,
+        ClientCatalogInstallJobViewModel job)
+    {
         var modrinthVersion = version.ModrinthVersion
                               ?? throw new InvalidOperationException(L("client.vm.validation.modrinthVersion"));
         var gameVersion = version.GameVersions.FirstOrDefault(value =>
@@ -2323,45 +2485,43 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ErrorText = string.Empty;
         try
         {
-            var defaults = _getGlobalDefaults();
             var javaMajor = _javaRecommendation.GetRecommendation(gameVersion, CoreType.Unknown).MajorVersion;
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
+            job.Report("prepare-java", StatusText);
             var java = await ResolveJavaAsync(javaMajor, operation.Token);
             await CacheCatalogArtworkAsync([project], operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             var request = new ModrinthClientPackInstallRequest(
                 Guid.NewGuid(),
-                CatalogInstanceName.Trim(),
+                settings.InstanceName,
                 project.ProjectId,
                 modrinthVersion.VersionId,
-                MemoryMode,
-                MinimumMemoryMb,
-                MaximumMemoryMb,
-                WindowWidth,
-                WindowHeight,
-                FullScreen,
-                IncludeOptionalFiles: IncludeOptionalPackFiles,
-                EnableQuickLaunch: defaults.EnableQuickLaunch,
-                HideLauncherAfterGameStarts: defaults.HideLauncherAfterGameStarts,
-                ShowGameLog: defaults.ShowGameLog,
-                EnableDedicatedGpu: defaults.EnableDedicatedGpu,
-                EnableDiscordPresence: defaults.EnableDiscordPresence,
+                settings.MemoryMode,
+                settings.MinimumMemoryMb,
+                settings.MaximumMemoryMb,
+                settings.WindowWidth,
+                settings.WindowHeight,
+                settings.FullScreen,
+                IncludeOptionalFiles: settings.IncludeOptionalPackFiles,
+                EnableQuickLaunch: settings.EnableQuickLaunch,
+                HideLauncherAfterGameStarts: settings.HideLauncherAfterGameStarts,
+                ShowGameLog: settings.ShowGameLog,
+                EnableDedicatedGpu: settings.EnableDedicatedGpu,
+                EnableDiscordPresence: settings.EnableDiscordPresence,
                 JavaMajorVersion: javaMajor,
                 CatalogIconImagePath: project.IconImagePath,
                 CatalogPreviewImagePath: project.PreviewImagePath);
             var progress = new Progress<ModrinthClientPackInstallProgress>(value =>
             {
                 StatusText = LocalizeModrinthProgress(value);
-                if (value.Fraction is { } fraction)
+                var fraction = ResolveCatalogInstallProgress(
+                    value.Fraction,
+                    value.CompletedItems,
+                    value.TotalItems);
+                job.Report(value.Stage, StatusText, fraction);
+                if (fraction is not null)
                 {
-                    ProgressValue = Math.Clamp(fraction, 0d, 1d);
-                }
-                else if (value.TotalItems > 0)
-                {
-                    ProgressValue = Math.Clamp(
-                        value.CompletedItems / (double)value.TotalItems,
-                        0d,
-                        1d);
+                    ProgressValue = fraction.Value;
                 }
             });
             var result = await _modrinthInstaller.InstallAsync(
@@ -2374,10 +2534,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             {
                 State = MinecraftClientInstanceState.Ready,
             };
-            Instances.Insert(0, item);
-            SelectedInstance = item;
+            AddInstalledCatalogInstance(item, project);
             ProgressValue = 1d;
             StatusText = L("client.vm.status.packInstalled", item.Name);
+            job.MarkCompleted(StatusText);
         }
         finally
         {
@@ -2389,7 +2549,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task InstallSelectedFtbPackAsync(
         ClientModpackProjectItemViewModel project,
-        ClientCatalogVersionItemViewModel version)
+        ClientCatalogVersionItemViewModel version,
+        CatalogInstallSettingsSnapshot settings,
+        ClientCatalogInstallJobViewModel job)
     {
         var ftbProject = project.FtbProject
                          ?? throw new InvalidOperationException(L("client.vm.validation.ftbProject"));
@@ -2408,16 +2570,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             new Progress<FtbClientPackInstallProgress>(value =>
             {
                 StatusText = LocalizeFtbInstallProgress(value);
-                if (value.Fraction is { } fraction)
+                var fraction = ResolveCatalogInstallProgress(
+                    value.Fraction,
+                    value.CompletedItems,
+                    value.TotalItems);
+                job.Report(value.Stage, StatusText, fraction);
+                if (fraction is not null)
                 {
-                    ProgressValue = Math.Clamp(fraction, 0d, 1d);
-                }
-                else if (value.TotalItems > 0)
-                {
-                    ProgressValue = Math.Clamp(
-                        value.CompletedItems / (double)value.TotalItems,
-                        0d,
-                        1d);
+                    ProgressValue = fraction.Value;
                 }
             }));
         progressTracker.SetStage("prepare-java");
@@ -2427,37 +2587,37 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ErrorText = string.Empty;
         try
         {
-            var defaults = _getGlobalDefaults();
             var javaMajor = TryParseFtbJavaMajor(ftbVersion.JavaVersion) ??
                             _javaRecommendation.GetRecommendation(
                                 gameVersion,
                                 CoreType.Unknown).MajorVersion;
             diagnosticJavaMajor = javaMajor;
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
+            job.Report("prepare-java", StatusText);
             var java = await ResolveJavaAsync(javaMajor, operation.Token);
             progressTracker.SetStage("cache-artwork");
             await CacheCatalogArtworkAsync([project], operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             var request = new FtbClientPackInstallRequest(
                 Guid.NewGuid(),
-                CatalogInstanceName.Trim(),
+                settings.InstanceName,
                 ftbProject.PackId,
                 ftbVersion.VersionId,
-                MemoryMode,
-                MinimumMemoryMb,
-                MaximumMemoryMb,
-                WindowWidth,
-                WindowHeight,
-                FullScreen,
+                settings.MemoryMode,
+                settings.MinimumMemoryMb,
+                settings.MaximumMemoryMb,
+                settings.WindowWidth,
+                settings.WindowHeight,
+                settings.FullScreen,
                 // FTB marks some runtime dependencies as optional even though the official app
                 // includes them in a normal client install. Preserve the complete client pack;
                 // only server-only entries are excluded by the installer.
                 IncludeOptionalFiles: true,
-                EnableQuickLaunch: defaults.EnableQuickLaunch,
-                HideLauncherAfterGameStarts: defaults.HideLauncherAfterGameStarts,
-                ShowGameLog: defaults.ShowGameLog,
-                EnableDedicatedGpu: defaults.EnableDedicatedGpu,
-                EnableDiscordPresence: defaults.EnableDiscordPresence,
+                EnableQuickLaunch: settings.EnableQuickLaunch,
+                HideLauncherAfterGameStarts: settings.HideLauncherAfterGameStarts,
+                ShowGameLog: settings.ShowGameLog,
+                EnableDedicatedGpu: settings.EnableDedicatedGpu,
+                EnableDiscordPresence: settings.EnableDiscordPresence,
                 JavaMajorVersion: javaMajor,
                 CatalogIconImagePath: project.IconImagePath,
                 CatalogPreviewImagePath: project.PreviewImagePath);
@@ -2472,11 +2632,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             {
                 State = MinecraftClientInstanceState.Ready,
             };
-            Instances.Insert(0, item);
-            SelectedInstance = item;
+            AddInstalledCatalogInstance(item, project);
             ProgressValue = 1d;
             CatalogStatusText = L("client.vm.catalog.ftb.directInstalled", item.Name);
             StatusText = CatalogStatusText;
+            job.MarkCompleted(StatusText);
         }
         catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
@@ -2528,6 +2688,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 diagnostic?.DiagnosticId);
             CatalogStatusText = L("client.vm.catalog.ftb.fallbackAvailable");
             StatusText = CatalogStatusText;
+            job.MarkFailed(L("client.vm.catalog.jobs.failed"));
         }
         finally
         {
@@ -2611,6 +2772,146 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 L("client.vm.catalog.ftb.downloadPageFailed", FtbAppProtocol.OfficialDownloadPage),
                 error);
         }
+    }
+
+    private void CloseCatalogDetails()
+    {
+        _catalogVersionCancellation?.Cancel();
+        SelectedCatalogProject = null;
+    }
+
+    internal void AddInstalledCatalogInstance(
+        ClientInstanceItemViewModel item,
+        ClientModpackProjectItemViewModel sourceProject)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        ArgumentNullException.ThrowIfNull(sourceProject);
+        var shouldNavigateToInstalledInstance = IsCatalogPage && IsCatalogDetailOpen &&
+                                                ReferenceEquals(SelectedCatalogProject, sourceProject);
+        Instances.Insert(0, item);
+        if (shouldNavigateToInstalledInstance)
+        {
+            SelectedInstance = item;
+        }
+    }
+
+    internal static async Task<T?> LoadOptionalCatalogDetailsAsync<T>(
+        Func<CancellationToken, Task<T>> loader,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(loader);
+        try
+        {
+            return await loader(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            Debug.WriteLine($"Optional catalog project details were unavailable: {error.GetType().Name}");
+            return null;
+        }
+    }
+
+    private void ClearCompletedCatalogInstallJobs()
+    {
+        foreach (var job in CatalogInstallJobs.Where(job => job.IsTerminal).ToArray())
+        {
+            CatalogInstallJobs.Remove(job);
+        }
+
+        if (CatalogInstallJobs.Count == 0)
+        {
+            IsCatalogInstallQueueExpanded = false;
+        }
+    }
+
+    private void OnCatalogInstallJobsChanged(object? sender, NotifyCollectionChangedEventArgs eventArgs)
+    {
+        var currentJobs = CatalogInstallJobs.ToHashSet();
+        foreach (var job in _observedCatalogInstallJobs.Where(job => !currentJobs.Contains(job)).ToArray())
+        {
+            job.PropertyChanged -= OnCatalogInstallJobPropertyChanged;
+            _observedCatalogInstallJobs.Remove(job);
+        }
+
+        foreach (var job in currentJobs.Where(job => !_observedCatalogInstallJobs.Contains(job)))
+        {
+            job.PropertyChanged += OnCatalogInstallJobPropertyChanged;
+            _observedCatalogInstallJobs.Add(job);
+        }
+
+        OnPropertyChanged(nameof(HasCatalogInstallJobs));
+        OnPropertyChanged(nameof(HasCompletedCatalogInstallJobs));
+        OnPropertyChanged(nameof(CatalogInstallQueueSummary));
+        OnPropertyChanged(nameof(CatalogInstallQueueProgressValue));
+        OnPropertyChanged(nameof(IsCatalogInstallQueueProgressIndeterminate));
+        if (ActiveCatalogInstallJob is { } activeJob && !currentJobs.Contains(activeJob))
+        {
+            ActiveCatalogInstallJob = null;
+        }
+
+        IsCatalogInstallRunning = currentJobs.Any(job => job.IsRunning);
+        ToggleCatalogInstallQueueCommand.NotifyCanExecuteChanged();
+        ClearCompletedCatalogInstallJobsCommand.NotifyCanExecuteChanged();
+    }
+
+    private void OnCatalogInstallJobPropertyChanged(object? sender, PropertyChangedEventArgs eventArgs)
+    {
+        if (eventArgs.PropertyName is nameof(ClientCatalogInstallJobViewModel.StatusText)
+            or nameof(ClientCatalogInstallJobViewModel.ProgressValue)
+            or nameof(ClientCatalogInstallJobViewModel.IsProgressIndeterminate)
+            or nameof(ClientCatalogInstallJobViewModel.State)
+            or nameof(ClientCatalogInstallJobViewModel.IsTerminal))
+        {
+            OnPropertyChanged(nameof(CatalogInstallQueueSummary));
+            OnPropertyChanged(nameof(CatalogInstallQueueProgressValue));
+            OnPropertyChanged(nameof(IsCatalogInstallQueueProgressIndeterminate));
+            OnPropertyChanged(nameof(HasCompletedCatalogInstallJobs));
+            IsCatalogInstallRunning = CatalogInstallJobs.Any(job => job.IsRunning);
+            ClearCompletedCatalogInstallJobsCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    internal ClientCatalogInstallJobViewModel StartCatalogInstallJob(
+        ClientModpackProjectItemViewModel project,
+        ClientCatalogVersionItemViewModel version)
+    {
+        while (CatalogInstallJobs.Count >= 20)
+        {
+            var removable = CatalogInstallJobs.LastOrDefault(job => job.IsTerminal);
+            if (removable is null)
+            {
+                break;
+            }
+
+            CatalogInstallJobs.Remove(removable);
+        }
+
+        var job = new ClientCatalogInstallJobViewModel(
+            Guid.NewGuid(),
+            project.Title,
+            version.Name,
+            project.SourceLabel,
+            L("client.vm.catalog.jobs.queued"));
+        CatalogInstallJobs.Insert(0, job);
+        ActiveCatalogInstallJob = job;
+        IsCatalogInstallQueueExpanded = true;
+        IsCatalogInstallRunning = true;
+        return job;
+    }
+
+    internal void FinishCatalogInstallJob(ClientCatalogInstallJobViewModel job)
+    {
+        if (ReferenceEquals(ActiveCatalogInstallJob, job))
+        {
+            ActiveCatalogInstallJob = null;
+        }
+
+        IsCatalogInstallRunning = CatalogInstallJobs.Any(item => item.IsRunning);
     }
 
     private CancellationTokenSource ReplaceCatalogBrowseCancellation()
@@ -3803,6 +4104,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private void ShowSelectedInstance()
     {
+        CloseCatalogDetails();
         IsSettingsPage = false;
         IsCatalogPage = false;
         IsCreatePage = false;
@@ -5069,6 +5371,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _ => L("client.vm.progress.working"),
         };
 
+    private static double? ResolveCatalogInstallProgress(
+        double? fraction,
+        int completedItems,
+        int totalItems)
+    {
+        if (fraction is { } reportedFraction)
+        {
+            return Math.Clamp(reportedFraction, 0d, 1d);
+        }
+
+        return totalItems > 0
+            ? Math.Clamp(completedItems / (double)totalItems, 0d, 1d)
+            : null;
+    }
+
     private static string LocalizeFtbInstallFailure(
         string localizationKey,
         string? diagnosticId) =>
@@ -5298,6 +5615,19 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(CatalogInstallHeading));
         OnPropertyChanged(nameof(CatalogInstallActionText));
         OnPropertyChanged(nameof(CatalogResultsSummary));
+        OnPropertyChanged(nameof(CatalogInstallQueueToggleText));
+        foreach (var job in CatalogInstallJobs)
+        {
+            job.RefreshStatus(job.State switch
+            {
+                ClientCatalogInstallJobState.Completed => L("client.vm.catalog.jobs.completed"),
+                ClientCatalogInstallJobState.Failed => L("client.vm.catalog.jobs.failed"),
+                ClientCatalogInstallJobState.Canceled => L("client.vm.catalog.jobs.canceled"),
+                _ => L("client.vm.catalog.jobs.running"),
+            });
+        }
+
+        OnPropertyChanged(nameof(CatalogInstallQueueSummary));
         OnPropertyChanged(nameof(SelectedContentKindText));
         OnPropertyChanged(nameof(ContentModeText));
         OnPropertyChanged(nameof(SelectedPlayerName));
@@ -5397,6 +5727,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _accountLoginCancellation?.Dispose();
         _skinTextureLoadCancellation?.Dispose();
         _lifetimeCancellation.Dispose();
+        CatalogInstallJobs.CollectionChanged -= OnCatalogInstallJobsChanged;
+        foreach (var job in _observedCatalogInstallJobs)
+        {
+            job.PropertyChanged -= OnCatalogInstallJobPropertyChanged;
+        }
+        _observedCatalogInstallJobs.Clear();
+
         if (_artworkCache is IDisposable disposableArtworkCache)
         {
             disposableArtworkCache.Dispose();
@@ -5423,6 +5760,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private sealed record ContentRefreshProjection(
         IReadOnlyList<ClientContentItemViewModel> Items,
         bool LimitReached);
+
+    private sealed record CatalogInstallSettingsSnapshot(
+        string InstanceName,
+        MinecraftClientMemoryMode MemoryMode,
+        int MinimumMemoryMb,
+        int MaximumMemoryMb,
+        int WindowWidth,
+        int WindowHeight,
+        bool FullScreen,
+        bool IncludeOptionalPackFiles,
+        bool EnableQuickLaunch,
+        bool HideLauncherAfterGameStarts,
+        bool ShowGameLog,
+        bool EnableDedicatedGpu,
+        bool EnableDiscordPresence);
 
     private sealed class FtbInstallProgressTracker(
         IProgress<FtbClientPackInstallProgress> presentationProgress)

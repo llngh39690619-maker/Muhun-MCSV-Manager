@@ -12,6 +12,7 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
     private string? _previewImagePath;
     private readonly string _author;
     private readonly string _description;
+    private string _fullDescription;
     private readonly FtbClientCatalogVersion? _ftbFallbackVersion;
     private readonly string _metricLocalizationKey;
 
@@ -23,6 +24,9 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
         ProjectId = project.ProjectId;
         Title = project.Title;
         _description = project.Description;
+        _fullDescription = string.IsNullOrWhiteSpace(project.FullDescription)
+            ? project.Description
+            : project.FullDescription;
         _author = project.Author;
         Downloads = project.Downloads;
         _metricLocalizationKey = "client.vm.catalog.downloads";
@@ -42,6 +46,7 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
         ProjectId = project.ProjectId;
         Title = project.Title;
         _description = project.Description;
+        _fullDescription = project.Description;
         _ftbFallbackVersion = string.IsNullOrWhiteSpace(project.Description)
             ? project.StableVersions.FirstOrDefault()
             : null;
@@ -92,6 +97,10 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
             return L("client.vm.catalog.ftb.fallbackDescription", gameVersion, loader);
         }
     }
+
+    public string FullDescription => string.IsNullOrWhiteSpace(_fullDescription)
+        ? Description
+        : _fullDescription;
 
     public string AuthorText => L("client.vm.catalog.author", _author);
 
@@ -163,6 +172,20 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
         PreviewImagePath = previewImagePath;
     }
 
+    internal void ApplyDetails(ModrinthClientModpackProject project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (!string.Equals(ProjectId, project.ProjectId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Catalog project details do not match the selected project.");
+        }
+
+        var fullDescription = string.IsNullOrWhiteSpace(project.FullDescription)
+            ? project.Description
+            : project.FullDescription;
+        SetProperty(ref _fullDescription, fullDescription, nameof(FullDescription));
+    }
+
     private static Version ParseStableVersion(string value)
         => Version.TryParse(value, out var parsed) ? parsed : new Version(0, 0);
 
@@ -178,6 +201,7 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
         OnPropertyChanged(nameof(DownloadText));
         OnPropertyChanged(nameof(UpdatedText));
         OnPropertyChanged(nameof(Description));
+        OnPropertyChanged(nameof(FullDescription));
         OnPropertyChanged(nameof(GameVersionText));
         OnPropertyChanged(nameof(CategoryText));
     }

@@ -178,9 +178,11 @@ public sealed class ClientWorkspaceLocalizationTests
             LocalizationService.Current.SetCulture("en-US");
 
             Assert.Equal("Minecraft Unknown version · Unknown loader", project.Description);
+            Assert.Equal(project.Description, project.FullDescription);
             Assert.Equal("Unknown version", project.GameVersionText);
             Assert.Equal("Stable · Minecraft Unknown version · Unknown loader", versionItem.Name);
             Assert.Contains(nameof(ClientModpackProjectItemViewModel.Description), changedProperties);
+            Assert.Contains(nameof(ClientModpackProjectItemViewModel.FullDescription), changedProperties);
             Assert.Contains(nameof(ClientModpackProjectItemViewModel.GameVersionText), changedProperties);
         }
         finally

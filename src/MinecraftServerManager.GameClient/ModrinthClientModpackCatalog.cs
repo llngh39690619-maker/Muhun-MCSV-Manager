@@ -149,11 +149,12 @@ public sealed class ModrinthClientModpackCatalog : IModrinthClientModpackCatalog
 
         var gallery = ReadProjectGallery(root);
         var featured = ReadOfficialCdnUri(root, "featured_gallery") ?? gallery.FirstOrDefault();
+        var description = ReadOptionalString(root, "description") ?? string.Empty;
         return new ModrinthClientModpackProject(
             ValidateIdentifier(ReadRequiredString(root, "id"), "project id"),
             ReadOptionalString(root, "slug") ?? ReadRequiredString(root, "id"),
             ReadRequiredString(root, "title"),
-            ReadOptionalString(root, "description") ?? string.Empty,
+            description,
             string.Empty,
             ReadOfficialCdnUri(root, "icon_url"),
             featured,
@@ -163,7 +164,8 @@ public sealed class ModrinthClientModpackCatalog : IModrinthClientModpackCatalog
             environments,
             Math.Max(0, ReadOptionalInt64(root, "downloads") ?? 0),
             Math.Max(0, ReadOptionalInt64(root, "followers") ?? 0),
-            ReadOptionalDate(root, "updated") ?? DateTimeOffset.MinValue);
+            ReadOptionalDate(root, "updated") ?? DateTimeOffset.MinValue,
+            ReadOptionalString(root, "body") ?? description);
     }
 
     public async Task<IReadOnlyList<ModrinthClientModpackVersion>> GetStableVersionsAsync(

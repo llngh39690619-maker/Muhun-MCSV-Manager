@@ -1164,7 +1164,6 @@ internal sealed class OfficialMavenClientLoaderInstaller
             throw new InvalidDataException("The loader installer created too many version profiles.");
         }
 
-        var expectedLibrary = GetExpectedLoaderLibrary(loader, gameVersion, loaderVersion);
         var candidates = new List<string>();
         foreach (var directory in directories)
         {
@@ -1185,7 +1184,12 @@ internal sealed class OfficialMavenClientLoaderInstaller
             RejectReparsePoint(jsonPath, "loader version profile");
             var file = new FileInfo(jsonPath);
             if (file.Length is <= 0 or > MaximumVersionProfileBytes ||
-                !ProfileContainsExpectedLibrary(jsonPath, profileId, expectedLibrary))
+                !ProfileMatchesExpectedLoader(
+                    jsonPath,
+                    profileId,
+                    loader,
+                    gameVersion,
+                    loaderVersion))
             {
                 continue;
             }
@@ -1199,10 +1203,12 @@ internal sealed class OfficialMavenClientLoaderInstaller
                 "The verified loader installer did not create exactly one matching launch profile.");
     }
 
-    private static bool ProfileContainsExpectedLibrary(
+    private static bool ProfileMatchesExpectedLoader(
         string jsonPath,
         string profileId,
-        string expectedLibrary)
+        MinecraftClientLoader loader,
+        string gameVersion,
+        string loaderVersion)
     {
         using var stream = new FileStream(
             jsonPath,
@@ -1230,12 +1236,113 @@ internal sealed class OfficialMavenClientLoaderInstaller
             return false;
         }
 
+        if (loader == MinecraftClientLoader.NeoForge && gameVersion != "1.20.1")
+        {
+            // Modern NeoForge profiles are modular and intentionally do not list the installer
+            // Maven coordinate. The official profile binds its exact loader and Minecraft
+            // versions through these launch arguments instead.
+            return string.Equals(
+                       profileId,
+                       $"neoforge-{loaderVersion}",
+                       StringComparison.Ordinal) &&
+                document.RootElement.TryGetProperty("inheritsFrom", out var inheritsFrom) &&
+                inheritsFrom.ValueKind == JsonValueKind.String &&
+                string.Equals(inheritsFrom.GetString(), gameVersion, StringComparison.Ordinal) &&
+                document.RootElement.TryGetProperty("mainClass", out var mainClass) &&
+                mainClass.ValueKind == JsonValueKind.String &&
+                string.Equals(
+                    mainClass.GetString(),
+                    "cpw.mods.bootstraplauncher.BootstrapLauncher",
+                    StringComparison.Ordinal) &&
+                document.RootElement.TryGetProperty("arguments", out var arguments) &&
+                arguments.ValueKind == JsonValueKind.Object &&
+                arguments.TryGetProperty("game", out var gameArguments) &&
+                gameArguments.ValueKind == JsonValueKind.Array &&
+                gameArguments.GetArrayLength() <= 1_024 &&
+                ContainsExactlyOneAdjacentStringArgument(
+                    gameArguments,
+                    "--fml.neoForgeVersion",
+                    loaderVersion) &&
+                ContainsExactlyOneAdjacentStringArgument(
+                    gameArguments,
+                    "--fml.mcVersion",
+                    gameVersion) &&
+                ContainsExactlyOneAdjacentStringArgument(
+                    gameArguments,
+                    "--launchTarget",
+                    "forgeclient") &&
+                ContainsLibraryPrefix(
+                    libraries,
+                    "net.neoforged.fancymodloader:loader:") &&
+                ContainsLibraryPrefix(libraries, "cpw.mods:bootstraplauncher:");
+        }
+
+        var expectedLibrary = GetExpectedLoaderLibrary(loader, gameVersion, loaderVersion);
+
         foreach (var library in libraries.EnumerateArray())
         {
             if (library.ValueKind == JsonValueKind.Object &&
                 library.TryGetProperty("name", out var name) &&
                 name.ValueKind == JsonValueKind.String &&
                 string.Equals(name.GetString(), expectedLibrary, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsExactlyOneAdjacentStringArgument(
+        JsonElement arguments,
+        string expectedName,
+        string expectedValue)
+    {
+        var values = arguments.EnumerateArray().ToArray();
+        var matches = 0;
+        for (var index = 0; index < values.Length; index++)
+        {
+            var argument = values[index];
+            if (argument.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var current = argument.GetString();
+            if (current is null || current.Length > 1_024)
+            {
+                return false;
+            }
+
+            if (!string.Equals(current, expectedName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            matches++;
+            if (matches > 1 || index + 1 >= values.Length ||
+                values[index + 1].ValueKind != JsonValueKind.String ||
+                !string.Equals(
+                    values[index + 1].GetString(),
+                    expectedValue,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return matches == 1;
+    }
+
+    private static bool ContainsLibraryPrefix(JsonElement libraries, string expectedPrefix)
+    {
+        foreach (var library in libraries.EnumerateArray())
+        {
+            if (library.ValueKind == JsonValueKind.Object &&
+                library.TryGetProperty("name", out var name) &&
+                name.ValueKind == JsonValueKind.String &&
+                name.GetString() is { Length: <= 512 } value &&
+                value.StartsWith(expectedPrefix, StringComparison.Ordinal))
             {
                 return true;
             }

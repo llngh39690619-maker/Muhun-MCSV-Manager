@@ -25,6 +25,12 @@ public sealed class ClientWorkspacePresentationTests
         Assert.Contains("ItemsSource=\"{Binding Accounts}\"", header, StringComparison.Ordinal);
         Assert.Contains("SelectedItem=\"{Binding SelectedAccount}\"", header, StringComparison.Ordinal);
         Assert.Contains("DisplayMemberPath=\"Username\"", header, StringComparison.Ordinal);
+        Assert.Contains("<RowDefinition Height=\"58\" />", header, StringComparison.Ordinal);
+        Assert.Contains("Width=\"176\" Height=\"42\"", header, StringComparison.Ordinal);
+        Assert.Contains("Padding=\"10,0,34,0\" FontSize=\"15\" FontWeight=\"Medium\"", header, StringComparison.Ordinal);
+        Assert.Contains("VerticalContentAlignment=\"Center\"", header, StringComparison.Ordinal);
+        Assert.Contains("Width=\"42\" MinWidth=\"42\" Height=\"42\"", header, StringComparison.Ordinal);
+        Assert.Contains("Height=\"38\" MinWidth=\"0\" Padding=\"10,6\"", header, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding AddAccountCommand}\"", header, StringComparison.Ordinal);
         Assert.Contains("L10n.client.account.select", header, StringComparison.Ordinal);
     }
@@ -153,7 +159,7 @@ public sealed class ClientWorkspacePresentationTests
     }
 
     [Fact]
-    public void CatalogInstall_ExposesCancellationAndPreventsClosingWhileBusy()
+    public void CatalogInstall_ExposesCancellationAndAllowsLeavingDuringBackgroundInstall()
     {
         var xaml = File.ReadAllText(TestRepositoryPaths.AppSource(
             "Views",
@@ -176,10 +182,70 @@ public sealed class ClientWorkspacePresentationTests
             catalog,
             StringComparison.Ordinal);
         Assert.Contains(
-            "CloseCatalogCommand = new RelayCommand(ShowSelectedInstance, () => !IsBusy);",
+            "() => !IsBusy || IsCatalogInstallRunning",
             source,
             StringComparison.Ordinal);
         Assert.Contains("CloseCatalogCommand.NotifyCanExecuteChanged();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogDetails_KeepInstallActionAndBackgroundQueueOutsideScrollableContent()
+    {
+        var document = XDocument.Load(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var catalogLayout = document
+            .Descendants(presentation + "Grid")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogPageLayout",
+                StringComparison.Ordinal));
+        var pageScrollViewer = catalogLayout
+            .Descendants(presentation + "ScrollViewer")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogPageScrollViewer",
+                StringComparison.Ordinal));
+        var actionBar = catalogLayout
+            .Descendants(presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogDetailActionBar",
+                StringComparison.Ordinal));
+        var installButtonsInScrollContent = pageScrollViewer
+            .Descendants(presentation + "Button")
+            .Where(element => string.Equals(
+                (string?)element.Attribute("Command"),
+                "{Binding InstallCatalogPackCommand}",
+                StringComparison.Ordinal));
+        var installTray = document
+            .Descendants(presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogInstallTray",
+                StringComparison.Ordinal));
+
+        Assert.Equal("0", (string?)pageScrollViewer.Attribute("Grid.Row"));
+        Assert.Equal("1", (string?)actionBar.Attribute("Grid.Row"));
+        Assert.Empty(installButtonsInScrollContent);
+        Assert.Contains(
+            actionBar.Descendants(presentation + "Button"),
+            element => string.Equals(
+                (string?)element.Attribute("Command"),
+                "{Binding InstallCatalogPackCommand}",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(pageScrollViewer, installTray.Ancestors());
+        Assert.Equal("2", (string?)installTray.Attribute("Grid.Row"));
+        Assert.Contains("{Binding CatalogInstallJobs}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding ClearCompletedCatalogInstallJobsCommand}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains(
+            "{Binding SelectedCatalogProject.FullDescription}",
+            catalogLayout.ToString(),
+            StringComparison.Ordinal);
     }
 
     [Fact]

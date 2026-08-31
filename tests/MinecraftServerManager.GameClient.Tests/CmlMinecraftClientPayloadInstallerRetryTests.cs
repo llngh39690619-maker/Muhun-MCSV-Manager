@@ -352,7 +352,7 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
     {
         const string gameVersion = "1.21.1";
         const string loaderVersion = "21.1.248";
-        const string installedProfile = "1.21.1-neoforge-21.1.248";
+        const string installedProfile = "neoforge-21.1.248";
         var staging = Path.Combine(_root, "neoforge-blank-root");
         var java = Path.Combine(_root, "java.exe");
         File.WriteAllBytes(java, [0]);
@@ -376,10 +376,7 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
             using var document = JsonDocument.Parse(stream);
             Assert.True(document.RootElement.TryGetProperty("profiles", out var profiles));
             Assert.Equal(JsonValueKind.Object, profiles.ValueKind);
-            WriteOfficialProfile(
-                instanceDirectory,
-                installedProfile,
-                $"net.neoforged:neoforge:{loaderVersion}");
+            WriteModernNeoForgeProfile(instanceDirectory, gameVersion, loaderVersion);
         });
         var officialInstaller = new OfficialMavenClientLoaderInstaller(transport, runner);
         var launcherVersions = new List<string>();
@@ -498,11 +495,12 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
             throw new InvalidOperationException("The injected phase must prevent real HTTP calls.");
     }
 
-    private static void WriteOfficialProfile(
+    private static void WriteModernNeoForgeProfile(
         string instanceDirectory,
-        string profileId,
-        string library)
+        string gameVersion,
+        string loaderVersion)
     {
+        var profileId = $"neoforge-{loaderVersion}";
         var profileDirectory = Path.Combine(instanceDirectory, "versions", profileId);
         Directory.CreateDirectory(profileDirectory);
         File.WriteAllText(
@@ -510,7 +508,25 @@ public sealed class CmlMinecraftClientPayloadInstallerRetryTests : IDisposable
             JsonSerializer.Serialize(new
             {
                 id = profileId,
-                libraries = new[] { new { name = library } },
+                inheritsFrom = gameVersion,
+                mainClass = "cpw.mods.bootstraplauncher.BootstrapLauncher",
+                arguments = new
+                {
+                    game = new[]
+                    {
+                        "--fml.neoForgeVersion",
+                        loaderVersion,
+                        "--fml.mcVersion",
+                        gameVersion,
+                        "--launchTarget",
+                        "forgeclient",
+                    },
+                },
+                libraries = new[]
+                {
+                    new { name = "net.neoforged.fancymodloader:loader:4.0.43" },
+                    new { name = "cpw.mods:bootstraplauncher:2.0.2" },
+                },
             }));
     }
 

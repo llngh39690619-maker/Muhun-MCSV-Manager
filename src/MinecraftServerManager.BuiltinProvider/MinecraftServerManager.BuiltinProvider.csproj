@@ -8,10 +8,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Muhun.MCSV.BuiltinProvider</AssemblyName>
     <RootNamespace>MinecraftServerManager.BuiltinProvider</RootNamespace>
-    <Version>1.2.4</Version>
-    <AssemblyVersion>1.2.4.0</AssemblyVersion>
-    <FileVersion>1.2.4.0</FileVersion>
-    <InformationalVersion>1.2.4</InformationalVersion>
+    <Version>1.2.5</Version>
+    <AssemblyVersion>1.2.5.0</AssemblyVersion>
+    <FileVersion>1.2.5.0</FileVersion>
+    <InformationalVersion>1.2.5</InformationalVersion>
     <AssemblyTitle>X MCSV Built-in Provider</AssemblyTitle>
     <Product>X MCSV</Product>
     <Description>Signed first-party catalogue provider for X MCSV.</Description>

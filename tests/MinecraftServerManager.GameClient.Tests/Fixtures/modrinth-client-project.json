@@ -5,6 +5,7 @@
   "slug": "good-pack",
   "title": "Good Client Pack",
   "description": "A stable client pack.",
+  "body": "# Complete overview\nThis is the full project description.",
   "icon_url": "https://cdn.modrinth.com/data/PackGood1/icon.png",
   "featured_gallery": "https://cdn.modrinth.com/data/PackGood1/images/featured.png",
   "gallery": [

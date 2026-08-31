@@ -32,7 +32,8 @@ public sealed record ModrinthClientModpackProject(
     IReadOnlyList<string> Environments,
     long Downloads,
     long Followers,
-    DateTimeOffset DateModified);
+    DateTimeOffset DateModified,
+    string? FullDescription = null);
 
 public sealed record ModrinthClientModpackSearchPage(
     IReadOnlyList<ModrinthClientModpackProject> Projects,

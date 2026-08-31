@@ -131,10 +131,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             return CreateResponse(uri, installerBytes);
         });
         var runner = new RecordingRunner((_, instanceDirectory) =>
-            WriteProfile(
-                instanceDirectory,
-                "1.21.1-neoforge-21.1.102",
-                "net.neoforged:neoforge:21.1.102"));
+            WriteModernNeoForgeProfile(instanceDirectory, "1.21.1", "21.1.102"));
         var installer = CreateRetryingInstaller(transport, runner, maximumAttempts: 3);
 
         var profile = await installer.InstallAsync(
@@ -144,7 +141,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             _root,
             Path.Combine(_root, "java.exe"));
 
-        Assert.Equal("1.21.1-neoforge-21.1.102", profile);
+        Assert.Equal("neoforge-21.1.102", profile);
         Assert.Equal(2, sidecarAttempts);
         Assert.Equal(1, runner.CallCount);
         Assert.Equal([sidecarUri, sidecarUri, artifactUri], transport.Requests);
@@ -203,8 +200,14 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         MinecraftClientLoader.NeoForge,
         "1.21.1",
         "21.1.248",
-        "1.21.1-neoforge-21.1.248",
-        "net.neoforged:neoforge:21.1.248")]
+        "neoforge-21.1.248",
+        "")]
+    [InlineData(
+        MinecraftClientLoader.NeoForge,
+        "1.20.1",
+        "1.20.1-47.1.106",
+        "1.20.1-forge-47.1.106",
+        "net.neoforged:forge:1.20.1-47.1.106")]
     public async Task InstallAsync_MissingLauncherProfilesUsesTemporaryMinimalProfile(
         MinecraftClientLoader loader,
         string gameVersion,
@@ -228,7 +231,14 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             Assert.Equal(JsonValueKind.Object, profiles.ValueKind);
             Assert.Empty(profiles.EnumerateObject());
             File.WriteAllText(artifact.Path + ".log", "bounded installer log fixture");
-            WriteProfile(instanceDirectory, installedProfileId, expectedLibrary);
+            if (loader == MinecraftClientLoader.NeoForge && gameVersion != "1.20.1")
+            {
+                WriteModernNeoForgeProfile(instanceDirectory, gameVersion, loaderVersion);
+            }
+            else
+            {
+                WriteProfile(instanceDirectory, installedProfileId, expectedLibrary);
+            }
         });
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
@@ -251,6 +261,68 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             ".loader-*.log",
             SearchOption.TopDirectoryOnly));
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task InstallAsync_ModernNeoForgeProfileWithWrongLoaderArgumentIsRejected()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified mismatched profile fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var runner = new RecordingRunner((_, instanceDirectory) =>
+            WriteModernNeoForgeProfile(
+                instanceDirectory,
+                "1.21.1",
+                "21.1.248",
+                reportedLoaderVersion: "21.1.247"));
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("loader-profile-verification", error.Stage);
+        Assert.IsType<InvalidDataException>(error.InnerException);
+    }
+
+    [Fact]
+    public async Task InstallAsync_ModernNeoForgeProfileWithConflictingVersionFlagIsRejected()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified duplicate profile fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var runner = new RecordingRunner((_, instanceDirectory) =>
+            WriteModernNeoForgeProfile(
+                instanceDirectory,
+                "1.21.1",
+                "21.1.248",
+                additionalGameArguments:
+                [
+                    "--fml.neoForgeVersion",
+                    "21.1.247",
+                ]));
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("loader-profile-verification", error.Stage);
+        Assert.IsType<InvalidDataException>(error.InnerException);
     }
 
     [Fact]
@@ -308,10 +380,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             replacementLog = artifact.Path + ".log";
             File.Delete(replacementLog);
             File.WriteAllText(replacementLog, "unowned replacement");
-            WriteProfile(
-                instanceDirectory,
-                "1.21.1-neoforge-21.1.248",
-                "net.neoforged:neoforge:21.1.248");
+            WriteModernNeoForgeProfile(instanceDirectory, "1.21.1", "21.1.248");
         });
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
@@ -345,10 +414,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         var runner = new RecordingRunner((_, instanceDirectory) =>
         {
             Assert.Equal(existingJson, ReadSharedText(existingProfile));
-            WriteProfile(
-                instanceDirectory,
-                "1.21.1-neoforge-21.1.248",
-                "net.neoforged:neoforge:21.1.248");
+            WriteModernNeoForgeProfile(instanceDirectory, "1.21.1", "21.1.248");
         });
         var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
 
@@ -359,7 +425,7 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             _root,
             Path.Combine(_root, "java.exe"));
 
-        Assert.Equal("1.21.1-neoforge-21.1.248", result);
+        Assert.Equal("neoforge-21.1.248", result);
         Assert.Equal(existingJson, File.ReadAllText(existingProfile));
         Assert.Empty(Directory.EnumerateFiles(
             _root,
@@ -892,6 +958,49 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             libraries = new[] { new { name = library } },
         });
         File.WriteAllText(Path.Combine(profileDirectory, profileId + ".json"), json);
+    }
+
+    private static void WriteModernNeoForgeProfile(
+        string instanceDirectory,
+        string gameVersion,
+        string loaderVersion,
+        string? reportedLoaderVersion = null,
+        IReadOnlyList<string>? additionalGameArguments = null)
+    {
+        var profileId = $"neoforge-{loaderVersion}";
+        var profileDirectory = Path.Combine(instanceDirectory, "versions", profileId);
+        Directory.CreateDirectory(profileDirectory);
+        var gameArguments = new List<string>
+        {
+            "--fml.neoForgeVersion",
+            reportedLoaderVersion ?? loaderVersion,
+            "--fml.mcVersion",
+            gameVersion,
+            "--launchTarget",
+            "forgeclient",
+        };
+        if (additionalGameArguments is not null)
+        {
+            gameArguments.AddRange(additionalGameArguments);
+        }
+
+        File.WriteAllText(
+            Path.Combine(profileDirectory, profileId + ".json"),
+            JsonSerializer.Serialize(new
+            {
+                id = profileId,
+                inheritsFrom = gameVersion,
+                mainClass = "cpw.mods.bootstraplauncher.BootstrapLauncher",
+                arguments = new
+                {
+                    game = gameArguments,
+                },
+                libraries = new[]
+                {
+                    new { name = "net.neoforged.fancymodloader:loader:4.0.43" },
+                    new { name = "cpw.mods:bootstraplauncher:2.0.2" },
+                },
+            }));
     }
 
     private static string ReadSharedText(string path)
