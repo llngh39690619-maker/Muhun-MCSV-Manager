@@ -132,6 +132,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _changingClientSelection;
     private bool _isJavaEdition = true;
     private string _newInstanceName = "Minecraft";
+    private bool _newInstanceNameWasManuallyEdited;
+    private bool _isApplyingAutomaticNewInstanceName;
+    private bool _suppressAutomaticNewInstanceName;
     private string _newBedrockShortcutName = string.Empty;
     private string _statusText = string.Empty;
     private string _errorText = string.Empty;
@@ -619,10 +622,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
-            if (value is not null && (NewInstanceName == "Minecraft" || string.IsNullOrWhiteSpace(NewInstanceName)))
-            {
-                NewInstanceName = $"Minecraft {value.Id}";
-            }
+            ApplyAutomaticNewInstanceName();
 
             _loaderRefreshTask = RunGuardedAsync(RefreshLoaderChoicesAsync);
             NotifyCreateStateChanged();
@@ -654,6 +654,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 ApplyAutomaticMemoryRecommendation();
             }
 
+            ApplyAutomaticNewInstanceName();
             OnPropertyChanged(nameof(IsExternalLoaderSelected));
             NotifyCreateStateChanged();
         }
@@ -1441,8 +1442,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         get => _newInstanceName;
         set
         {
-            if (SetProperty(ref _newInstanceName, value))
+            if (SetProperty(ref _newInstanceName, value ?? string.Empty))
             {
+                if (!_isApplyingAutomaticNewInstanceName)
+                {
+                    _newInstanceNameWasManuallyEdited = true;
+                }
+
                 NotifyCreateStateChanged();
             }
         }
@@ -2181,14 +2187,19 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         var preferredLoader = SelectedLoader?.Loader ?? MinecraftClientLoader.Vanilla;
         if (selectedRelease is null || snapshot is null)
         {
-            ReplaceLoaderChoices(CreateFixedLoaderChoices(results: null, isChecking: false));
+            ReplaceLoaderChoices(
+                CreateFixedLoaderChoices(results: null, isChecking: false),
+                preferredLoader);
             return;
         }
 
         // Keep every supported product type in a stable position while its official catalog is
         // queried. A loader that has no release for this Minecraft version remains visible and is
         // disabled after the query instead of making the grid jump or falsely disappearing.
-        ReplaceLoaderChoices(CreateFixedLoaderChoices(results: null, isChecking: true));
+        ReplaceLoaderChoices(
+            CreateFixedLoaderChoices(results: null, isChecking: true),
+            preferredLoader,
+            updateAutomaticName: false);
         StatusText = L("client.vm.status.checkingLoaders", selectedRelease.Id);
         var results = await QueryLoaderCatalogsAsync(
             _loaderCatalogs,
@@ -2241,23 +2252,50 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             .ToArray();
     }
 
+    internal static ClientLoaderChoiceViewModel? SelectLoaderChoiceForRefresh(
+        IReadOnlyList<ClientLoaderChoiceViewModel> choices,
+        MinecraftClientLoader preferredLoader,
+        bool requireAvailablePreferred)
+    {
+        ArgumentNullException.ThrowIfNull(choices);
+        return choices.FirstOrDefault(choice =>
+                   choice.Loader == preferredLoader &&
+                   (!requireAvailablePreferred || choice.IsAvailable))
+               ?? choices.FirstOrDefault(choice =>
+                   choice.Loader == MinecraftClientLoader.Vanilla);
+    }
+
     private void ReplaceLoaderChoices(
         IReadOnlyList<ClientLoaderChoiceViewModel> choices,
-        MinecraftClientLoader preferredLoader = MinecraftClientLoader.Vanilla)
+        MinecraftClientLoader preferredLoader = MinecraftClientLoader.Vanilla,
+        bool updateAutomaticName = true)
     {
-        SelectedLoader = null;
-        LoaderVersions.Clear();
-        SelectedLoaderVersion = null;
-        LoaderChoices.Clear();
-        foreach (var choice in choices)
+        _suppressAutomaticNewInstanceName = true;
+        try
         {
-            LoaderChoices.Add(choice);
+            SelectedLoader = null;
+            LoaderVersions.Clear();
+            SelectedLoaderVersion = null;
+            LoaderChoices.Clear();
+            foreach (var choice in choices)
+            {
+                LoaderChoices.Add(choice);
+            }
+
+            SelectedLoader = SelectLoaderChoiceForRefresh(
+                LoaderChoices,
+                preferredLoader,
+                requireAvailablePreferred: updateAutomaticName);
+        }
+        finally
+        {
+            _suppressAutomaticNewInstanceName = false;
         }
 
-        SelectedLoader = LoaderChoices.FirstOrDefault(choice =>
-                             choice.Loader == preferredLoader && choice.IsAvailable)
-                         ?? LoaderChoices.FirstOrDefault(choice =>
-                             choice.Loader == MinecraftClientLoader.Vanilla);
+        if (updateAutomaticName)
+        {
+            ApplyAutomaticNewInstanceName();
+        }
     }
 
     internal static async Task<IReadOnlyList<LoaderCatalogQueryResult>> QueryLoaderCatalogsAsync(
@@ -4415,10 +4453,41 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private void ShowCreatePage()
     {
+        if (!IsCreatePage)
+        {
+            _newInstanceNameWasManuallyEdited = false;
+            ApplyAutomaticNewInstanceName();
+        }
+
         IsSettingsPage = false;
         IsCatalogPage = false;
         IsCreatePage = true;
         ErrorText = string.Empty;
+    }
+
+    private void ApplyAutomaticNewInstanceName()
+    {
+        if (_newInstanceNameWasManuallyEdited || _suppressAutomaticNewInstanceName)
+        {
+            return;
+        }
+
+        var gameVersion = SelectedRelease?.Id;
+        var value = string.IsNullOrWhiteSpace(gameVersion)
+            ? "Minecraft"
+            : SelectedLoader?.Loader is { } loader && loader != MinecraftClientLoader.Vanilla
+                ? $"{loader} {gameVersion}"
+                : $"Minecraft {gameVersion}";
+
+        _isApplyingAutomaticNewInstanceName = true;
+        try
+        {
+            NewInstanceName = value;
+        }
+        finally
+        {
+            _isApplyingAutomaticNewInstanceName = false;
+        }
     }
 
     private void ShowSelectedInstance()

@@ -86,6 +86,40 @@ public sealed class ClientLoaderCatalogIsolationTests
     }
 
     [Fact]
+    public void LoaderRefresh_PreservesPreferredLoaderWhileCheckingAndFallsBackOnlyAfterFinalResults()
+    {
+        var checking = ClientWorkspaceViewModel.CreateFixedLoaderChoices(
+            results: null,
+            isChecking: true);
+
+        var checkingSelection = ClientWorkspaceViewModel.SelectLoaderChoiceForRefresh(
+            checking,
+            MinecraftClientLoader.Fabric,
+            requireAvailablePreferred: false);
+        var unavailableFinalSelection = ClientWorkspaceViewModel.SelectLoaderChoiceForRefresh(
+            checking,
+            MinecraftClientLoader.Fabric,
+            requireAvailablePreferred: true);
+
+        Assert.Equal(MinecraftClientLoader.Fabric, checkingSelection?.Loader);
+        Assert.Equal(MinecraftClientLoader.Vanilla, unavailableFinalSelection?.Loader);
+
+        LoaderCatalogQueryResult[] supportedResults =
+        [
+            Result(MinecraftClientLoader.Fabric, ManagedEntry(MinecraftClientLoader.Fabric)),
+        ];
+        var supported = ClientWorkspaceViewModel.CreateFixedLoaderChoices(
+            supportedResults,
+            isChecking: false);
+        var supportedFinalSelection = ClientWorkspaceViewModel.SelectLoaderChoiceForRefresh(
+            supported,
+            MinecraftClientLoader.Fabric,
+            requireAvailablePreferred: true);
+
+        Assert.Equal(MinecraftClientLoader.Fabric, supportedFinalSelection?.Loader);
+    }
+
+    [Fact]
     public async Task QueryLoaderCatalogsAsync_IsolatesOneFailureAndKeepsManagedAndExternalChoices()
     {
         var snapshot = StableSnapshot("1.21.1");

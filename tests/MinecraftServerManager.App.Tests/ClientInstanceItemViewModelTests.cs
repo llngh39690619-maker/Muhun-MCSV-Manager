@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.IO;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.GameClient.Contracts;
@@ -18,15 +19,34 @@ public sealed class ClientInstanceItemViewModelTests
             DirectoryPath = Path.GetTempPath(),
         };
         var viewModel = new ClientInstanceItemViewModel(model);
+        var finalLinePublished = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
-        for (var index = 0; index < 5_000; index++)
+        void ObservePublishedBatch(object? sender, NotifyCollectionChangedEventArgs args)
         {
-            viewModel.QueueGameLogLine($"line-{index}");
+            if (viewModel.GameLogLines.Count > 0 &&
+                string.Equals(viewModel.GameLogLines[^1], "line-4999", StringComparison.Ordinal))
+            {
+                finalLinePublished.TrySetResult(true);
+            }
         }
 
-        await WaitUntilAsync(() => viewModel.GameLogLines.Count > 0, TimeSpan.FromSeconds(3));
+        viewModel.GameLogLines.CollectionChanged += ObservePublishedBatch;
+        try
+        {
+            for (var index = 0; index < 5_000; index++)
+            {
+                viewModel.QueueGameLogLine($"line-{index}");
+            }
 
-        Assert.InRange(viewModel.GameLogLines.Count, 1, 2_000);
+            await finalLinePublished.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            viewModel.GameLogLines.CollectionChanged -= ObservePublishedBatch;
+        }
+
+        Assert.Equal(2_000, viewModel.GameLogLines.Count);
         Assert.Equal("line-4999", viewModel.GameLogLines[^1]);
         Assert.True(viewModel.HasGameLogLines);
     }
@@ -72,17 +92,4 @@ public sealed class ClientInstanceItemViewModelTests
         Assert.Equal(preview, viewModel.IconImagePath);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!predicate())
-        {
-            if (DateTimeOffset.UtcNow >= deadline)
-            {
-                throw new TimeoutException("The client log projection did not publish in time.");
-            }
-
-            await Task.Delay(20);
-        }
-    }
 }
