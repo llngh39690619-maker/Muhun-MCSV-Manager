@@ -9,6 +9,9 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ClientWorkspacePresentationTests
 {
+    private static readonly XNamespace Presentation =
+        "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
     [Fact]
     public void HeaderAccountSelector_ShowsCrispHeadNameSelectionAndAddAction()
     {
@@ -48,6 +51,92 @@ public sealed class ClientWorkspacePresentationTests
         Assert.DoesNotContain("Text=\"{Binding WindowHeight}\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Text=\"{Binding WindowWidthText", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Text=\"{Binding WindowHeightText", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ContentCards_OpenTheDownloadCenterOnTheirOwnTypedTab()
+    {
+        var document = XDocument.Load(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+        var buttons = document
+            .Descendants(Presentation + "Button")
+            .Where(button => string.Equals(
+                (string?)button.Attribute("Command"),
+                "{Binding OpenContentDownloadCommand}",
+                StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(3, buttons.Length);
+        Assert.Equal(
+            [
+                "{x:Static clientContracts:MinecraftClientContentKind.Mod}",
+                "{x:Static clientContracts:MinecraftClientContentKind.ResourcePack}",
+                "{x:Static clientContracts:MinecraftClientContentKind.ShaderPack}",
+            ],
+            buttons
+                .Select(button => (string?)button.Attribute("CommandParameter") ?? string.Empty)
+                .ToArray());
+        Assert.All(
+            buttons,
+            button => Assert.Equal(
+                "{StaticResource ClientContentPrimaryActionButton}",
+                (string?)button.Attribute("Style")));
+
+        var contentFolderButtons = document
+            .Descendants(Presentation + "Button")
+            .Where(button => (string?)button.Attribute("CommandParameter") is
+                "mods" or "resourcepacks" or "shaderpacks")
+            .ToArray();
+        Assert.Equal(3, contentFolderButtons.Length);
+        Assert.All(
+            contentFolderButtons,
+            button => Assert.Equal(
+                "{StaticResource ClientContentActionButton}",
+                (string?)button.Attribute("Style")));
+
+        var workspaceSource = File.ReadAllText(TestRepositoryPaths.AppSource(
+            "ViewModels",
+            "ClientWorkspaceViewModel.cs"));
+        var openStart = workspaceSource.IndexOf(
+            "private async Task OpenContentDownloadAsync",
+            StringComparison.Ordinal);
+        Assert.True(openStart >= 0);
+        var openEnd = workspaceSource.IndexOf(
+            "private async Task SelectContentDownloadKindAsync",
+            openStart,
+            StringComparison.Ordinal);
+        Assert.True(openEnd > openStart);
+        var openMethod = workspaceSource[openStart..openEnd];
+        var kindAssignment = openMethod.IndexOf(
+            "ContentDownloadKind = kind;",
+            StringComparison.Ordinal);
+        var windowRequest = openMethod.IndexOf(
+            "ContentDownloadCenterRequested?.Invoke",
+            StringComparison.Ordinal);
+        Assert.True(kindAssignment >= 0);
+        Assert.True(windowRequest >= 0);
+        Assert.True(kindAssignment < windowRequest);
+        Assert.Contains(
+            "parameter is MinecraftClientContentKind typedKind",
+            workspaceSource,
+            StringComparison.Ordinal);
+
+        var mainWindowSource = File.ReadAllText(TestRepositoryPaths.AppSource(
+            "ViewModels",
+            "MainWindowViewModel.cs"));
+        var activateStart = mainWindowSource.IndexOf(
+            "private void OnContentDownloadCenterRequested",
+            StringComparison.Ordinal);
+        Assert.True(activateStart >= 0);
+        var activateEnd = mainWindowSource.IndexOf(
+            "private async Task StartSelectedAsync",
+            activateStart,
+            StringComparison.Ordinal);
+        Assert.True(activateEnd > activateStart);
+        var activateMethod = mainWindowSource[activateStart..activateEnd];
+        Assert.Contains("existing.Activate();", activateMethod, StringComparison.Ordinal);
+        Assert.Contains("window.Show();", activateMethod, StringComparison.Ordinal);
     }
 
     [Fact]

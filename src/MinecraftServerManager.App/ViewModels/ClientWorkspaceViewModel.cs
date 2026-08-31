@@ -5708,12 +5708,23 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         object? parameter,
         out MinecraftClientContentKind kind)
     {
-        if (parameter is string text &&
-            Enum.TryParse(text, ignoreCase: true, out kind) &&
-            kind is MinecraftClientContentKind.Mod or
-                MinecraftClientContentKind.ResourcePack or
-                MinecraftClientContentKind.ShaderPack)
+        MinecraftClientContentKind candidate;
+        if (parameter is MinecraftClientContentKind typedKind)
         {
+            candidate = typedKind;
+        }
+        else if (parameter is not string text ||
+                 !Enum.TryParse(text, ignoreCase: true, out candidate))
+        {
+            kind = default;
+            return false;
+        }
+
+        if (candidate is MinecraftClientContentKind.Mod or
+            MinecraftClientContentKind.ResourcePack or
+            MinecraftClientContentKind.ShaderPack)
+        {
+            kind = candidate;
             return true;
         }
 

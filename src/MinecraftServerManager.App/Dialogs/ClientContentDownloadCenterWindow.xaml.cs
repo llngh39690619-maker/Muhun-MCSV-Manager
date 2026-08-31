@@ -55,7 +55,11 @@ public partial class ClientContentDownloadCenterWindow : Window
         object sender,
         SelectionChangedEventArgs e)
     {
-        if (!ReferenceEquals(sender, ContentDownloadTabs) ||
+        // TabControl selects its first item while the window is being materialized, before
+        // the one-way IsSelected bindings restore the content kind requested by the card.
+        // Treat only selections made after the modeless window has loaded as user navigation.
+        if (!IsLoaded ||
+            !ReferenceEquals(sender, ContentDownloadTabs) ||
             DataContext is not ClientWorkspaceViewModel workspace)
         {
             return;

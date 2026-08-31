@@ -1,5 +1,12 @@
 using System.IO;
+using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
 using System.Xml.Linq;
+using MinecraftServerManager.App.Dialogs;
+using MinecraftServerManager.App.Services;
+using MinecraftServerManager.App.ViewModels;
+using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Tests;
 
@@ -80,6 +87,139 @@ public sealed class ClientContentDownloadCenterWindowContractTests
     }
 
     [Fact]
+    public void PreviewTypography_UsesReadableCompactTabsSelectorsAndActions()
+    {
+        var document = LoadWindow();
+        var styles = document.Descendants(Presentation + "Style").ToArray();
+
+        XElement FindStyle(string key) => styles.Single(style => string.Equals(
+            (string?)style.Attribute(Xaml + "Key"),
+            key,
+            StringComparison.Ordinal));
+
+        static string SetterValue(XElement style, string property) =>
+            (string?)style
+                .Elements(Presentation + "Setter")
+                .Single(setter => string.Equals(
+                    (string?)setter.Attribute("Property"),
+                    property,
+                    StringComparison.Ordinal))
+                .Attribute("Value") ?? string.Empty;
+
+        var tabStyle = FindStyle("DownloadCenterTabHeaderButton");
+        Assert.Equal("{StaticResource {x:Type Button}}", (string?)tabStyle.Attribute("BasedOn"));
+        Assert.Equal("15", SetterValue(tabStyle, "FontSize"));
+        Assert.Equal("0", SetterValue(tabStyle, "MinHeight"));
+        Assert.Equal("8,3", SetterValue(tabStyle, "Padding"));
+
+        var actionStyle = FindStyle("DownloadCenterActionButton");
+        Assert.Equal("{StaticResource {x:Type Button}}", (string?)actionStyle.Attribute("BasedOn"));
+        Assert.Equal("14", SetterValue(actionStyle, "FontSize"));
+        Assert.Equal("38", SetterValue(actionStyle, "MinHeight"));
+
+        var primaryStyle = FindStyle("DownloadCenterPrimaryActionButton");
+        Assert.Equal("14", SetterValue(primaryStyle, "FontSize"));
+        Assert.Equal("38", SetterValue(primaryStyle, "MinHeight"));
+        Assert.Equal("142", SetterValue(primaryStyle, "MinWidth"));
+
+        var tabs = FindNamedElement(document, "TabControl", "ContentDownloadTabs");
+        Assert.All(
+            tabs.Descendants(Presentation + "Button"),
+            button =>
+            {
+                Assert.Equal(
+                    "{StaticResource DownloadCenterTabHeaderButton}",
+                    (string?)button.Attribute("Style"));
+                Assert.Equal(
+                    "{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type TabItem}}}",
+                    (string?)button.Attribute("Foreground"));
+                Assert.StartsWith(
+                    "{DynamicResource L10n.client.vm.content.kind.",
+                    (string?)button.Attribute("AutomationProperties.Name"),
+                    StringComparison.Ordinal);
+            });
+
+        var versionSelector = FindNamedElement(
+            document,
+            "Border",
+            "FixedContentDownloadVersionSelector");
+        var versionCombo = Assert.Single(versionSelector.Descendants(Presentation + "ComboBox"));
+        Assert.Equal("14", (string?)versionCombo.Attribute("FontSize"));
+        Assert.Equal("38", (string?)versionCombo.Attribute("MinHeight"));
+    }
+
+    [Theory]
+    [InlineData(MinecraftClientContentKind.ResourcePack, 1)]
+    [InlineData(MinecraftClientContentKind.ShaderPack, 2)]
+    public async Task InitialOpen_PreservesTheContentKindRequestedByTheCard(
+        MinecraftClientContentKind requestedKind,
+        int expectedTabIndex)
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        ClientWorkspaceViewModel? workspace = null;
+
+        try
+        {
+            WpfStaTestHost.Run(() =>
+            {
+                var paths = new ApplicationPaths(directory.Path);
+                paths.EnsureCreated();
+                workspace = new ClientWorkspaceViewModel(
+                    paths,
+                    static () => new NewMinecraftClientDefaultsSettings());
+                SetPrivateProperty(workspace, nameof(ClientWorkspaceViewModel.IsContentDownloadOpen), true);
+                SetPrivateField(workspace, "_contentDownloadTargetInstanceId", Guid.NewGuid());
+                SetPrivateProperty(workspace, nameof(ClientWorkspaceViewModel.ContentDownloadKind), requestedKind);
+
+                var window = new ClientContentDownloadCenterWindow
+                {
+                    DataContext = workspace,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Left = -20_000,
+                    Top = -20_000,
+                    ShowInTaskbar = false,
+                };
+                try
+                {
+                    window.Show();
+                    window.UpdateLayout();
+
+                    var tabs = Assert.IsType<TabControl>(window.FindName("ContentDownloadTabs"));
+                    Assert.True(window.IsLoaded);
+                    Assert.Equal(requestedKind, workspace.ContentDownloadKind);
+                    Assert.Equal(expectedTabIndex, tabs.SelectedIndex);
+
+                    var nextKind = requestedKind == MinecraftClientContentKind.ResourcePack
+                        ? MinecraftClientContentKind.ShaderPack
+                        : MinecraftClientContentKind.ResourcePack;
+                    SetPrivateProperty(
+                        workspace,
+                        nameof(ClientWorkspaceViewModel.ContentDownloadKind),
+                        nextKind);
+                    Assert.Equal(nextKind, workspace.ContentDownloadKind);
+                    Assert.Equal(
+                        nextKind == MinecraftClientContentKind.ResourcePack ? 1 : 2,
+                        tabs.SelectedIndex);
+
+                    tabs.SelectedIndex = 0;
+                    Assert.Equal(MinecraftClientContentKind.Mod, workspace.ContentDownloadKind);
+                }
+                finally
+                {
+                    window.Close();
+                }
+            });
+        }
+        finally
+        {
+            if (workspace is not null)
+            {
+                await workspace.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
     public void MainSurface_HasAResultListAndAnIndependentScrollableDetailColumn()
     {
         var document = LoadWindow();
@@ -111,8 +251,31 @@ public sealed class ClientContentDownloadCenterWindowContractTests
             document,
             "ScrollViewer",
             "ContentDownloadDetailsScrollViewer");
-        Assert.Same(detailsPanel, detailsScrollViewer.Parent);
+        var detailsLayout = Assert.IsType<XElement>(detailsScrollViewer.Parent);
+        Assert.Same(detailsPanel, detailsLayout.Parent);
         Assert.Equal("Auto", (string?)detailsScrollViewer.Attribute("VerticalScrollBarVisibility"));
+
+        var versionSelector = FindNamedElement(
+            document,
+            "Border",
+            "FixedContentDownloadVersionSelector");
+        var detailActions = FindNamedElement(
+            document,
+            "Border",
+            "FixedContentDownloadDetailActions");
+        Assert.Same(detailsLayout, versionSelector.Parent);
+        Assert.Same(detailsLayout, detailActions.Parent);
+        Assert.Equal("0", (string?)versionSelector.Attribute("Grid.Row"));
+        Assert.Equal("1", (string?)detailsScrollViewer.Attribute("Grid.Row"));
+        Assert.Equal("2", (string?)detailActions.Attribute("Grid.Row"));
+        Assert.DoesNotContain(
+            versionSelector.Ancestors(),
+            ancestor => ancestor.Name == Presentation + "ScrollViewer");
+        Assert.DoesNotContain(
+            detailActions.Ancestors(),
+            ancestor => ancestor.Name == Presentation + "ScrollViewer");
+        AssertButtonCommand(detailActions, "{Binding OpenSelectedContentProjectPageCommand}");
+        AssertButtonCommand(detailActions, "{Binding InstallContentDownloadCommand}");
     }
 
     [Fact]
@@ -126,20 +289,32 @@ public sealed class ClientContentDownloadCenterWindowContractTests
             .Select(row => (string?)row.Attribute("Height") ?? string.Empty)
             .ToArray();
 
-        Assert.Equal(["Auto", "Auto", "*", "Auto", "Auto"], rows);
+        Assert.Equal(["Auto", "Auto", "*", "Auto"], rows);
 
         var queue = FindNamedElement(document, "Border", "ContentDownloadQueuePanel");
         var fixedBar = FindNamedElement(document, "Border", "FixedContentDownloadBar");
-        Assert.Equal("3", (string?)queue.Attribute("Grid.Row"));
-        Assert.Equal("4", (string?)fixedBar.Attribute("Grid.Row"));
-        Assert.Same(root, queue.Parent);
+        var mainSplit = FindNamedElement(document, "Grid", "ContentDownloadMainSplit");
+        Assert.Null(queue.Attribute("Grid.Row"));
+        Assert.Equal("0", (string?)queue.Attribute("Grid.Column"));
+        Assert.Equal("20", (string?)queue.Attribute("Panel.ZIndex"));
+        Assert.Equal("Bottom", (string?)queue.Attribute("VerticalAlignment"));
+        Assert.Equal("240", (string?)queue.Attribute("MaxHeight"));
+        Assert.Equal("150", (string?)queue.Attribute("MinHeight"));
+        Assert.Equal("True", (string?)queue.Attribute("ClipToBounds"));
+        Assert.Equal(
+            "{Binding IsContentDownloadQueueExpanded, Converter={StaticResource BoolToVisibility}}",
+            (string?)queue.Attribute("Visibility"));
+        Assert.Equal("3", (string?)fixedBar.Attribute("Grid.Row"));
+        Assert.Same(mainSplit, queue.Parent);
         Assert.Same(root, fixedBar.Parent);
         Assert.DoesNotContain(queue.Ancestors(), ancestor => ancestor.Name == Presentation + "ScrollViewer");
         Assert.DoesNotContain(fixedBar.Ancestors(), ancestor => ancestor.Name == Presentation + "ScrollViewer");
 
-        AssertButtonCommand(fixedBar, "{Binding OpenSelectedContentProjectPageCommand}");
-        AssertButtonCommand(fixedBar, "{Binding OpenContentFallbackCommand}");
-        AssertButtonCommand(fixedBar, "{Binding InstallContentDownloadCommand}");
+        var queueList = FindNamedElement(document, "ListBox", "ContentDownloadQueueList");
+        Assert.Same(queue, queueList.Ancestors().First(ancestor => ancestor.Name == Presentation + "Border"));
+        Assert.Equal("Auto", (string?)queueList.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+        AssertButtonCommand(fixedBar, "{Binding ToggleContentDownloadQueueCommand}");
+        AssertButtonCommand(fixedBar, "{Binding ClearCompletedContentDownloadJobsCommand}");
 
         var progress = Assert.Single(fixedBar.Descendants(Presentation + "ProgressBar"));
         Assert.Equal(
@@ -148,6 +323,126 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         Assert.Equal(
             "{Binding IsContentDownloadQueueProgressIndeterminate, Mode=OneWay}",
             (string?)progress.Attribute("IsIndeterminate"));
+    }
+
+    [Theory]
+    [InlineData(1280d, 720d, 1)]
+    [InlineData(1280d, 720d, 10)]
+    [InlineData(1024d, 576d, 1)]
+    [InlineData(1024d, 576d, 10)]
+    public async Task FixedAreasAndQueueDrawer_KeepTheirLayoutAtSupportedWindowSizes(
+        double width,
+        double height,
+        int jobCount)
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        ClientWorkspaceViewModel? workspace = null;
+
+        try
+        {
+            WpfStaTestHost.Run(() =>
+            {
+                var paths = new ApplicationPaths(directory.Path);
+                paths.EnsureCreated();
+                workspace = new ClientWorkspaceViewModel(
+                    paths,
+                    static () => new NewMinecraftClientDefaultsSettings());
+                SetPrivateProperty(workspace, nameof(ClientWorkspaceViewModel.IsContentDownloadOpen), true);
+                SetPrivateField(workspace, "_contentDownloadTargetInstanceId", Guid.NewGuid());
+
+                for (var index = 0; index < jobCount; index++)
+                {
+                    var job = new ClientContentInstallJobViewModel(
+                        Guid.NewGuid(),
+                        Guid.NewGuid(),
+                        $"Minecraft {index + 1}",
+                        $"project-{index + 1}",
+                        $"Content project {index + 1}",
+                        $"version-{index + 1}",
+                        $"1.{index + 1}.0",
+                        "Downloading",
+                        CancellationToken.None);
+                    job.Report("download", "Downloading", (index + 1d) / (jobCount + 1d));
+                    workspace.ContentDownloadJobs.Add(job);
+                }
+
+                workspace.IsContentDownloadQueueExpanded = false;
+                var window = new ClientContentDownloadCenterWindow
+                {
+                    DataContext = workspace,
+                    Width = width,
+                    Height = height,
+                    SizeToContent = SizeToContent.Manual,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Left = -20_000,
+                    Top = -20_000,
+                    ShowInTaskbar = false,
+                };
+                try
+                {
+                    window.Show();
+                    window.UpdateLayout();
+
+                    var root = FindFrameworkElement(window, "ContentDownloadRoot");
+                    var mainSplit = FindFrameworkElement(window, "ContentDownloadMainSplit");
+                    var detailsPanel = FindFrameworkElement(window, "ContentDownloadDetailsPanel");
+                    var versionSelector = FindFrameworkElement(window, "FixedContentDownloadVersionSelector");
+                    var detailsScroll = FindFrameworkElement(window, "ContentDownloadDetailsScrollViewer");
+                    var detailActions = FindFrameworkElement(window, "FixedContentDownloadDetailActions");
+                    var queuePanel = FindFrameworkElement(window, "ContentDownloadQueuePanel");
+                    var queueList = FindFrameworkElement(window, "ContentDownloadQueueList");
+                    var fixedBar = FindFrameworkElement(window, "FixedContentDownloadBar");
+
+                    var mainBefore = BoundsWithin(mainSplit, root);
+                    var fixedBarBefore = BoundsWithin(fixedBar, root);
+                    Assert.Equal(Visibility.Collapsed, queuePanel.Visibility);
+                    Assert.True(detailsScroll.ActualHeight > 1d);
+                    AssertFixedDetailRegions(
+                        root,
+                        detailsPanel,
+                        versionSelector,
+                        detailsScroll,
+                        detailActions);
+
+                    workspace.IsContentDownloadQueueExpanded = true;
+                    window.UpdateLayout();
+
+                    Assert.Equal(Visibility.Visible, queuePanel.Visibility);
+                    Assert.InRange(queuePanel.ActualHeight, 149d, 240.5d);
+                    Assert.True(queueList.ActualHeight > 1d);
+
+                    var mainAfter = BoundsWithin(mainSplit, root);
+                    var fixedBarAfter = BoundsWithin(fixedBar, root);
+                    var queueBounds = BoundsWithin(queuePanel, root);
+                    var detailsBounds = BoundsWithin(detailsPanel, root);
+
+                    AssertRectNearlyEqual(mainBefore, mainAfter);
+                    AssertRectNearlyEqual(fixedBarBefore, fixedBarAfter);
+                    Assert.True(queueBounds.Left >= mainAfter.Left - 0.5d);
+                    Assert.True(queueBounds.Right <= detailsBounds.Left + 0.5d);
+                    Assert.True(queueBounds.Bottom <= mainAfter.Bottom + 0.5d);
+                    Assert.True(mainAfter.Bottom <= fixedBarAfter.Top + 0.5d);
+                    Assert.True(fixedBarAfter.Bottom <= root.ActualHeight + 0.5d);
+                    AssertFixedDetailRegions(
+                        root,
+                        detailsPanel,
+                        versionSelector,
+                        detailsScroll,
+                        detailActions);
+                }
+                finally
+                {
+                    window.Close();
+                }
+            });
+        }
+        finally
+        {
+            if (workspace is not null)
+            {
+                await workspace.DisposeAsync();
+            }
+        }
     }
 
     [Fact]
@@ -172,7 +467,6 @@ public sealed class ClientContentDownloadCenterWindowContractTests
             "ContentDownloadTargetSummary",
             "HasMoreContentDownloadResults",
             "ContentDownloadJobs",
-            "HasContentDownloadJobs",
             "IsContentDownloadQueueExpanded",
             "ToggleContentDownloadQueueCommand",
             "ClearCompletedContentDownloadJobsCommand",
@@ -195,6 +489,59 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         Assert.Contains(
             parent.Descendants(Presentation + "Button"),
             button => string.Equals((string?)button.Attribute("Command"), command, StringComparison.Ordinal));
+
+    private static FrameworkElement FindFrameworkElement(FrameworkElement root, string name) =>
+        Assert.IsAssignableFrom<FrameworkElement>(root.FindName(name));
+
+    private static Rect BoundsWithin(FrameworkElement element, FrameworkElement ancestor) =>
+        element.TransformToAncestor(ancestor).TransformBounds(new Rect(element.RenderSize));
+
+    private static void AssertFixedDetailRegions(
+        FrameworkElement root,
+        FrameworkElement detailsPanel,
+        FrameworkElement versionSelector,
+        FrameworkElement detailsScroll,
+        FrameworkElement detailActions)
+    {
+        var panelBounds = BoundsWithin(detailsPanel, root);
+        var versionBounds = BoundsWithin(versionSelector, root);
+        var scrollBounds = BoundsWithin(detailsScroll, root);
+        var actionsBounds = BoundsWithin(detailActions, root);
+
+        Assert.True(versionBounds.Top >= panelBounds.Top - 0.5d);
+        Assert.True(versionBounds.Bottom <= panelBounds.Bottom + 0.5d);
+        Assert.True(scrollBounds.Top >= versionBounds.Bottom - 0.5d);
+        Assert.True(scrollBounds.Bottom <= actionsBounds.Top + 0.5d);
+        Assert.True(actionsBounds.Top >= panelBounds.Top - 0.5d);
+        Assert.True(actionsBounds.Bottom <= panelBounds.Bottom + 0.5d);
+        Assert.True(detailsScroll.ActualHeight > 1d);
+    }
+
+    private static void AssertRectNearlyEqual(Rect expected, Rect actual)
+    {
+        Assert.InRange(Math.Abs(expected.X - actual.X), 0d, 0.5d);
+        Assert.InRange(Math.Abs(expected.Y - actual.Y), 0d, 0.5d);
+        Assert.InRange(Math.Abs(expected.Width - actual.Width), 0d, 0.5d);
+        Assert.InRange(Math.Abs(expected.Height - actual.Height), 0d, 0.5d);
+    }
+
+    private static void SetPrivateProperty<T>(object target, string propertyName, T value)
+    {
+        var property = target.GetType().GetProperty(
+            propertyName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert.NotNull(property);
+        property.GetSetMethod(nonPublic: true)!.Invoke(target, [value]);
+    }
+
+    private static void SetPrivateField<T>(object target, string fieldName, T value)
+    {
+        var field = target.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field.SetValue(target, value);
+    }
 
     private static XElement FindNamedElement(XDocument document, string localName, string name) =>
         document

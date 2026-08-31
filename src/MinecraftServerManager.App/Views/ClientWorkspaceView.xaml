@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:MinecraftServerManager.App.Controls"
              xmlns:infra="clr-namespace:MinecraftServerManager.App.Infrastructure"
+             xmlns:clientContracts="clr-namespace:MinecraftServerManager.GameClient.Contracts;assembly=MinecraftServerManager.GameClient.Contracts"
              Background="Transparent"
              Foreground="{DynamicResource TextBrush}"
              UseLayoutRounding="True"
@@ -27,6 +28,18 @@
                     <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
                 </DataTrigger>
             </Style.Triggers>
+        </Style>
+        <Style x:Key="ClientContentActionButton" TargetType="Button"
+               BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="MinHeight" Value="38" />
+            <Setter Property="Padding" Value="14,7" />
+        </Style>
+        <Style x:Key="ClientContentPrimaryActionButton" TargetType="Button"
+               BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="MinHeight" Value="38" />
+            <Setter Property="Padding" Value="14,7" />
         </Style>
         <Style x:Key="ClientSectionHeading" TargetType="TextBlock">
             <Setter Property="FontSize" Value="17" />
@@ -962,9 +975,12 @@
                                     <TextBlock Text="{DynamicResource L10n.client.content.mods}" FontSize="18" FontWeight="SemiBold" />
                                     <TextBlock Text="{DynamicResource L10n.client.content.description.mods}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
                                     <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openMods}" Command="{Binding OpenContentFolderCommand}" CommandParameter="mods" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
-                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="Mod" />
+                                        <Button Content="{DynamicResource L10n.client.content.openMods}" Command="{Binding OpenContentFolderCommand}"
+                                                CommandParameter="mods" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
+                                                Style="{StaticResource ClientContentPrimaryActionButton}"
+                                                Command="{Binding OpenContentDownloadCommand}"
+                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.Mod}" />
                                     </WrapPanel>
                                 </StackPanel>
                             </Border>
@@ -973,9 +989,12 @@
                                     <TextBlock Text="{DynamicResource L10n.client.content.resourcePacks}" FontSize="18" FontWeight="SemiBold" />
                                     <TextBlock Text="{DynamicResource L10n.client.content.description.resourcePacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
                                     <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openResourcePacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="resourcepacks" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
-                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="ResourcePack" />
+                                        <Button Content="{DynamicResource L10n.client.content.openResourcePacks}" Command="{Binding OpenContentFolderCommand}"
+                                                CommandParameter="resourcepacks" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
+                                                Style="{StaticResource ClientContentPrimaryActionButton}"
+                                                Command="{Binding OpenContentDownloadCommand}"
+                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ResourcePack}" />
                                     </WrapPanel>
                                 </StackPanel>
                             </Border>
@@ -984,9 +1003,12 @@
                                     <TextBlock Text="{DynamicResource L10n.client.content.shaderPacks}" FontSize="18" FontWeight="SemiBold" />
                                     <TextBlock Text="{DynamicResource L10n.client.content.description.shaderPacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
                                     <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openShaderPacks}" Command="{Binding OpenContentFolderCommand}" CommandParameter="shaderpacks" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}" Style="{StaticResource PrimaryButton}"
-                                                Command="{Binding OpenContentDownloadCommand}" CommandParameter="ShaderPack" />
+                                        <Button Content="{DynamicResource L10n.client.content.openShaderPacks}" Command="{Binding OpenContentFolderCommand}"
+                                                CommandParameter="shaderpacks" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
+                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
+                                                Style="{StaticResource ClientContentPrimaryActionButton}"
+                                                Command="{Binding OpenContentDownloadCommand}"
+                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ShaderPack}" />
                                     </WrapPanel>
                                 </StackPanel>
                             </Border>
