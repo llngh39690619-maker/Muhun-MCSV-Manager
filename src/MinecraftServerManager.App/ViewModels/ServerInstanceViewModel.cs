@@ -31,6 +31,8 @@ public sealed class ServerInstanceViewModel : ObservableObject
     private long _workingSetBytes;
     private TimeSpan _uptime;
     private int? _activePort;
+    private bool? _portListening;
+    private ProductServerJavaRuntimeSummary? _serviceJavaRuntime;
     private PlayerEntryViewModel? _selectedPlayer;
     private string _playerNameInput = string.Empty;
     private bool _showKnownPlayers;
@@ -288,7 +290,14 @@ public sealed class ServerInstanceViewModel : ObservableObject
     public int Port
     {
         get => Model.Port;
-        set { if (Model.Port == value) return; Model.Port = value; OnPropertyChanged(); }
+        set
+        {
+            if (Model.Port == value) return;
+            Model.Port = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ConnectionDisplay));
+            OnPropertyChanged(nameof(ConnectionAddress));
+        }
     }
 
     /// <summary>
@@ -297,6 +306,19 @@ public sealed class ServerInstanceViewModel : ObservableObject
     /// unrelated process that already owns the newly entered port.
     /// </summary>
     public int? ActivePort => _activePort;
+
+    public string ConnectionAddress => $"localhost:{ActivePort ?? Port}";
+
+    public string ConnectionDisplay
+    {
+        get
+        {
+            var port = ActivePort ?? Port;
+            return State == ServerState.Running && _portListening is { } listening
+                ? L(listening ? "server.port.listening" : "server.port.notListening", port)
+                : port.ToString(LocalizationService.Current.Culture);
+        }
+    }
 
     public bool AutoRestart
     {
@@ -521,6 +543,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
             OnPropertyChanged(nameof(CanSendCommand));
             OnPropertyChanged(nameof(CanManagePlayers));
             OnPropertyChanged(nameof(CanIterativelyUpdateModpack));
+            OnPropertyChanged(nameof(ConnectionDisplay));
             SendCommandCommand.NotifyCanExecuteChanged();
         }
     }
@@ -545,7 +568,11 @@ public sealed class ServerInstanceViewModel : ObservableObject
     public string CpuDisplay => State == ServerState.Running ? $"{_cpuPercent:0.0}%" : "—";
     public string MemoryDisplay => State == ServerState.Running ? FormatBytes(_workingSetBytes) : "—";
     public string UptimeDisplay => State == ServerState.Running ? FormatUptime(_uptime) : "—";
-    public string JavaDisplay => Model.JavaMajorVersion is { } version
+    private int? EffectiveJavaMajorVersion => _serviceJavaRuntime?.Available == true
+        ? _serviceJavaRuntime.MajorVersion ?? Model.JavaMajorVersion
+        : Model.JavaMajorVersion;
+
+    public string JavaDisplay => EffectiveJavaMajorVersion is { } version
         ? $"Java {version}"
         : L("server.java.unspecified");
     public bool UsesGuiMemorySettings => true;
@@ -628,9 +655,13 @@ public sealed class ServerInstanceViewModel : ObservableObject
         if (state is ServerState.Stopped or ServerState.Crashed or ServerState.Faulted)
         {
             _activePort = null;
+            _portListening = null;
             _cpuPercent = 0;
             _workingSetBytes = 0;
             _uptime = TimeSpan.Zero;
+            OnPropertyChanged(nameof(ActivePort));
+            OnPropertyChanged(nameof(ConnectionDisplay));
+            OnPropertyChanged(nameof(ConnectionAddress));
             NotifyMetricsChanged();
             UpdateOnlinePlayers([]);
         }
@@ -660,6 +691,8 @@ public sealed class ServerInstanceViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(Name));
         OnPropertyChanged(nameof(Port));
+        OnPropertyChanged(nameof(ConnectionDisplay));
+        OnPropertyChanged(nameof(ConnectionAddress));
         OnPropertyChanged(nameof(MinimumMemoryMb));
         OnPropertyChanged(nameof(MaximumMemoryMb));
         OnPropertyChanged(nameof(MinimumMemorySliderMb));
@@ -679,7 +712,29 @@ public sealed class ServerInstanceViewModel : ObservableObject
         NotifyModpackConfigurationChanged();
     }
 
-    public void MarkPortAsActive(int port) => _activePort = port;
+    public void MarkPortAsActive(int port)
+    {
+        if (_activePort == port) return;
+        _activePort = port;
+        OnPropertyChanged(nameof(ActivePort));
+        OnPropertyChanged(nameof(ConnectionDisplay));
+        OnPropertyChanged(nameof(ConnectionAddress));
+    }
+
+    public void UpdateServiceRuntimeStatus(
+        ProductServerJavaRuntimeSummary? java,
+        bool? portListening)
+    {
+        _serviceJavaRuntime = java;
+        _portListening = portListening;
+        if (java?.Available == true && java.MajorVersion is { } major)
+        {
+            Model.JavaMajorVersion = major;
+        }
+
+        OnPropertyChanged(nameof(JavaDisplay));
+        OnPropertyChanged(nameof(ConnectionDisplay));
+    }
 
     public void UpdateMetrics(double cpuPercent, long workingSetBytes, TimeSpan uptime)
     {
@@ -1223,6 +1278,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
         OnPropertyChanged(nameof(StateText));
         OnPropertyChanged(nameof(UptimeDisplay));
         OnPropertyChanged(nameof(JavaDisplay));
+        OnPropertyChanged(nameof(ConnectionDisplay));
         OnPropertyChanged(nameof(MemoryConfigurationHint));
         OnPropertyChanged(nameof(ConsoleCountText));
         OnPropertyChanged(nameof(DiagnosticCountText));

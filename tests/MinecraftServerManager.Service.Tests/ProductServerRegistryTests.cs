@@ -122,6 +122,28 @@ public sealed class ProductServerRegistryTests
             reloaded.GetAll().Select(server => server.Id).Order());
     }
 
+    [Fact]
+    public async Task UnchangedLaunchConfiguration_DoesNotRewriteRegistry()
+    {
+        var layout = CreateLayout();
+        var registry = new ProductServerRegistry(layout);
+        await registry.LoadAsync();
+        var registration = Registration();
+        await registry.UpsertAsync(registration);
+        var sentinel = DateTime.UtcNow.AddHours(-2);
+        File.SetLastWriteTimeUtc(registry.FilePath, sentinel);
+
+        var result = await registry.UpdateLaunchConfigurationAsync(
+            registration.Id,
+            registration.Port,
+            CoreType.Paper,
+            updateVelocityPortArgument: false);
+
+        Assert.Equal(registration.Port, result.Port);
+        Assert.Equal(registration.ServerArguments, result.ServerArguments);
+        Assert.Equal(sentinel, File.GetLastWriteTimeUtc(registry.FilePath));
+    }
+
     [Theory]
     [InlineData("999")]
     [InlineData("NotARealCore")]

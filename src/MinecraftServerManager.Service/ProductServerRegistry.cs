@@ -195,6 +195,15 @@ public sealed class ProductServerRegistry(ProductDataLayout layout)
                     VelocityPortArgumentEditor.SetPort(currentArguments, port);
                 }
 
+                // The common launch path already has the requested port and arguments.  Avoid
+                // cloning and durably rewriting the complete registry (WriteThrough + fsync) on
+                // every start when preparation did not change anything.
+                if (stored.Port == port &&
+                    stored.ServerArguments.SequenceEqual(currentArguments, StringComparer.Ordinal))
+                {
+                    return Clone(stored);
+                }
+
                 updated = stored with
                 {
                     Port = port,

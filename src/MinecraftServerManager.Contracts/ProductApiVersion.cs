@@ -75,7 +75,14 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion ServiceInstanceSettingsVersion { get; } = new(1, 8);
 
-    public static ProductApiVersion CurrentVersion { get; } = ServiceInstanceSettingsVersion;
+    /// <summary>
+    /// First API version that includes the Service-resolved Java runtime and the actual local TCP
+    /// listener state in the lightweight server status projection.  This removes the desktop's
+    /// unreliable dependency on a managed runtime directory name.
+    /// </summary>
+    public static ProductApiVersion RuntimeStatusVersion { get; } = new(1, 9);
+
+    public static ProductApiVersion CurrentVersion { get; } = RuntimeStatusVersion;
 
     public const string RestBasePath = "/api/v1";
 

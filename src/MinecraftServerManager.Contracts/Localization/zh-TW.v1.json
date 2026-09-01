@@ -223,6 +223,8 @@
     "server.state.faulted": "錯誤",
     "server.state.stopped": "已停止",
     "server.java.unspecified": "未指定",
+    "server.port.listening": "{0} · 監聽中",
+    "server.port.notListening": "{0} · 未監聽",
     "server.memory.executableHint": "啟動時會依模式產生有效的 -Xms／-Xmx；拖動任一滑桿會切換成手動指定。",
     "server.memory.argumentFileHint": "啟動時會產生私有 .mcsv-runtime/memory.args；原始 user_jvm_args.txt 不會被覆寫。舊設定尚未選擇模式時仍完全沿用原檔。",
     "server.console.lines": "{0:N0} 行",

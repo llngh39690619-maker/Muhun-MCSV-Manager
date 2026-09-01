@@ -30,6 +30,9 @@ param(
 
     [string]$ToolingRoot,
 
+    [ValidateRange(1, 64)]
+    [int]$MaxBuildConcurrency = 4,
+
     [switch]$KeepStaging
 )
 
@@ -38,6 +41,13 @@ Set-StrictMode -Version Latest
 
 if (-not $IsWindows) {
     throw 'Formal win-x64 releases must be built on Windows.'
+}
+
+try {
+    [Diagnostics.Process]::GetCurrentProcess().PriorityClass =
+        [Diagnostics.ProcessPriorityClass]::BelowNormal
+} catch {
+    Write-Warning "Unable to lower the formal-build process priority: $($_.Exception.Message)"
 }
 if ($Version -match '(?i)(?:^|[.-])(preview|alpha)(?:[.-]|$)' -or
     ($Channel -eq 'stable' -and $Version.Contains('-'))) {
@@ -466,6 +476,7 @@ function Get-PublishArguments {
         '--runtime', 'win-x64',
         '--self-contained', 'true',
         '--no-restore',
+        "-m:$MaxBuildConcurrency",
         '--output', $Destination,
         '--nologo',
         '-p:PublishSingleFile=true',
@@ -615,15 +626,27 @@ New-Item -ItemType Directory -Path $testResultsRoot -Force | Out-Null
 [IO.File]::WriteAllText($stagingMarker, 'muhun.mcsv.formal-staging:1', [Text.UTF8Encoding]::new($false))
 
 $buildCompleted = $false
+$heavyBuildMutex = [Threading.Mutex]::new($false, 'Local\Muhun.Mcsv.HeavyBuild.v1')
+$heavyBuildMutexHeld = $false
 try {
+    try {
+        $heavyBuildMutexHeld = $heavyBuildMutex.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $heavyBuildMutexHeld = $true
+    }
+    if (-not $heavyBuildMutexHeld) {
+        throw 'Another Muhun MCSV heavy build pipeline is already running in this Windows session.'
+    }
+
     Invoke-Dotnet @('--version')
-    Invoke-Dotnet @('restore', $solution, '--locked-mode', '--nologo')
+    Invoke-Dotnet @('restore', $solution, '--locked-mode', '--nologo', "-m:$MaxBuildConcurrency")
     Assert-NoVulnerablePackages
     Invoke-Dotnet @(
         'build', $solution,
         '--configuration', 'Release',
         '--no-restore',
         '--nologo',
+        "-m:$MaxBuildConcurrency",
         '-p:ContinuousIntegrationBuild=true',
         '-p:Deterministic=true',
         '-p:IncludeSourceRevisionInInformationalVersion=false',
@@ -651,12 +674,13 @@ try {
         throw "Formal release requires the exact eleven test projects: $($actualTestProjects -join ', ')"
     }
     foreach ($testProject in $testProjects) {
-        Invoke-Dotnet @('restore', $testProject.FullName, '--locked-mode', '--nologo')
         $testArguments = @(
             'test', $testProject.FullName,
             '--configuration', 'Release',
+            '--no-build',
             '--no-restore',
             '--nologo',
+            "-m:$MaxBuildConcurrency",
             '--logger', "trx;LogFileName=$($testProject.BaseName).trx",
             '--results-directory', $testResultsRoot,
             '-p:IncludeSourceRevisionInInformationalVersion=false',
@@ -704,8 +728,20 @@ try {
             Destination = Join-Path $payloadRoot 'updater-win-x64'
         }
     )
+    $providerProject = Join-Path $projectRoot `
+        'src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj'
+    # RID-specific lock data is intentionally scoped to publishable source projects. Including
+    # test projects in a solution-wide RID restore is invalid because their lock files are
+    # framework-only. These restores are incremental and never rebuild the solution.
+    foreach ($publishRestoreProject in @($publishProjects.Project) + @($providerProject)) {
+        Invoke-Dotnet @(
+            'restore', $publishRestoreProject,
+            '--runtime', 'win-x64',
+            '--locked-mode',
+            '--nologo',
+            "-m:$MaxBuildConcurrency")
+    }
     foreach ($publish in $publishProjects) {
-        Invoke-Dotnet @('restore', $publish.Project, '--runtime', 'win-x64', '--locked-mode', '--nologo')
         Invoke-Dotnet (Get-PublishArguments `
             -Project $publish.Project `
             -Destination $publish.Destination)
@@ -726,9 +762,6 @@ try {
             $false)
     }
 
-    $providerProject = Join-Path $projectRoot `
-        'src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj'
-    Invoke-Dotnet @('restore', $providerProject, '--runtime', 'win-x64', '--locked-mode', '--nologo')
     Invoke-Dotnet (Get-PublishArguments `
         -Project $providerProject `
         -Destination $builtinProviderRoot)
@@ -761,6 +794,10 @@ try {
         }
         Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
     }
+    if ($heavyBuildMutexHeld) {
+        $heavyBuildMutex.ReleaseMutex()
+    }
+    $heavyBuildMutex.Dispose()
 }
 
 Write-Host "Formal release completed: $([IO.Path]::GetFullPath($OutputDirectory))"

@@ -10,6 +10,19 @@ public sealed record PortOccupancySnapshot(
 /// <summary>Reads the current local port usage without retaining allocation state.</summary>
 public static class SystemPortOccupancy
 {
+    /// <summary>
+    /// Captures only TCP listeners for Minecraft's primary server port.  Querying UDP listeners
+    /// can be materially slower on Windows and cannot affect the primary TCP assignment.
+    /// </summary>
+    public static PortOccupancySnapshot CaptureTcp()
+    {
+        var properties = IPGlobalProperties.GetIPGlobalProperties();
+        var tcpPorts = properties.GetActiveTcpListeners()
+            .Select(endpoint => endpoint.Port)
+            .ToHashSet();
+        return new PortOccupancySnapshot(tcpPorts, new HashSet<int>());
+    }
+
     public static PortOccupancySnapshot Capture()
     {
         var properties = IPGlobalProperties.GetIPGlobalProperties();

@@ -9,12 +9,14 @@ internal sealed record ProductServiceServerProjection(
     ProductServerSummary Summary,
     ProductServerStatus Status,
     ProductServerRegistration Registration,
+    bool RegistrationChanged,
     ProductConsolePage Console,
     bool ReplaceConsole);
 
 internal sealed record ProductServiceDesktopSnapshot(
     ProductServiceConnectionResult Connection,
-    IReadOnlyList<ProductServiceServerProjection> Servers);
+    IReadOnlyList<ProductServiceServerProjection> Servers,
+    bool IsComplete = true);
 
 public interface IProductUpdateClient
 {
@@ -140,6 +142,95 @@ internal sealed class ProductServiceDesktopController :
         return await RefreshCoreAsync(ids, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Refreshes one newly committed server without re-listing and re-projecting every existing
+    /// registration.  The returned snapshot is explicitly partial so the UI never treats absent
+    /// rows as deleted.
+    /// </summary>
+    public async Task<ProductServiceDesktopSnapshot> RefreshServerAsync(
+        Guid serverId,
+        CancellationToken cancellationToken = default)
+    {
+        if (serverId == Guid.Empty)
+        {
+            throw new ArgumentException("Server id must not be empty.", nameof(serverId));
+        }
+
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var connection = await ProductServiceConnectionProbe.ProbeAsync(_client, cancellationToken)
+                .ConfigureAwait(false);
+            if (!connection.IsConnected)
+            {
+                return new ProductServiceDesktopSnapshot(connection, [], IsComplete: false);
+            }
+
+            try
+            {
+                var status = await _client.GetStatusAsync(serverId, cancellationToken)
+                    .ConfigureAwait(false);
+                var registration = await _client.GetRegistrationAsync(serverId, cancellationToken)
+                    .ConfigureAwait(false);
+                ValidateRegistration(registration, status.Server);
+                _registrations[serverId] = registration;
+
+                var requestedCursor = _consoleCursors.GetValueOrDefault(serverId);
+                var console = await _client.ReadConsoleAsync(
+                        serverId,
+                        requestedCursor,
+                        ConsolePageSize,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                ValidateProjection(status.Server, status, console, requestedCursor);
+                _consoleCursors[serverId] = console.NextCursor;
+
+                ProductServiceServerProjection[] projection =
+                [
+                    new(
+                        status.Server,
+                        status,
+                        registration,
+                        true,
+                        console,
+                        console.HistoryGap),
+                ];
+                return new ProductServiceDesktopSnapshot(
+                    connection,
+                    projection,
+                    IsComplete: false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                _ = error;
+                var failedConnection = await ProductServiceConnectionProbe
+                    .ProbeAsync(_client, cancellationToken)
+                    .ConfigureAwait(false);
+                if (failedConnection.IsConnected)
+                {
+                    failedConnection = new ProductServiceConnectionResult(
+                        ProductServiceConnectionState.Faulted,
+                        "service.refresh_failed",
+                        null);
+                }
+
+                return new ProductServiceDesktopSnapshot(
+                    failedConnection,
+                    [],
+                    IsComplete: false);
+            }
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
+    }
+
     private async Task<ProductServiceDesktopSnapshot> RefreshCoreAsync(
         IReadOnlySet<Guid>? consoleServerIds,
         CancellationToken cancellationToken)
@@ -180,6 +271,7 @@ internal sealed class ProductServiceDesktopController :
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var summary = status.Server;
+                    var registrationChanged = false;
                     if (!_registrations.TryGetValue(summary.Id, out var registration) ||
                         !RegistrationMatchesSummary(registration, summary))
                     {
@@ -187,6 +279,7 @@ internal sealed class ProductServiceDesktopController :
                             .ConfigureAwait(false);
                         ValidateRegistration(registration, summary);
                         _registrations[summary.Id] = registration;
+                        registrationChanged = true;
                     }
                     var requestedCursor = _consoleCursors.GetValueOrDefault(summary.Id);
                     var shouldReadConsole = consoleServerIds is null
@@ -214,6 +307,7 @@ internal sealed class ProductServiceDesktopController :
                         status.Server,
                         status,
                         registration,
+                        registrationChanged,
                         console,
                         console.HistoryGap));
                 }
@@ -607,6 +701,11 @@ internal sealed class ProductServiceDesktopController :
             throw new InvalidDataException("Service returned a cross-server projection.");
         }
 
+        if (status.Java is { } java && !IsSafeJavaStatus(java))
+        {
+            throw new InvalidDataException("Service returned invalid Java runtime status metadata.");
+        }
+
         if (console.RequestedAfterCursor != requestedCursor ||
             console.OldestAvailableCursor < 0 ||
             console.NextCursor < 0 ||
@@ -618,6 +717,22 @@ internal sealed class ProductServiceDesktopController :
             throw new InvalidDataException("Service returned an invalid console cursor page.");
         }
     }
+
+    private static bool IsSafeJavaStatus(ProductServerJavaRuntimeSummary java)
+        => (!java.Available || java.Configured) &&
+           java.MajorVersion is null or >= 1 and <= 99 &&
+           IsSafeOptionalJavaMetadata(java.Version) &&
+           IsSafeRequiredJavaMetadata(java.RuntimeKind) &&
+           IsSafeRequiredJavaMetadata(java.Vendor) &&
+           IsSafeRequiredJavaMetadata(java.Architecture);
+
+    private static bool IsSafeOptionalJavaMetadata(string? value)
+        => value is null || IsSafeRequiredJavaMetadata(value);
+
+    private static bool IsSafeRequiredJavaMetadata(string? value)
+        => !string.IsNullOrWhiteSpace(value) &&
+           value.Length <= ProductServerAdministrationContract.MaximumJavaMetadataCharacters &&
+           !value.Any(char.IsControl);
 
     private static bool RegistrationMatchesSummary(
         ProductServerRegistration registration,

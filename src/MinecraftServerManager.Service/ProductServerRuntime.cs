@@ -24,6 +24,8 @@ public sealed class ProductServerRuntime : IAsyncDisposable
     private readonly ProductDesiredRunIntentStore _desiredRunIntent;
     private readonly ProductServerRestartBlocker _restartBlocker;
     private readonly ProductServerEulaCoordinator? _eulaCoordinator;
+    private readonly ProductServerAdministrationReader? _administrationReader;
+    private readonly ProductServerListenerStateReader? _listenerStateReader;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _operationGates = new();
     private readonly ConcurrentDictionary<Guid, ProductConsoleJournal> _journals = new();
     private int _shutdown;
@@ -34,7 +36,9 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         ServerProcessManager processManager,
         ProductDesiredRunIntentStore desiredRunIntent,
         ProductServerRestartBlocker? restartBlocker = null,
-        ProductServerEulaCoordinator? eulaCoordinator = null)
+        ProductServerEulaCoordinator? eulaCoordinator = null,
+        ProductServerAdministrationReader? administrationReader = null,
+        ProductServerListenerStateReader? listenerStateReader = null)
     {
         _registry = registry;
         _layout = layout;
@@ -42,6 +46,8 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         _desiredRunIntent = desiredRunIntent;
         _restartBlocker = restartBlocker ?? new ProductServerRestartBlocker();
         _eulaCoordinator = eulaCoordinator;
+        _administrationReader = administrationReader;
+        _listenerStateReader = listenerStateReader;
         _processManager.ConsoleLineReceived += OnConsoleLineReceived;
         _processManager.StateChanged += OnStateChanged;
     }
@@ -628,7 +634,10 @@ public sealed class ProductServerRuntime : IAsyncDisposable
                 null,
                 null,
                 null,
-                null);
+                null)
+            {
+                Java = _administrationReader?.CaptureJava(registration.Id),
+            };
         }
 
         var resource = snapshot.LastResourceSample is { } sample
@@ -646,7 +655,13 @@ public sealed class ProductServerRuntime : IAsyncDisposable
             snapshot.StartedAtUtc,
             snapshot.LastExitCode,
             resource,
-            Truncate(snapshot.LastError?.Message, 512));
+            Truncate(snapshot.LastError?.Message, 512))
+        {
+            Java = _administrationReader?.CaptureJava(registration.Id),
+            PortListening = snapshot.State is ServerState.Starting or ServerState.Running
+                ? _listenerStateReader?.TryIsListening(registration.Port)
+                : null,
+        };
     }
 
     private ServerInstance ToCoreInstance(ProductServerRegistration registration)

@@ -82,8 +82,42 @@ public sealed class ProductIpcContractTests
         Assert.Equal(new ProductApiVersion(1, 6), ProductApiProtocol.MinecraftEulaConsentVersion);
         Assert.Equal(new ProductApiVersion(1, 7), ProductApiProtocol.ServerPropertiesEditorVersion);
         Assert.Equal(new ProductApiVersion(1, 8), ProductApiProtocol.ServiceInstanceSettingsVersion);
-        Assert.Equal(ProductApiProtocol.ServiceInstanceSettingsVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.RuntimeStatusVersion);
+        Assert.Equal(ProductApiProtocol.RuntimeStatusVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void RuntimeStatus_JsonRoundTripPreservesPathFreeJavaAndListenerState()
+    {
+        var summary = new ProductServerSummary(
+            Guid.NewGuid(),
+            "Status contract",
+            ProductServerState.Running,
+            25566,
+            "Paper",
+            "1.21.1");
+        var expected = new ProductServerStatus(
+            summary,
+            Guid.NewGuid(),
+            123,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null)
+        {
+            Java = new ProductServerJavaRuntimeSummary(
+                true, true, 21, "21.0.8+9", "JDK", "Eclipse Adoptium", "x64"),
+            PortListening = true,
+        };
+
+        var json = JsonSerializer.Serialize(expected);
+        var actual = JsonSerializer.Deserialize<ProductServerStatus>(json);
+
+        Assert.NotNull(actual);
+        Assert.Equal(expected.Java, actual.Java);
+        Assert.True(actual.PortListening);
+        Assert.DoesNotContain("javaRuntimePath", json, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

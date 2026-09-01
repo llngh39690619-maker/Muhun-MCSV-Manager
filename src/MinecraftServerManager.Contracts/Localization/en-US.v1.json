@@ -223,6 +223,8 @@
     "server.state.faulted": "Error",
     "server.state.stopped": "Stopped",
     "server.java.unspecified": "Not specified",
+    "server.port.listening": "{0} · listening",
+    "server.port.notListening": "{0} · not listening",
     "server.memory.executableHint": "The effective -Xms and -Xmx values are generated from this mode at startup. Moving either slider switches to manual mode.",
     "server.memory.argumentFileHint": "A private .mcsv-runtime/memory.args file is generated at startup. The original user_jvm_args.txt is not overwritten, and legacy settings continue to use the original file until a mode is selected.",
     "server.console.lines": "{0:N0} lines",

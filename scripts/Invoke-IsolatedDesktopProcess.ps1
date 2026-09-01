@@ -45,6 +45,7 @@ public static class IsolatedDesktopProcess
     private const uint DesktopAllAccess = 0x000F01FF;
     private const uint StartfUseStdHandles = 0x00000100;
     private const uint CreateNoWindow = 0x08000000;
+    private const uint BelowNormalPriorityClass = 0x00004000;
     private const uint HandleFlagInherit = 0x00000001;
     private const uint Infinite = 0xFFFFFFFF;
     private const uint GenericRead = 0x80000000;
@@ -132,7 +133,7 @@ public static class IsolatedDesktopProcess
                     IntPtr.Zero,
                     IntPtr.Zero,
                     true,
-                    CreateNoWindow,
+                    CreateNoWindow | BelowNormalPriorityClass,
                     IntPtr.Zero,
                     workingDirectory,
                     ref startup,

@@ -496,6 +496,7 @@ public sealed class MainWindowProductServiceIntegrationTests
             Assert.True(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
             Assert.True(viewModel.DeleteServerCommand.CanExecute(projected));
             Assert.True(viewModel.OpenSelectedFolderCommand.CanExecute(null));
+            Assert.True(projected.IsControlChannelAvailable);
 
             projected.Name = "Edited display";
             projected.Port = 25577;

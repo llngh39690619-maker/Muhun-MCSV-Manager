@@ -25,7 +25,7 @@ public sealed class ProductServerPortCoordinator
         ProductServerRegistry registry,
         ProductDataLayout layout,
         ServerPropertiesPortService propertiesService)
-        : this(registry, layout, propertiesService, SystemPortOccupancy.Capture)
+        : this(registry, layout, propertiesService, SystemPortOccupancy.CaptureTcp)
     {
     }
 

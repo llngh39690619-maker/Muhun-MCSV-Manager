@@ -359,7 +359,21 @@ public sealed record ProductServerStatus(
     DateTimeOffset? StartedAtUtc,
     int? LastExitCode,
     ProductServerResourceSample? Resource,
-    string? LastError);
+    string? LastError)
+{
+    /// <summary>
+    /// Path-free Java metadata resolved by the Service from the runtime's release file.  Null is
+    /// retained for Services negotiated before API 1.9.
+    /// </summary>
+    public ProductServerJavaRuntimeSummary? Java { get; init; }
+
+    /// <summary>
+    /// Whether Windows currently reports any machine-level TCP listener on the active server
+    /// port while this server process is active. This is a readiness diagnostic, not PID ownership
+    /// proof. Null means that the process is inactive or the negotiated Service predates API 1.9.
+    /// </summary>
+    public bool? PortListening { get; init; }
+}
 
 public sealed record ProductConsoleEntry(
     long Cursor,

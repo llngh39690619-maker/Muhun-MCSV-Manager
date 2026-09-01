@@ -48,6 +48,19 @@ public sealed class ProductApiProtocolTests
     }
 
     [Fact]
+    public void Negotiate_Api18Client_RemainsCompatibleWithoutApi19RuntimeStatus()
+    {
+        var api18 = ProductApiProtocol.ServiceInstanceSettingsVersion;
+
+        var result = ProductApiProtocol.Negotiate(api18, api18);
+
+        Assert.True(result.IsCompatible);
+        Assert.Equal(api18, result.SelectedVersion);
+        Assert.True(api18.CompareTo(ProductApiProtocol.RuntimeStatusVersion) < 0);
+        Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.CurrentVersion);
+    }
+
+    [Fact]
     public void Negotiate_InvalidRange_Throws()
     {
         Assert.Throws<ArgumentException>(() =>

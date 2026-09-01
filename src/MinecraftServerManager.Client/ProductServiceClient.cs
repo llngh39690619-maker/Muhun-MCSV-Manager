@@ -109,7 +109,7 @@ public sealed class ProductServiceClient : IProductServiceClient
                     "protocol.payload_missing",
                     "Service status-list response did not include a page.");
             if (page.Offset != offset || page.NextOffset < offset || page.Servers.Count > 50 ||
-                page.Servers.Any(item => item.Server.Id == Guid.Empty || !seenIds.Add(item.Server.Id)))
+                page.Servers.Any(item => !IsSafeServerStatus(item) || !seenIds.Add(item.Server.Id)))
             {
                 throw new ProductServiceClientException(
                     "protocol.page_invalid",
@@ -350,11 +350,25 @@ public sealed class ProductServiceClient : IProductServiceClient
 
     private static bool IsSafeJavaSummary(ProductServerJavaRuntimeSummary? java)
         => java is not null &&
-           new[] { java.Version, java.RuntimeKind, java.Vendor, java.Architecture }
-               .Where(static value => value is not null)
-               .All(static value =>
-                   value!.Length <= ProductServerAdministrationContract.MaximumJavaMetadataCharacters &&
-                   !value.Any(char.IsControl));
+           (!java.Available || java.Configured) &&
+           java.MajorVersion is null or >= 1 and <= 99 &&
+           IsSafeOptionalJavaMetadata(java.Version) &&
+           IsSafeRequiredJavaMetadata(java.RuntimeKind) &&
+           IsSafeRequiredJavaMetadata(java.Vendor) &&
+           IsSafeRequiredJavaMetadata(java.Architecture);
+
+    private static bool IsSafeOptionalJavaMetadata(string? value)
+        => value is null || IsSafeRequiredJavaMetadata(value);
+
+    private static bool IsSafeRequiredJavaMetadata(string? value)
+        => !string.IsNullOrWhiteSpace(value) &&
+           value.Length <= ProductServerAdministrationContract.MaximumJavaMetadataCharacters &&
+           !value.Any(char.IsControl);
+
+    private static bool IsSafeServerStatus(ProductServerStatus? status)
+        => status is not null &&
+           status.Server.Id != Guid.Empty &&
+           (status.Java is null || IsSafeJavaSummary(status.Java));
 
     public async Task<ProductServerDeletionResult> DeleteServerPermanentlyAsync(
         Guid serverId,
@@ -1485,9 +1499,23 @@ public sealed class ProductServiceClient : IProductServiceClient
             $"Service returned an invalid or duplicate {resource} page.");
 
     private static ProductServerStatus RequireServer(ProductServerStatus? server)
-        => server ?? throw new ProductServiceClientException(
-            "protocol.payload_missing",
-            "Service response did not include server status.");
+    {
+        if (server is null)
+        {
+            throw new ProductServiceClientException(
+                "protocol.payload_missing",
+                "Service response did not include server status.");
+        }
+
+        if (!IsSafeServerStatus(server))
+        {
+            throw new ProductServiceClientException(
+                "protocol.payload_invalid",
+                "Service returned invalid server status metadata.");
+        }
+
+        return server;
+    }
 
     private static ProductServerImportStatus RequireImport(ProductServerImportStatus? import)
         => import ?? throw new ProductServiceClientException(

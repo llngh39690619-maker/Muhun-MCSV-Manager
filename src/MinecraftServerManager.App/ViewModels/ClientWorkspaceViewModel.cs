@@ -70,6 +70,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly SemaphoreSlim _contentGate = new(1, 1);
     private readonly SemaphoreSlim _contentDownloadInstallGate = new(1, 1);
     private readonly LatestOperationCoordinator _contentRefreshCoordinator;
+    private readonly BatchObservableCollection<ClientInstanceItemViewModel> _instances = [];
+    private readonly BatchObservableCollection<BedrockClientShortcutItemViewModel> _bedrockShortcuts = [];
+    private readonly BatchObservableCollection<MinecraftReleaseInfo> _releases = [];
+    private readonly BatchObservableCollection<ClientCatalogGameVersionChoice> _catalogGameVersions = [];
     private readonly BatchObservableCollection<ClientContentItemViewModel> _contentItems = [];
     private readonly Dictionary<Guid, MinecraftClientProcessSession> _runningSessions = [];
     private readonly HashSet<Task> _sessionObserverTasks = [];
@@ -93,6 +97,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private Task _contentDownloadBrowseTask = Task.CompletedTask;
     private Task _contentDownloadDetailsTask = Task.CompletedTask;
     private Task _contentDownloadPlanTask = Task.CompletedTask;
+    private Task _initialCatalogRefreshTask = Task.CompletedTask;
     private Task _loaderRefreshTask = Task.CompletedTask;
     private MinecraftReleaseCatalogSnapshot? _releaseSnapshot;
     private MinecraftReleaseInfo? _selectedRelease;
@@ -207,6 +212,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public ClientWorkspaceViewModel(
         ApplicationPaths paths,
         Func<NewMinecraftClientDefaultsSettings> getGlobalDefaults)
+        : this(paths, getGlobalDefaults, releaseCatalog: null, loaderCatalogs: null)
+    {
+    }
+
+    internal ClientWorkspaceViewModel(
+        ApplicationPaths paths,
+        Func<NewMinecraftClientDefaultsSettings> getGlobalDefaults,
+        IMinecraftReleaseCatalog? releaseCatalog,
+        IReadOnlyList<IMinecraftLoaderCatalogProvider>? loaderCatalogs)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _getGlobalDefaults = getGlobalDefaults ?? throw new ArgumentNullException(nameof(getGlobalDefaults));
@@ -221,8 +235,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _registry = new MinecraftClientRegistry(_paths.ClientRegistryFile);
         _bedrockShortcutRegistry = new BedrockClientShortcutRegistry(
             _paths.BedrockShortcutRegistryFile);
-        _releaseCatalog = new MojangReleaseCatalog(_catalogHttpClient);
-        _loaderCatalogs =
+        _releaseCatalog = releaseCatalog ?? new MojangReleaseCatalog(_catalogHttpClient);
+        _loaderCatalogs = loaderCatalogs ??
         [
             new FabricLoaderCatalogProvider(_catalogHttpClient),
             new ForgeLoaderCatalogProvider(_catalogHttpClient),
@@ -484,11 +498,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ContentDownloadJobs.CollectionChanged += OnContentDownloadJobsChanged;
     }
 
-    public ObservableCollection<ClientInstanceItemViewModel> Instances { get; } = [];
+    public ObservableCollection<ClientInstanceItemViewModel> Instances => _instances;
 
-    public ObservableCollection<BedrockClientShortcutItemViewModel> BedrockShortcuts { get; } = [];
+    public ObservableCollection<BedrockClientShortcutItemViewModel> BedrockShortcuts => _bedrockShortcuts;
 
-    public ObservableCollection<MinecraftReleaseInfo> Releases { get; } = [];
+    public ObservableCollection<MinecraftReleaseInfo> Releases => _releases;
 
     public ObservableCollection<ClientLoaderChoiceViewModel> LoaderChoices { get; } = [];
 
@@ -523,7 +537,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public ObservableCollection<ClientCatalogInstallJobViewModel> CatalogInstallJobs { get; } = [];
 
-    public ObservableCollection<ClientCatalogGameVersionChoice> CatalogGameVersions { get; } = [];
+    public ObservableCollection<ClientCatalogGameVersionChoice> CatalogGameVersions =>
+        _catalogGameVersions;
 
     public IReadOnlyList<ClientCatalogLoaderChoice> CatalogLoaders => _catalogLoaders;
 
@@ -1971,6 +1986,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     internal async Task InitializeForDiagnosticsAsync()
     {
         await RunGuardedAsync(InitializeAsync);
+        await _initialCatalogRefreshTask;
         await _loaderRefreshTask;
     }
 
@@ -2016,10 +2032,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             var document = await _registry.LoadAsync();
             var bedrockDocument = await _bedrockShortcutRegistry.LoadAsync(
                 _lifetimeCancellation.Token);
-            Instances.Clear();
-            BedrockShortcuts.Clear();
             var staleProcessMarkers = new Dictionary<Guid, MinecraftClientProcessIdentity>();
             var recoveredProcessCount = 0;
+            var instanceProjection = new List<ClientInstanceItemViewModel>(document.Instances.Count);
             foreach (var instance in document.Instances.OrderByDescending(item => item.LastPlayedAtUtc ?? item.CreatedAtUtc))
             {
                 var item = new ClientInstanceItemViewModel(instance);
@@ -2042,14 +2057,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                     }
                 }
 
-                Instances.Add(item);
+                instanceProjection.Add(item);
             }
+            _instances.ReplaceAll(instanceProjection);
 
-            foreach (var shortcut in bedrockDocument.Shortcuts
-                         .OrderByDescending(item => item.CreatedAtUtc))
-            {
-                BedrockShortcuts.Add(new BedrockClientShortcutItemViewModel(shortcut));
-            }
+            _bedrockShortcuts.ReplaceAll(
+                bedrockDocument.Shortcuts
+                    .OrderByDescending(item => item.CreatedAtUtc)
+                    .Select(static shortcut => new BedrockClientShortcutItemViewModel(shortcut)));
             OnPropertyChanged(nameof(HasBedrockShortcuts));
 
             if (staleProcessMarkers.Count > 0)
@@ -2072,7 +2087,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             RefreshAccounts();
             _accountRefreshTask = RefreshAccountsInBackgroundAsync(_lifetimeCancellation.Token);
-            await RefreshCatalogCoreAsync();
             if (recoveredProcessCount > 0)
             {
                 StatusText = L("client.vm.status.recovered", recoveredProcessCount);
@@ -2094,6 +2108,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                     ShowSelectedInstance();
                 }
             }
+
+            // Local instances are usable as soon as their durable registries are projected.
+            // Mojang's remote release catalog is creation-page data and must not keep the
+            // dashboard in its startup critical path. Diagnostics explicitly await this task.
+            _initialCatalogRefreshTask = RunGuardedAsync(
+                () => RefreshCatalogCoreAsync(_lifetimeCancellation.Token));
         }
         finally
         {
@@ -2135,7 +2155,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         IsBusy = true;
         try
         {
-            await RefreshCatalogCoreAsync();
+            if (!_initialCatalogRefreshTask.IsCompleted)
+            {
+                await _initialCatalogRefreshTask;
+                return;
+            }
+
+            await RefreshCatalogCoreAsync(_lifetimeCancellation.Token);
         }
         finally
         {
@@ -2143,25 +2169,20 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
-    private async Task RefreshCatalogCoreAsync()
+    private async Task RefreshCatalogCoreAsync(CancellationToken cancellationToken = default)
     {
         StatusText = L("client.vm.status.loadingMojang");
         ProgressValue = 0.05;
-        var snapshot = await _releaseCatalog.GetStableReleasesAsync();
+        var snapshot = await _releaseCatalog.GetStableReleasesAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         _releaseSnapshot = snapshot;
-        Releases.Clear();
-        foreach (var release in snapshot.Releases)
-        {
-            Releases.Add(release);
-        }
+        _releases.ReplaceAll(snapshot.Releases);
 
         var selectedCatalogVersion = SelectedCatalogGameVersion?.Version;
-        CatalogGameVersions.Clear();
-        CatalogGameVersions.Add(new ClientCatalogGameVersionChoice(null, L("client.vm.catalog.allVersions")));
-        foreach (var release in snapshot.Releases)
-        {
-            CatalogGameVersions.Add(new ClientCatalogGameVersionChoice(release.Id, release.Id));
-        }
+        _catalogGameVersions.ReplaceAll(
+            new[] { new ClientCatalogGameVersionChoice(null, L("client.vm.catalog.allVersions")) }
+                .Concat(snapshot.Releases.Select(static release =>
+                    new ClientCatalogGameVersionChoice(release.Id, release.Id))));
 
         SelectedCatalogGameVersion = CatalogGameVersions.FirstOrDefault(choice =>
                                          string.Equals(
@@ -6600,6 +6621,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             await Task.WhenAll(
                 observerTasks.Concat(profileSynchronizationTasks)
                     .Concat(contentDownloadInstallTasks)
+                    .Append(_initialCatalogRefreshTask)
+                    .Append(_loaderRefreshTask)
                     .Append(_catalogBrowseTask)
                     .Append(_catalogArtworkTask)
                     .Append(_catalogVersionTask)

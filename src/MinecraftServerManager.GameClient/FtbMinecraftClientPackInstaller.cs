@@ -542,18 +542,45 @@ public sealed class FtbMinecraftClientPackInstaller
                                _instancesRoot,
                                receipt.FinalDirectoryPath))
                     {
-                        ValidatePromotedFinalTree(
-                            receipt.FinalDirectoryPath,
-                            receipt.FinalIdentity,
-                            "registered FTB instance before recovery cleanup");
-                        _duringRegisteredRecoveryForTesting?.Invoke(
-                            receipt.FinalDirectoryPath);
-                        await DeleteReceiptOperationRootIfPresentAsync(receipt, cancellationToken)
-                            .ConfigureAwait(false);
-                        ValidatePromotedFinalTree(
-                            receipt.FinalDirectoryPath,
-                            receipt.FinalIdentity,
-                            "registered FTB instance after recovery cleanup");
+                        if (Directory.Exists(receipt.OperationDirectoryPath))
+                        {
+                            ValidatePromotedFinalTree(
+                                receipt.FinalDirectoryPath,
+                                receipt.FinalIdentity,
+                                "registered FTB instance before recovery cleanup");
+                            _duringRegisteredRecoveryForTesting?.Invoke(
+                                receipt.FinalDirectoryPath);
+                            await DeleteReceiptOperationRootIfPresentAsync(receipt, cancellationToken)
+                                .ConfigureAwait(false);
+                            ValidatePromotedFinalTree(
+                                receipt.FinalDirectoryPath,
+                                receipt.FinalIdentity,
+                                "registered FTB instance after recovery cleanup");
+                        }
+                        else
+                        {
+                            if (File.Exists(receipt.OperationDirectoryPath))
+                            {
+                                throw new InvalidDataException(
+                                    "A pending FTB receipt operation path became a file.");
+                            }
+
+                            // A committed receipt remains for the registry entry's lifetime. Once
+                            // its operation tree is gone, recursively walking the potentially large
+                            // pack at every startup adds no cleanup safety. Retain the pre/post root
+                            // identity checks so the testing hook and a concurrent root replacement
+                            // still fail closed.
+                            EnsureDirectoryIdentity(
+                                receipt.FinalDirectoryPath,
+                                receipt.FinalIdentity,
+                                "registered FTB instance before stable receipt validation");
+                            _duringRegisteredRecoveryForTesting?.Invoke(
+                                receipt.FinalDirectoryPath);
+                            EnsureDirectoryIdentity(
+                                receipt.FinalDirectoryPath,
+                                receipt.FinalIdentity,
+                                "registered FTB instance after stable receipt validation");
+                        }
                     }
 
                     // Keep this committed ownership receipt for the full lifetime of the registry

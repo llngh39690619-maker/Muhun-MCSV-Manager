@@ -101,6 +101,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly SemaphoreSlim _settingsSaveGate = new(1, 1);
     private readonly SemaphoreSlim _normalWindowSizePersistenceGate = new(1, 1);
     private readonly ConcurrentDictionary<Guid, int> _pendingLaunchPorts = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingProductServiceImports = new();
     private readonly ConcurrentDictionary<Guid, Guid> _pendingLaunchPortSessions = new();
     private readonly ConcurrentDictionary<Guid, ServerPropertiesDocumentFormatToken> _serverPropertiesFormats = new();
     private readonly ConcurrentDictionary<Guid, string> _serviceServerPropertiesRevisions = new();
@@ -1275,7 +1276,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
                 var snapshot = await _productServiceController.RefreshFocusedAsync(
-                        SelectedServer?.Id,
+                        IsClientWorkspace ? null : SelectedServer?.Id,
                         cancellationToken)
                     .ConfigureAwait(false);
                 var dispatcher = Application.Current?.Dispatcher;
@@ -1507,7 +1508,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         var serviceIds = snapshot.Servers.Select(server => server.Summary.Id).ToHashSet();
-        foreach (var stale in Servers.Where(server => !serviceIds.Contains(server.Id)).ToArray())
+        foreach (var stale in Servers.Where(server =>
+                     snapshot.IsComplete &&
+                     !serviceIds.Contains(server.Id) &&
+                     !_pendingProductServiceImports.ContainsKey(server.Id)).ToArray())
         {
             Servers.Remove(stale);
             _serviceServerPropertiesRevisions.TryRemove(stale.Id, out _);
@@ -1538,7 +1542,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     hasLocalMetadata: hasLocalMetadata);
                 Servers.Add(server);
             }
-            else if (!_dirtyProductServiceRegistrations.Contains(server.Id))
+            else if (projection.RegistrationChanged &&
+                     !_dirtyProductServiceRegistrations.Contains(server.Id))
             {
                 _applyingProductServiceProjection = true;
                 try
@@ -1552,6 +1557,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
             }
 
+            // A newly imported pending row is intentionally created with its controls disabled.
+            // Apply every authoritative Service projection to the row's channel availability,
+            // even when the overall connection state itself did not change during the import.
+            server.IsControlChannelAvailable = IsProductServiceConnected;
             ApplyProductServiceStatus(server, projection.Status);
             ApplyProductServicePresence(server, projection.Status, projection.Console.Entries);
             foreach (var entry in projection.Console.Entries)
@@ -1692,6 +1701,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ProductServerStatus status)
     {
         server.SetState((ServerState)status.Server.State);
+        server.UpdateServiceRuntimeStatus(status.Java, status.PortListening);
         if (status.Server.State is ProductServerState.Starting
             or ProductServerState.Running
             or ProductServerState.Stopping)
@@ -2376,15 +2386,103 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ApplyNewServerDefaults(model);
         }
 
-        _ = await controller.ImportAsync(model, migrationKey, cancellationToken).ConfigureAwait(false);
-        if (persistLocalMetadata)
+        var pendingProjectionAdded = await AddPendingProductServiceProjectionAsync(
+                model,
+                cancellationToken)
+            .ConfigureAwait(false);
+        try
         {
-            await PersistServiceMetadataAsync(model, cancellationToken).ConfigureAwait(false);
+            _ = await controller.ImportAsync(model, migrationKey, cancellationToken).ConfigureAwait(false);
+            if (persistLocalMetadata)
+            {
+                await PersistServiceMetadataAsync(model, cancellationToken).ConfigureAwait(false);
+            }
+
+            var snapshot = await controller.RefreshServerAsync(model.Id, cancellationToken)
+                .ConfigureAwait(false);
+            await ApplyProductServiceSnapshotOnUiAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            _pendingProductServiceImports.TryRemove(model.Id, out _);
+        }
+        catch
+        {
+            _pendingProductServiceImports.TryRemove(model.Id, out _);
+            if (pendingProjectionAdded)
+            {
+                await RemovePendingProductServiceProjectionAsync(model.Id).ConfigureAwait(false);
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<bool> AddPendingProductServiceProjectionAsync(
+        ServerInstance model,
+        CancellationToken cancellationToken)
+    {
+        if (!_pendingProductServiceImports.TryAdd(model.Id, 0))
+        {
+            throw new InvalidOperationException(L("jobs.error.alreadyQueued", model.Name));
         }
 
-        var snapshot = await controller.RefreshFocusedAsync(model.Id, cancellationToken)
-            .ConfigureAwait(false);
-        await ApplyProductServiceSnapshotOnUiAsync(snapshot, cancellationToken).ConfigureAwait(false);
+        bool AddOnUi()
+        {
+            if (Servers.Any(server => server.Id == model.Id))
+            {
+                return false;
+            }
+
+            CaptureInitialServiceAppearancePreference(model);
+            _instanceModels[model.Id] = model;
+            _playerPresenceCoreTypes[model.Id] = model.CoreType;
+            var pending = CreateServerViewModel(
+                model,
+                isServiceManaged: true,
+                hasLocalMetadata: true);
+            pending.IsControlChannelAvailable = false;
+            Servers.Add(pending);
+            OnPropertyChanged(nameof(ServerCountText));
+            OnPropertyChanged(nameof(RunningSummary));
+            return true;
+        }
+
+        try
+        {
+            var dispatcher = Application.Current?.Dispatcher;
+            return dispatcher is null || dispatcher.CheckAccess()
+                ? AddOnUi()
+                : await dispatcher.InvokeAsync(AddOnUi, DispatcherPriority.DataBind);
+        }
+        catch
+        {
+            _pendingProductServiceImports.TryRemove(model.Id, out _);
+            throw;
+        }
+    }
+
+    private async Task RemovePendingProductServiceProjectionAsync(Guid serverId)
+    {
+        void RemoveOnUi()
+        {
+            var pending = Servers.FirstOrDefault(server => server.Id == serverId);
+            if (pending is not null)
+            {
+                Servers.Remove(pending);
+            }
+
+            _instanceModels.TryRemove(serverId, out _);
+            _playerPresenceCoreTypes.TryRemove(serverId, out _);
+            OnPropertyChanged(nameof(ServerCountText));
+            OnPropertyChanged(nameof(RunningSummary));
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            RemoveOnUi();
+            return;
+        }
+
+        await dispatcher.InvokeAsync(RemoveOnUi, DispatcherPriority.DataBind);
     }
 
     private void EnsureConcreteJavaForServiceImport(ServerInstance model)

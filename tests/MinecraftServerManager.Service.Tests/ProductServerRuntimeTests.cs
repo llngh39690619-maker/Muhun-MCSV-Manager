@@ -2,6 +2,7 @@ using System.Diagnostics;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Core.Runtime;
+using MinecraftServerManager.Core.Services;
 using MinecraftServerManager.Service;
 
 namespace MinecraftServerManager.Service.Tests;
@@ -49,6 +50,27 @@ public sealed class ProductServerRuntimeTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => runtime.UpsertAsync(
             fixture.Registration with { Name = "Changed while running" }));
+    }
+
+    [Fact]
+    public async Task StatusProjectsServiceResolvedJavaAndOnlyActiveListenerState()
+    {
+        var fixture = await RuntimeFixture.CreateAsync(includeRuntimeStatusReaders: true);
+        await using var runtime = fixture.Runtime;
+
+        var stopped = runtime.GetStatus(fixture.Registration.Id);
+
+        Assert.NotNull(stopped.Java);
+        Assert.True(stopped.Java.Available);
+        Assert.Equal(21, stopped.Java.MajorVersion);
+        Assert.Null(stopped.PortListening);
+
+        await runtime.StartAsync(fixture.Registration.Id);
+        var running = runtime.GetStatus(fixture.Registration.Id);
+
+        Assert.Equal(ProductServerState.Running, running.Server.State);
+        Assert.True(running.PortListening);
+        Assert.Equal("Eclipse Adoptium", running.Java?.Vendor);
     }
 
     [Fact]
@@ -286,7 +308,7 @@ public sealed class ProductServerRuntimeTests
         ProductServerRegistry Registry,
         ServerProcessManager Manager)
     {
-        public static async Task<RuntimeFixture> CreateAsync()
+        public static async Task<RuntimeFixture> CreateAsync(bool includeRuntimeStatusReaders = false)
         {
             var layout = ProductServerRegistryTests.CreateLayout();
             var registration = ProductServerRegistryTests.Registration();
@@ -298,6 +320,13 @@ public sealed class ProductServerRuntimeTests
             Directory.CreateDirectory(Path.GetDirectoryName(javaPath)!);
             File.WriteAllBytes(Path.Combine(serverDirectory, "server.jar"), []);
             File.WriteAllBytes(javaPath, []);
+            if (includeRuntimeStatusReaders)
+            {
+                var runtimeHome = Directory.GetParent(Path.GetDirectoryName(javaPath)!)!.FullName;
+                File.WriteAllText(
+                    Path.Combine(runtimeHome, "release"),
+                    "JAVA_VERSION=\"21.0.8+9\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\nOS_ARCH=\"amd64\"\n");
+            }
 
             var registry = new ProductServerRegistry(layout);
             await registry.LoadAsync();
@@ -313,8 +342,24 @@ public sealed class ProductServerRuntimeTests
                     MonitorDrainTimeout = TimeSpan.FromSeconds(1),
                 },
                 factory);
+            var administration = includeRuntimeStatusReaders
+                ? new ProductServerAdministrationReader(layout, registry, TimeProvider.System)
+                : null;
+            var listener = includeRuntimeStatusReaders
+                ? new ProductServerListenerStateReader(
+                    () => new PortOccupancySnapshot(
+                        new HashSet<int> { registration.Port },
+                        new HashSet<int>()),
+                    TimeProvider.System)
+                : null;
             return new RuntimeFixture(
-                new ProductServerRuntime(registry, layout, manager, desiredRunIntent),
+                new ProductServerRuntime(
+                    registry,
+                    layout,
+                    manager,
+                    desiredRunIntent,
+                    administrationReader: administration,
+                    listenerStateReader: listener),
                 factory,
                 registration,
                 desiredRunIntent,

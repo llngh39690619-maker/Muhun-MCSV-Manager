@@ -193,6 +193,42 @@ public sealed class ProductServiceClientTests
         await server;
     }
 
+    [Theory]
+    [InlineData("major-too-large")]
+    [InlineData("available-not-configured")]
+    [InlineData("empty-required-metadata")]
+    public async Task GetStatus_RejectsUnsafeJavaRuntimeMetadata(string invalidCase)
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var java = invalidCase switch
+        {
+            "major-too-large" => new ProductServerJavaRuntimeSummary(
+                true, true, 100, "100", "JDK", "Vendor", "x64"),
+            "available-not-configured" => new ProductServerJavaRuntimeSummary(
+                false, true, 21, "21", "JDK", "Vendor", "x64"),
+            "empty-required-metadata" => new ProductServerJavaRuntimeSummary(
+                true, true, 21, "21", "", "Vendor", "x64"),
+            _ => throw new ArgumentOutOfRangeException(nameof(invalidCase)),
+        };
+        var server = RunServerOnceAsync(pipeName, request => new ProductIpcResponse(
+            1,
+            request.RequestId,
+            true,
+            null,
+            null)
+        {
+            Server = CreateStatus(serverId, "Unsafe Java") with { Java = java },
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(
+            () => client.GetStatusAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
     [Fact]
     public async Task PlayerList_UsesPathFreeBoundedServiceProjection()
     {

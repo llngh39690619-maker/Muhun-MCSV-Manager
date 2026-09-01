@@ -2,6 +2,7 @@ using System.IO;
 using System.Collections.Specialized;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
+using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Core.Services;
 
@@ -256,6 +257,34 @@ public sealed class ServerInstanceViewModelTests
         viewModel.SetState(state);
 
         Assert.Equal(25565, viewModel.ActivePort);
+    }
+
+    [Fact]
+    public void ServiceRuntimeStatusProjectsJavaAndActualListenerWithoutExposingAPath()
+    {
+        LocalizationService.Current.SetCulture("en-US");
+        try
+        {
+            var viewModel = CreateViewModel();
+            viewModel.Port = 25566;
+            viewModel.SetState(ServerState.Running);
+            var java = new ProductServerJavaRuntimeSummary(
+                true, true, 21, "21.0.8+9", "JDK", "Eclipse Adoptium", "x64");
+
+            viewModel.UpdateServiceRuntimeStatus(java, portListening: true);
+
+            Assert.Equal("Java 21", viewModel.JavaDisplay);
+            Assert.Equal(21, viewModel.Model.JavaMajorVersion);
+            Assert.Contains("25566", viewModel.ConnectionDisplay, StringComparison.Ordinal);
+            Assert.Contains("listening", viewModel.ConnectionDisplay, StringComparison.OrdinalIgnoreCase);
+
+            viewModel.UpdateServiceRuntimeStatus(java, portListening: false);
+            Assert.Contains("not listening", viewModel.ConnectionDisplay, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            LocalizationService.Current.SetCulture("zh-TW");
+        }
     }
 
     [Theory]

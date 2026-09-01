@@ -13,6 +13,13 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $PSNativeCommandUseErrorActionPreference = $false
 
+try {
+    [Diagnostics.Process]::GetCurrentProcess().PriorityClass =
+        [Diagnostics.ProcessPriorityClass]::BelowNormal
+} catch {
+    Write-Warning "Unable to lower the Android-build process priority: $($_.Exception.Message)"
+}
+
 $productId = 'muhun.mcsv.manager'
 $packageId = 'com.muhun.mcsv.remote'
 $androidBuildToolsVersion = '36.0.0'
@@ -213,7 +220,18 @@ $savedEnvironment = @{
 }
 $gradleUserHome = Assert-SafeChildPath $ToolingRoot (Join-Path $ToolingRoot 'android-gradle-user-home')
 [IO.Directory]::CreateDirectory($gradleUserHome) | Out-Null
+$heavyBuildMutex = [Threading.Mutex]::new($false, 'Local\Muhun.Mcsv.HeavyBuild.v1')
+$heavyBuildMutexHeld = $false
 try {
+    try {
+        $heavyBuildMutexHeld = $heavyBuildMutex.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $heavyBuildMutexHeld = $true
+    }
+    if (-not $heavyBuildMutexHeld) {
+        throw 'Another Muhun MCSV heavy build pipeline is already running in this Windows session.'
+    }
+
     $env:JAVA_HOME = $toolchain.JavaHome
     $env:ANDROID_HOME = $toolchain.AndroidSdkRoot
     $env:ANDROID_SDK_ROOT = $toolchain.AndroidSdkRoot
@@ -226,12 +244,23 @@ try {
     $env:MCSV_ANDROID_KEY_PASSWORD = Get-PlainText $keySecure
     $env:JAVA_TOOL_OPTIONS = '-Duser.language=en -Duser.country=US -Dfile.encoding=UTF-8'
 
+    # Remove only the expected release outputs. Gradle will rebuild a missing output while
+    # retaining safe incremental test, lint, dependency, and compilation state.
+    $expectedApk = Assert-SafeChildPath $androidRoot `
+        (Join-Path $androidRoot 'app\build\outputs\apk\release\app-release.apk')
+    foreach ($expectedOutput in @($expectedApk, "$expectedApk.idsig")) {
+        if (Test-Path -LiteralPath $expectedOutput -PathType Leaf) {
+            Assert-NoReparseAncestors $expectedOutput 'Android expected release output'
+            [IO.File]::Delete($expectedOutput)
+        }
+    }
+
     Push-Location $androidRoot
     try {
         & $gradlew @(
             '--no-daemon',
+            '--max-workers=2',
             '--stacktrace',
-            'clean',
             'testDebugUnitTest',
             'lintRelease',
             'assembleRelease',
@@ -365,4 +394,8 @@ finally {
     foreach ($name in $savedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
     }
+    if ($heavyBuildMutexHeld) {
+        $heavyBuildMutex.ReleaseMutex()
+    }
+    $heavyBuildMutex.Dispose()
 }

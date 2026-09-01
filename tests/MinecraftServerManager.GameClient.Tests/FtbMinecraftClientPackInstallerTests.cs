@@ -933,6 +933,46 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task RecoverPendingPromotionsAsync_StableRegisteredReceiptDoesNotEnumerateFinalTree()
+    {
+        var fixture = CreateFixture();
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+        var installed = await installer.InstallAsync(Request(), javaExecutablePath: null);
+        var outside = Path.Combine(_root, "stable-receipt-junction-target");
+        Directory.CreateDirectory(outside);
+        var sentinel = Path.Combine(outside, "must-survive.txt");
+        await File.WriteAllTextAsync(sentinel, "outside-content");
+        CreateDirectoryJunction(
+            Path.Combine(installed.Instance.DirectoryPath, "stable-receipt-link"),
+            outside);
+        var hookCalled = false;
+        var recovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            duringRegisteredRecovery: registered =>
+            {
+                Assert.Equal(installed.Instance.DirectoryPath, registered);
+                hookCalled = true;
+            });
+
+        await recovery.RecoverPendingPromotionsAsync();
+
+        Assert.True(hookCalled);
+        Assert.True(Directory.Exists(installed.Instance.DirectoryPath));
+        Assert.Equal("outside-content", await File.ReadAllTextAsync(sentinel));
+        Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
     public async Task RecoverPendingPromotionsAsync_OutOfMemoryBubblesOriginalAndRetainsReceipt()
     {
         var fixture = CreateFixture();

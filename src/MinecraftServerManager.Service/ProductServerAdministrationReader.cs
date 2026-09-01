@@ -14,6 +14,10 @@ public sealed partial class ProductServerAdministrationReader(
     ProductServerRegistry registry,
     TimeProvider timeProvider)
 {
+    private static readonly TimeSpan JavaMetadataCacheLifetime = TimeSpan.FromMinutes(5);
+    private readonly object _javaCacheSync = new();
+    private readonly Dictionary<Guid, JavaMetadataCacheEntry> _javaCache = [];
+
     private static readonly EnumerationOptions AddonEnumerationOptions = new()
     {
         RecurseSubdirectories = false,
@@ -33,7 +37,7 @@ public sealed partial class ProductServerAdministrationReader(
             return null;
         }
 
-        var java = CaptureJava(registration, cancellationToken);
+        var java = CaptureJavaCached(registration, cancellationToken);
         var addons = new List<ProductServerAddonSummary>(
             ProductServerAdministrationContract.MaximumListedAddons);
         var addonsAvailable = false;
@@ -92,8 +96,38 @@ public sealed partial class ProductServerAdministrationReader(
     {
         cancellationToken.ThrowIfCancellationRequested();
         return serverId != Guid.Empty && registry.TryGet(serverId, out var registration)
-            ? CaptureJava(registration, cancellationToken)
+            ? CaptureJavaCached(registration, cancellationToken)
             : null;
+    }
+
+    private ProductServerJavaRuntimeSummary CaptureJavaCached(
+        ProductServerRegistration registration,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        lock (_javaCacheSync)
+        {
+            if (_javaCache.TryGetValue(registration.Id, out var cached) &&
+                string.Equals(
+                    cached.JavaRuntimePath,
+                    registration.JavaRuntimePath,
+                    StringComparison.Ordinal) &&
+                cached.ExpiresAtUtc > now)
+            {
+                return cached.Summary;
+            }
+        }
+
+        var captured = CaptureJava(registration, cancellationToken);
+        lock (_javaCacheSync)
+        {
+            _javaCache[registration.Id] = new JavaMetadataCacheEntry(
+                registration.JavaRuntimePath,
+                now + JavaMetadataCacheLifetime,
+                captured);
+        }
+
+        return captured;
     }
 
     private void CaptureAddons(
@@ -217,6 +251,11 @@ public sealed partial class ProductServerAdministrationReader(
             BoundMetadata(vendor) ?? "Managed Java",
             BoundMetadata(architecture) ?? "Unknown");
     }
+
+    private sealed record JavaMetadataCacheEntry(
+        string JavaRuntimePath,
+        DateTimeOffset ExpiresAtUtc,
+        ProductServerJavaRuntimeSummary Summary);
 
     private void ReadJavaReleaseMetadata(
         string runtimeHome,
