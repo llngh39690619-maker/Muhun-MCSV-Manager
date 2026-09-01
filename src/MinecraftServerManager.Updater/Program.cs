@@ -4,6 +4,11 @@ internal static class Program
 {
     private static Task<int> Main(string[] args)
     {
+        if (ProductLocalServiceRepairApplication.IsCommand(args))
+        {
+            return ProductLocalServiceRepairApplication.RunAsync(args);
+        }
+
         if (ProductExplorerGuiActivationLauncher.IsCommand(args))
         {
             return Task.FromResult(ProductExplorerGuiActivationLauncher.Run(args));

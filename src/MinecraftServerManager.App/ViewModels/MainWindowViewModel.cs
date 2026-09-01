@@ -49,6 +49,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private const int ConsoleDrainBatchSize = MaximumPendingConsoleLinesPerInstance;
     internal static readonly TimeSpan ConsoleUiRefreshInterval = TimeSpan.FromMilliseconds(100);
     internal static readonly TimeSpan PresenceUiRefreshInterval = TimeSpan.FromMilliseconds(100);
+    internal static readonly TimeSpan ProductServiceUpdateReconnectTimeout = TimeSpan.FromSeconds(30);
     private static readonly Regex SaveCompletionPattern = new(
         @"(?:Saved the game|Saved the world|Saved all player data|Saved all chunks)",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
@@ -74,6 +75,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly JavaVersionRecommendationService _javaRecommendations = new();
     private readonly ServerProcessManager _processManager;
     private readonly ProductServiceDesktopController? _productServiceController;
+    private readonly IBundledProductServiceUpdateLauncher? _productServiceUpdateLauncher;
     private readonly BackupService _backupService = new();
     private readonly BackupRestoreService _backupRestoreService = new();
     private readonly ModpackUpdateBackupPlanner _modpackUpdateBackupPlanner = new();
@@ -186,6 +188,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ProductServiceConnectionState.Unavailable;
     private string _productServiceConnectionCode = "service.not_initialized";
     private ProductApiVersion? _productServiceNegotiatedApiVersion;
+    private bool _isProductServiceUpdateRunning;
     private IReadOnlyList<ServerInstance>? _readOnlyLegacyInstances;
     private readonly Dictionary<Guid, Guid> _playerPresenceSessions = [];
     private readonly ConcurrentDictionary<Guid, byte> _loadedPlayerRegistries = new();
@@ -210,14 +213,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     internal static MainWindowViewModel CreateServiceOwned(
         ApplicationPaths paths,
         IProductServiceClient? client = null,
-        IServerDeletionConfirmationService? deletionConfirmationService = null)
+        IServerDeletionConfirmationService? deletionConfirmationService = null,
+        IBundledProductServiceUpdateLauncher? productServiceUpdateLauncher = null)
         => new(
             paths,
             new ServerRemovalConfirmationService(),
             new OnlineModpackWorkflow(paths),
             onlineModpackDialogService: null,
             serverDeletionConfirmationService: deletionConfirmationService,
-            productServiceClient: client ?? new ProductServiceClient());
+            productServiceClient: client ?? new ProductServiceClient(),
+            productServiceUpdateLauncher: productServiceUpdateLauncher);
 
     internal MainWindowViewModel(
         ApplicationPaths paths,
@@ -268,7 +273,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         string? productServiceImportsRoot = null,
         ICurseForgeUpdateCredentialPrompt? curseForgeUpdateCredentialPrompt = null,
         IModpackUpdateSelectionService? modpackUpdateSelectionService = null,
-        IJsonSettingsStore<ManagerSettings>? settingsStore = null)
+        IJsonSettingsStore<ManagerSettings>? settingsStore = null,
+        IBundledProductServiceUpdateLauncher? productServiceUpdateLauncher = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(serverRemovalConfirmationService);
@@ -329,6 +335,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _productServiceController = productServiceClient is null
             ? null
             : new ProductServiceDesktopController(productServiceClient, productServiceImportsRoot);
+        _productServiceUpdateLauncher = productServiceClient is null
+            ? null
+            : productServiceUpdateLauncher
+              ?? new BundledProductServiceUpdateLauncher(ProductDisplayVersion);
         _processManager = new ServerProcessManager(new ServerProcessManagerOptions
         {
             MaximumRetainedConsoleLines = 5_000,
@@ -391,6 +401,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             () => SelectedServer is not null
                   && (!IsProductServiceRuntime || IsProductServiceConnected));
         OpenBackgroundJobsCommand = new RelayCommand(OpenBackgroundJobsWindow);
+        UpdateProductServiceCommand = new AsyncRelayCommand(
+            UpdateProductServiceAsync,
+            CanUpdateProductService);
         OpenDataFolderCommand = new RelayCommand(() => OpenFolder(_paths.Root));
         OpenSettingsCommand = new RelayCommand(OpenGeneralSettings);
         OpenAppearanceSettingsCommand = OpenSettingsCommand;
@@ -455,18 +468,22 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             () => GuardAsync(DownloadSelectedJavaAsync, "main.vm.operation.downloadJava"),
             () => !IsProductServiceRuntime);
         RefreshJavaCommand = new AsyncRelayCommand(() => GuardAsync(RefreshJavaAsync, "main.vm.operation.scanJava"));
-        CreateBackupCommand = new AsyncRelayCommand(() => GuardAsync(CreateSelectedBackupAsync, "main.vm.operation.createBackup"));
+        CreateBackupCommand = new AsyncRelayCommand(
+            () => GuardAsync(CreateSelectedBackupAsync, "main.vm.operation.createBackup"),
+            CanUseSelectedBackupCommands);
         RestoreBackupCommand = new AsyncRelayCommand(
             parameter => GuardAsync(
                 () => RestoreSelectedBackupAsync(parameter as BackupItemViewModel),
-                "main.vm.operation.restoreBackup"));
+                "main.vm.operation.restoreBackup"),
+            parameter => parameter is BackupItemViewModel && CanUseSelectedBackupCommands());
         OpenBackupFolderCommand = new RelayCommand(OpenSelectedBackupFolder);
         OpenCrashReportsFolderCommand = new RelayCommand(OpenSelectedCrashReportsFolder);
         OpenRecoveryPointsFolderCommand = new RelayCommand(
             OpenSelectedRecoveryPointsFolder,
             () => CanManageLocalRecoveryPoints);
         RefreshBackupsCommand = new AsyncRelayCommand(
-            () => GuardAsync(RefreshSelectedBackupsAsync, "main.vm.operation.refreshBackups"));
+            () => GuardAsync(RefreshSelectedBackupsAsync, "main.vm.operation.refreshBackups"),
+            CanUseSelectedBackupCommands);
         RestoreRecoveryPointCommand = new AsyncRelayCommand(
             () => GuardAsync(RestoreRecoveryPointAsync, "main.vm.operation.restoreRecoveryPoint"),
             () => CanManageLocalRecoveryPoints);
@@ -486,15 +503,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         RefreshPlayersCommand = new AsyncRelayCommand(
             () => GuardAsync(RefreshPlayersAsync, "main.vm.operation.refreshPlayers"),
             () => CanRefreshSelectedPlayers);
-        KickPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("kick", "main.players.kick"), "main.vm.operation.kickPlayer"));
-        BanPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("ban", "main.players.ban"), "main.vm.operation.banPlayer"));
-        PardonPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("pardon", "main.players.pardon"), "main.vm.operation.pardonPlayer"));
-        OpPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("op", "main.players.op"), "main.vm.operation.opPlayer"));
-        DeopPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("deop", "main.players.deop"), "main.vm.operation.deopPlayer"));
-        WhitelistAddCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("whitelist add", "main.players.whitelistAdd"), "main.vm.operation.whitelistAdd"));
-        WhitelistRemoveCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("whitelist remove", "main.players.whitelistRemove"), "main.vm.operation.whitelistRemove"));
-        WhitelistOnCommand = new AsyncRelayCommand(() => GuardAsync(() => SendAdministrativeCommandAsync("whitelist on", "main.vm.status.whitelistEnabled"), "main.vm.operation.whitelistOn"));
-        WhitelistOffCommand = new AsyncRelayCommand(() => GuardAsync(() => SendAdministrativeCommandAsync("whitelist off", "main.vm.status.whitelistDisabled"), "main.vm.operation.whitelistOff"));
+        KickPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("kick", "main.players.kick"), "main.vm.operation.kickPlayer"), CanManageSelectedPlayers);
+        BanPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("ban", "main.players.ban"), "main.vm.operation.banPlayer"), CanManageSelectedPlayers);
+        PardonPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("pardon", "main.players.pardon"), "main.vm.operation.pardonPlayer"), CanManageSelectedPlayers);
+        OpPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("op", "main.players.op"), "main.vm.operation.opPlayer"), CanManageSelectedPlayers);
+        DeopPlayerCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("deop", "main.players.deop"), "main.vm.operation.deopPlayer"), CanManageSelectedPlayers);
+        WhitelistAddCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("whitelist add", "main.players.whitelistAdd"), "main.vm.operation.whitelistAdd"), CanManageSelectedPlayers);
+        WhitelistRemoveCommand = new AsyncRelayCommand(() => GuardAsync(() => SendPlayerCommandAsync("whitelist remove", "main.players.whitelistRemove"), "main.vm.operation.whitelistRemove"), CanManageSelectedPlayers);
+        WhitelistOnCommand = new AsyncRelayCommand(() => GuardAsync(() => SendAdministrativeCommandAsync("whitelist on", "main.vm.status.whitelistEnabled"), "main.vm.operation.whitelistOn"), CanManageSelectedPlayers);
+        WhitelistOffCommand = new AsyncRelayCommand(() => GuardAsync(() => SendAdministrativeCommandAsync("whitelist off", "main.vm.status.whitelistDisabled"), "main.vm.operation.whitelistOff"), CanManageSelectedPlayers);
         ClearBackgroundCommand = new AsyncRelayCommand(() => GuardAsync(ClearBackgroundAsync, "main.vm.operation.clearBackground"));
         ClearIconCommand = new AsyncRelayCommand(() => GuardAsync(ClearIconAsync, "main.vm.operation.clearIcon"));
         LocalizationService.Current.CultureChanged += OnLocalizationCultureChanged;
@@ -546,6 +563,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public AsyncRelayCommand StopCheckedServersCommand { get; }
     public AsyncRelayCommand RestartSelectedCommand { get; }
     public RelayCommand OpenBackgroundJobsCommand { get; }
+    public AsyncRelayCommand UpdateProductServiceCommand { get; }
     public RelayCommand OpenDataFolderCommand { get; }
     public RelayCommand OpenSettingsCommand { get; }
     public RelayCommand OpenAppearanceSettingsCommand { get; }
@@ -613,6 +631,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(BackgroundImagePath));
             OnPropertyChanged(nameof(IsSplitDiagnosticOutputVisible));
             NotifySelectedLifecycleCommandsCanExecuteChanged();
+            NotifySelectedServiceDependentCommandsCanExecuteChanged();
             OpenSelectedFolderCommand.NotifyCanExecuteChanged();
             RestartSelectedCommand.NotifyCanExecuteChanged();
             SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
@@ -688,6 +707,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public bool IsProductServiceRuntime => _productServiceController is not null;
     public bool IsProductServiceConnected =>
         _productServiceConnectionState == ProductServiceConnectionState.Connected;
+    public bool ShowProductServiceUpdateAction =>
+        _productServiceUpdateLauncher is not null &&
+        _productServiceConnectionState == ProductServiceConnectionState.Incompatible;
+    public bool IsProductServiceUpdateRunning
+    {
+        get => _isProductServiceUpdateRunning;
+        private set
+        {
+            if (!SetProperty(ref _isProductServiceUpdateRunning, value)) return;
+            UpdateProductServiceCommand.NotifyCanExecuteChanged();
+        }
+    }
     public ProductApiVersion? ProductServiceNegotiatedApiVersion =>
         _productServiceNegotiatedApiVersion;
     public bool SupportsProductServiceFileAdministration =>
@@ -1130,6 +1161,79 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private bool CanUpdateProductService()
+        => ShowProductServiceUpdateAction && !IsProductServiceUpdateRunning;
+
+    internal async Task UpdateProductServiceAsync()
+    {
+        if (_productServiceUpdateLauncher is null ||
+            _productServiceController is null ||
+            !CanUpdateProductService())
+        {
+            return;
+        }
+
+        IsProductServiceUpdateRunning = true;
+        SetStatus("main.vm.service.updateStarting");
+        try
+        {
+            var result = await _productServiceUpdateLauncher
+                .UpdateAsync(_applicationShutdownCancellation.Token);
+            if (!result.Succeeded)
+            {
+                SetStatus(result.Outcome switch
+                {
+                    BundledProductServiceUpdateOutcome.Cancelled =>
+                        "main.vm.service.updateCancelled",
+                    BundledProductServiceUpdateOutcome.ReleaseLayoutUnavailable =>
+                        "main.vm.service.updateReleaseUnavailable",
+                    BundledProductServiceUpdateOutcome.PublisherVerificationFailed =>
+                        "main.vm.service.updatePublisherRejected",
+                    _ => "main.vm.service.updateFailed",
+                });
+                return;
+            }
+
+            SetStatus("main.vm.service.updateReconnecting");
+            var deadline = DateTimeOffset.UtcNow.Add(ProductServiceUpdateReconnectTimeout);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                _applicationShutdownCancellation.Token.ThrowIfCancellationRequested();
+                var snapshot = await _productServiceController.RefreshFocusedAsync(
+                    SelectedServer?.Id,
+                    _applicationShutdownCancellation.Token);
+                ApplyProductServiceSnapshot(snapshot);
+                if (snapshot.Connection.IsConnected &&
+                    _productServiceNegotiatedApiVersion is { } apiVersion &&
+                    apiVersion.CompareTo(ProductApiProtocol.MinecraftEulaConsentVersion) >= 0)
+                {
+                    SetStatus("main.vm.service.updateCompleted");
+                    return;
+                }
+
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(500),
+                    _applicationShutdownCancellation.Token);
+            }
+
+            SetStatus("main.vm.service.updateReconnectFailed");
+        }
+        catch (OperationCanceledException) when (_applicationShutdownCancellation.IsCancellationRequested)
+        {
+            // Application shutdown does not cancel or weaken the already elevated updater. The
+            // Service remains the sole owner of Java processes and the next GUI launch reprobes it.
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            _ = error;
+            SetStatus("main.vm.service.updateFailed");
+        }
+        finally
+        {
+            IsProductServiceUpdateRunning = false;
+        }
+    }
+
     private void ApplyProductServiceSnapshot(ProductServiceDesktopSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -1152,7 +1256,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (previousState != _productServiceConnectionState ||
             !string.Equals(previousCode, _productServiceConnectionCode, StringComparison.Ordinal))
         {
+            foreach (var server in Servers.Where(static server => server.IsServiceManaged))
+            {
+                server.IsControlChannelAvailable = IsProductServiceConnected;
+            }
             OnPropertyChanged(nameof(IsProductServiceConnected));
+            OnPropertyChanged(nameof(ShowProductServiceUpdateAction));
             OnPropertyChanged(nameof(SupportsProductServiceFileAdministration));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(ProductServiceConnectionText));
@@ -1171,7 +1280,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
             RefreshPlayersCommand.NotifyCanExecuteChanged();
-            StatusMessage = ProductServiceConnectionText;
+            NotifySelectedServiceDependentCommandsCanExecuteChanged();
+            UpdateProductServiceCommand.NotifyCanExecuteChanged();
+            if (!IsProductServiceUpdateRunning)
+            {
+                StatusMessage = ProductServiceConnectionText;
+            }
             if (snapshot.Connection.IsConnected
                 && SelectedWorkspaceTabKey == PlayersWorkspaceTabKey
                 && SelectedServer is { IsServiceManaged: true } selected)
@@ -1803,6 +1917,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             memoryModeRequested: OnServerMemoryModeRequested,
             isServiceManaged: isServiceManaged,
             hasLocalMetadata: hasLocalMetadata);
+        viewModel.IsControlChannelAvailable = !isServiceManaged || IsProductServiceConnected;
         var memory = _systemMemoryProbe.GetSnapshot();
         viewModel.SetSystemMemoryDisplay(memory.AvailablePhysicalBytes, memory.TotalPhysicalBytes);
         var availableMb = (int)Math.Clamp(memory.AvailablePhysicalBytes / 1024L / 1024L, 2048, 131072);
@@ -2872,7 +2987,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         => IsBulkSelectionMode
            && !IsBatchLifecycleOperationRunning
            && !_isServerListMutationRunning
+           && (!IsProductServiceRuntime || IsProductServiceConnected)
            && Servers.Any(static server => server.IsBulkSelected);
+
+    private bool CanUseSelectedBackupCommands()
+        => SelectedServer is not null &&
+           (!IsProductServiceRuntime || IsProductServiceConnected);
+
+    private bool CanManageSelectedPlayers()
+        => SelectedServer?.CanManagePlayers == true &&
+           (!IsProductServiceRuntime || IsProductServiceConnected);
 
     private ServerInstanceViewModel[] SnapshotCheckedServers()
         => Servers.Where(static server => server.IsBulkSelected).ToArray();
@@ -3268,6 +3392,22 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     {
         StartSelectedCommand.NotifyCanExecuteChanged();
         StopSelectedCommand.NotifyCanExecuteChanged();
+    }
+
+    private void NotifySelectedServiceDependentCommandsCanExecuteChanged()
+    {
+        CreateBackupCommand.NotifyCanExecuteChanged();
+        RestoreBackupCommand.NotifyCanExecuteChanged();
+        RefreshBackupsCommand.NotifyCanExecuteChanged();
+        KickPlayerCommand.NotifyCanExecuteChanged();
+        BanPlayerCommand.NotifyCanExecuteChanged();
+        PardonPlayerCommand.NotifyCanExecuteChanged();
+        OpPlayerCommand.NotifyCanExecuteChanged();
+        DeopPlayerCommand.NotifyCanExecuteChanged();
+        WhitelistAddCommand.NotifyCanExecuteChanged();
+        WhitelistRemoveCommand.NotifyCanExecuteChanged();
+        WhitelistOnCommand.NotifyCanExecuteChanged();
+        WhitelistOffCommand.NotifyCanExecuteChanged();
     }
 
     private async Task StartServerAsync(

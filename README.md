@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.1**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.2**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.1 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
+> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.2 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
 
 ## English summary
 
@@ -23,6 +23,7 @@ The server-side CurseForge catalog uses the official API with a user-supplied, i
 - 官方 Skin／披風管理；Skin 支援經典／苗條體型、本機 PNG 上傳、即時 3D 走路預覽與滑鼠 360 度旋轉，保存後同步至 Minecraft 官方服務。
 - Minecraft 客戶端在背景啟動 Java，不顯示黑色主控台；啟動後可縮小 X MCSV，遊戲關閉時自動還原主視窗。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
+- 新 GUI 遇到舊版不相容 Service 時會保持唯讀，並可從完整正式發行資料夾以已簽署 Updater 將相同版本背景服務安全更新至受保護的 `Program Files`；驗證或健康檢查失敗時自動回復。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時從 `25565` 起選擇最低可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
 - Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖。
@@ -92,7 +93,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用既有正式發行包（不適用於 1.2.9-beta.1 原始碼快照）
+### 使用既有正式發行包（不適用於 1.2.9-beta.2 原始碼快照）
 
 - 安裝／升級 Windows Service 時需要系統管理員權限。
 - 正式 Windows 執行檔為 self-contained，不需另行安裝 .NET Runtime。
@@ -127,7 +128,7 @@ dotnet test .\MinecraftServerManager.sln `
 2. 為每個帳號設定全域及逐 Server 權限。
 3. 設定 Tailscale Funnel，或使用 Cloudflare Named／Quick Tunnel 相容模式。
 4. 從 HTTPS 網址登入 Web 面板。
-5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.1 的 GitHub 發布不提供 APK）。
+5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.2 的 GitHub 發布不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 

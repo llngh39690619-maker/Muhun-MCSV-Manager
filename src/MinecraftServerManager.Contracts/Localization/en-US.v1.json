@@ -108,6 +108,8 @@
     "main.status.crashed": "Crashed",
     "main.settingsTooltip": "Program settings",
     "main.jobsTooltip": "Open background jobs",
+    "main.service.updateAction": "Update background service",
+    "main.service.updateTooltip": "Securely install this GUI's matching signed release into Program Files, then reconnect to Windows Service.",
     "main.console.commandTooltip": "Enter a Minecraft console command; do not include the leading slash (/).",
     "main.diagnostics.empty": "No errors or warnings",
     "main.bulkSelection.tooltip": "Show checkboxes in the server list to select servers for batch operations.",

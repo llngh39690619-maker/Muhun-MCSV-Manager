@@ -108,6 +108,8 @@
     "main.status.crashed": "已崩潰",
     "main.settingsTooltip": "程式設定",
     "main.jobsTooltip": "開啟背景工作",
+    "main.service.updateAction": "更新背景服務",
+    "main.service.updateTooltip": "安全地將此 GUI 對應的已簽署版本安裝至 Program Files，並重新連線 Windows Service。",
     "main.console.commandTooltip": "輸入 Minecraft 控制台指令，不需輸入斜線（/）。",
     "main.diagnostics.empty": "目前沒有錯誤或警告",
     "main.bulkSelection.tooltip": "顯示伺服器清單核取方框，以選取要批次操作的伺服器。",

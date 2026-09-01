@@ -41,6 +41,7 @@ public static partial class ProductLocalizationCatalog
         "main.metric.cpu", "main.metric.memory", "main.metric.port", "main.metric.java",
         "main.metric.uptime", "main.status.running", "main.status.stopped", "main.status.starting",
         "main.status.stopping", "main.status.crashed", "main.settingsTooltip", "main.jobsTooltip",
+        "main.service.updateAction", "main.service.updateTooltip",
         "main.console.commandTooltip", "main.diagnostics.empty",
         "main.bulkSelection.tooltip", "main.bulkSelection.automation", "main.bulkSelection.serverAutomation",
         "main.startSelected.tooltip", "main.startSelected.automation",

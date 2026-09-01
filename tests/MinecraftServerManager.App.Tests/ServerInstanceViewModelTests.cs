@@ -273,6 +273,30 @@ public sealed class ServerInstanceViewModelTests
     }
 
     [Fact]
+    public void UnavailableControlChannel_DisablesConsoleAndPlayerControlsDespiteStaleRunningState()
+    {
+        var viewModel = CreateViewModel();
+        viewModel.CommandText = "list";
+        viewModel.SetState(ServerState.Running);
+
+        Assert.True(viewModel.CanSendCommand);
+        Assert.True(viewModel.CanManagePlayers);
+        Assert.True(viewModel.SendCommandCommand.CanExecute(null));
+
+        viewModel.IsControlChannelAvailable = false;
+
+        Assert.False(viewModel.CanSendCommand);
+        Assert.False(viewModel.CanManagePlayers);
+        Assert.False(viewModel.SendCommandCommand.CanExecute(null));
+
+        viewModel.IsControlChannelAvailable = true;
+
+        Assert.True(viewModel.CanSendCommand);
+        Assert.True(viewModel.CanManagePlayers);
+        Assert.True(viewModel.SendCommandCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void EventOnlyPlayer_IsRemovedFromAllCollectionsWhenLeaving()
     {
         var viewModel = CreateViewModel();

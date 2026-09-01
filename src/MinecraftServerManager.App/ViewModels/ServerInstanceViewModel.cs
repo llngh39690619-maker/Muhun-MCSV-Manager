@@ -42,6 +42,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
     private bool _hasSystemMemorySnapshot;
     private bool _isAutomaticMemoryRecommendationRunning;
     private bool _isBulkSelected;
+    private bool _isControlChannelAvailable = true;
     private string? _automaticMemoryRecommendationStatusKey;
     private object?[] _automaticMemoryRecommendationStatusArguments = [];
 
@@ -113,6 +114,23 @@ public sealed class ServerInstanceViewModel : ObservableObject
     {
         get => _isBulkSelected;
         set => SetProperty(ref _isBulkSelected, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether commands may be sent through the instance's control channel.
+    /// Service-managed rows keep their last projected state while the service is unavailable,
+    /// so this separate gate prevents stale projections from leaving console/player controls enabled.
+    /// </summary>
+    public bool IsControlChannelAvailable
+    {
+        get => _isControlChannelAvailable;
+        set
+        {
+            if (!SetProperty(ref _isControlChannelAvailable, value)) return;
+            OnPropertyChanged(nameof(CanSendCommand));
+            OnPropertyChanged(nameof(CanManagePlayers));
+            SendCommandCommand.NotifyCanExecuteChanged();
+        }
     }
 
     public string Name
@@ -511,8 +529,9 @@ public sealed class ServerInstanceViewModel : ObservableObject
         _ => L("server.state.stopped")
     };
 
-    public bool CanSendCommand => State is ServerState.Starting or ServerState.Running;
-    public bool CanManagePlayers => State == ServerState.Running;
+    public bool CanSendCommand => IsControlChannelAvailable
+                                  && State is (ServerState.Starting or ServerState.Running);
+    public bool CanManagePlayers => IsControlChannelAvailable && State == ServerState.Running;
     public double CpuPercent => _cpuPercent;
     public long WorkingSetBytes => _workingSetBytes;
     public TimeSpan Uptime => _uptime;
