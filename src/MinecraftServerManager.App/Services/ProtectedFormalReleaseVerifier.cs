@@ -7,6 +7,9 @@ namespace MinecraftServerManager.App.Services;
 
 internal sealed class PinnedProtectedFormalReleaseVerifier : IProtectedFormalReleaseVerifier
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
     internal const string PublisherSubjectPublicKeyInfoSha256 =
         "b85078f848fc4245cdbce277327fa0d5cbfd40b459ad907c82daa127d10517b8";
     private const int MaximumReleaseManifestBytes = 1024 * 1024;
@@ -251,13 +254,20 @@ internal sealed class PinnedProtectedFormalReleaseVerifier : IProtectedFormalRel
                 MaximumChecksumBytes,
                 cancellationToken)
             .ConfigureAwait(false);
-        if (bytes.Any(value => value > 0x7f))
+        string checksumText;
+        try
         {
-            throw new InvalidDataException("The protected release checksum document is not ASCII.");
+            checksumText = StrictUtf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException error)
+        {
+            throw new InvalidDataException(
+                "The protected release checksum document is not valid UTF-8.",
+                error);
         }
 
         var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var line in Encoding.ASCII.GetString(bytes)
+        foreach (var line in checksumText
                      .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.Length < 67 || line[64] != ' ' || line[65] != '*')

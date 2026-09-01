@@ -9,7 +9,7 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProtectedFormalReleaseVerifierTests : IDisposable
 {
-    private const string Version = "1.2.9-beta.2";
+    private const string Version = "1.2.9-beta.3";
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "mcsv-protected-release-verifier-tests",
@@ -66,6 +66,21 @@ public sealed class ProtectedFormalReleaseVerifierTests : IDisposable
         Assert.Empty(publisherInvocations);
     }
 
+    [Fact]
+    public async Task Verify_InvalidUtf8ChecksumDocument_IsRejected()
+    {
+        using var fixture = CreateSignedRelease();
+        File.WriteAllBytes(Path.Combine(_root, "SHA256SUMS.txt"), [0xff, 0xfe, 0xfd]);
+        var publisherCalled = false;
+        var verifier = fixture.CreateVerifier(
+            new RecordingSecurityValidator(),
+            (_, _) => publisherCalled = true);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            verifier.VerifyAsync(_root, Version, CancellationToken.None));
+        Assert.False(publisherCalled);
+    }
+
     public void Dispose()
     {
         try
@@ -100,6 +115,7 @@ public sealed class ProtectedFormalReleaseVerifierTests : IDisposable
             ["gui-win-x64/Muhun MCSV Manager.exe"] = "MZ-GUI"u8.ToArray(),
             ["service-win-x64/Muhun MCSV Service.exe"] = "MZ-SERVICE"u8.ToArray(),
             ["updater-win-x64/Muhun MCSV Updater.exe"] = "MZ-UPDATER"u8.ToArray(),
+            ["開始使用.txt"] = "X MCSV 使用說明"u8.ToArray(),
         };
         foreach (var (relative, bytes) in files)
         {
@@ -138,7 +154,7 @@ public sealed class ProtectedFormalReleaseVerifierTests : IDisposable
             rsa.SignData(manifestBytes, HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
         WriteFile(
             "SHA256SUMS.txt",
-            Encoding.ASCII.GetBytes(string.Join(
+            new UTF8Encoding(false, true).GetBytes(string.Join(
                 "\r\n",
                 entries.Select(entry => $"{entry.sha256} *{entry.path}")) + "\r\n"));
 

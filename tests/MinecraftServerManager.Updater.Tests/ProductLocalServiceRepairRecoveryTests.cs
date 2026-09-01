@@ -11,14 +11,14 @@ public sealed class ProductLocalServiceRepairRecoveryTests : IDisposable
 
     [Theory]
     [InlineData("1.0.8", ProductUpdateActivationState.Activating, false)]
-    [InlineData("1.2.9-beta.2", ProductUpdateActivationState.HealthChecking, true)]
+    [InlineData("1.2.9-beta.3", ProductUpdateActivationState.HealthChecking, true)]
     public async Task NonTerminalActivation_IsRecoveredBeforeSameVersionAndDowngradeChecks(
         string initialServiceVersion,
         ProductUpdateActivationState journalState,
         bool cleanupSucceeds)
     {
         const string previousVersion = "1.0.8";
-        const string targetVersion = "1.2.9-beta.2";
+        const string targetVersion = "1.2.9-beta.3";
         var installRoot = Path.Combine(_root, "install");
         var releaseRoot = Path.Combine(_root, "release");
         var dataRoot = Path.Combine(_root, "data");

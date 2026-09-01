@@ -103,7 +103,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
                 install,
                 Path.Combine(install, "launcher"),
                 release,
-                "1.2.9-beta.2",
+                "1.2.9-beta.3",
                 new string('a', 32)),
             stagingContentValidator: _ => { },
             stagingCleanupScheduler: _ =>
@@ -144,6 +144,15 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => fixture.VerifyAsync());
     }
 
+    [Fact]
+    public async Task SignedFormalRelease_WithInvalidUtf8Checksums_IsRejected()
+    {
+        using var fixture = await SignedReleaseFixture.CreateAsync(_directory);
+        File.WriteAllBytes(Path.Combine(_directory, "SHA256SUMS.txt"), [0xff, 0xfe, 0xfd]);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => fixture.VerifyAsync());
+    }
+
     public void Dispose()
     {
         try
@@ -177,7 +186,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
         }
 
         public string Root { get; }
-        public string Version { get; } = "1.2.9-beta.2";
+        public string Version { get; } = "1.2.9-beta.3";
         public ProductLocalRepairTrustPolicy TrustPolicy { get; }
 
         public static async Task<SignedReleaseFixture> CreateAsync(string root)
@@ -307,6 +316,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
                 ["Install-MuhunMcsv.ps1"] = "# signed installer"u8.ToArray(),
                 ["Uninstall-MuhunMcsv.ps1"] = "# signed uninstaller"u8.ToArray(),
                 ["Test-MuhunMcsvRelease.ps1"] = "# signed verifier"u8.ToArray(),
+                ["開始使用.txt"] = "X MCSV 使用說明"u8.ToArray(),
             };
             foreach (var (path, bytes) in formalFiles)
             {
@@ -365,7 +375,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
             var checksums = string.Join(
                 "\r\n",
                 formalEntries.Select(file => $"{file.sha256} *{file.path}")) + "\r\n";
-            WriteFile("SHA256SUMS.txt", Encoding.ASCII.GetBytes(checksums));
+            WriteFile("SHA256SUMS.txt", new UTF8Encoding(false, true).GetBytes(checksums));
             await Task.CompletedTask;
         }
 

@@ -27,6 +27,9 @@ internal sealed record VerifiedProductLocalRelease(
 
 internal static class ProductLocalFormalReleaseVerifier
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
     private const int MaximumReleaseManifestBytes = 1024 * 1024;
     private const int MaximumSignatureBytes = 1024;
     private const int MaximumChecksumBytes = 1024 * 1024;
@@ -384,13 +387,20 @@ internal static class ProductLocalFormalReleaseVerifier
     private static void VerifyChecksums(string root, IReadOnlyList<FormalReleaseFile> files)
     {
         var checksumBytes = ReadBounded(ResolveExistingFile(root, "SHA256SUMS.txt"), MaximumChecksumBytes);
-        if (checksumBytes.Any(value => value > 0x7f))
+        string checksumText;
+        try
         {
-            throw new InvalidDataException("The release checksum document is not ASCII.");
+            checksumText = StrictUtf8.GetString(checksumBytes);
+        }
+        catch (DecoderFallbackException error)
+        {
+            throw new InvalidDataException(
+                "The release checksum document is not valid UTF-8.",
+                error);
         }
 
         var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rawLine in Encoding.ASCII.GetString(checksumBytes)
+        foreach (var rawLine in checksumText
                      .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (rawLine.Length < 67 || rawLine[64] != ' ' || rawLine[65] != '*')

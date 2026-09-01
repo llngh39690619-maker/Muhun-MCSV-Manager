@@ -320,6 +320,8 @@ internal sealed class ElevatedProductUpdaterProcessRunner : IElevatedProductUpda
 
 internal static class WindowsProductPublisherVerifier
 {
+    private const int CertificateUntrustedRoot = unchecked((int)0x800B0109);
+    private const int CertificateChainUnavailable = unchecked((int)0x800B010A);
     private static readonly Guid GenericVerifyV2 =
         new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
@@ -338,14 +340,6 @@ internal static class WindowsProductPublisherVerifier
             throw new InvalidDataException("The bundled updater version does not match the GUI version.");
         }
 
-        using var file = new WinTrustFileInfo(fullPath);
-        var data = new WinTrustData(file.Pointer);
-        var result = WinVerifyTrust(IntPtr.Zero, GenericVerifyV2, ref data);
-        if (result != 0)
-        {
-            throw new Win32Exception(result, "The bundled updater Authenticode signature is invalid.");
-        }
-
 #pragma warning disable SYSLIB0057
         using var signer = new X509Certificate2(X509Certificate.CreateFromSignedFile(fullPath));
 #pragma warning restore SYSLIB0057
@@ -357,7 +351,28 @@ internal static class WindowsProductPublisherVerifier
         {
             throw new CryptographicException("The bundled updater publisher does not match X MCSV.");
         }
+
+        using var file = new WinTrustFileInfo(fullPath);
+        var data = new WinTrustData(file.Pointer);
+        var result = WinVerifyTrust(IntPtr.Zero, GenericVerifyV2, ref data);
+        var pinnedSelfSignedPublisher = signer.SubjectName.RawData.AsSpan()
+            .SequenceEqual(signer.IssuerName.RawData);
+        if (!IsAcceptableTrustResult(result, pinnedSelfSignedPublisher))
+        {
+            throw new Win32Exception(result, "The bundled updater Authenticode signature is invalid.");
+        }
     }
+
+    /// <summary>
+    /// The caller has already verified the updater byte-for-byte through the pinned RSA-PSS
+    /// release manifest. A clean PC can therefore accept the pinned self-signed certificate when
+    /// Windows reports only a missing private trust root. Bad digests and every other policy error
+    /// remain fail-closed.
+    /// </summary>
+    internal static bool IsAcceptableTrustResult(int result, bool pinnedSelfSignedPublisher)
+        => result == 0 ||
+           pinnedSelfSignedPublisher &&
+           result is CertificateUntrustedRoot or CertificateChainUnavailable;
 
     [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
     private static extern int WinVerifyTrust(

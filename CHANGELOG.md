@@ -2,6 +2,13 @@
 
 ## 未發布
 
+## 1.2.9-beta.3 — UTF-8 發行驗證修正版（研發中）
+
+- 修正正式發行包的 `SHA256SUMS.txt` 含 `開始使用.txt` 等中文路徑時，被背景服務修復流程錯誤當成非 ASCII 非法內容，進而誤報為發布者驗證失敗的問題。
+- GUI 的受保護暫存驗證與 Updater 的本機正式包驗證統一改用無 BOM、拒絕無效位元組的嚴格 UTF-8；Unicode 路徑仍須同時符合簽署 manifest、逐檔大小、SHA-256、精確檔案集合及安全路徑規則。
+- 在乾淨 Windows 未匯入自簽根憑證時，只有固定憑證且已受 RSA-PSS manifest 逐位元組綁定的 Updater，才可接受 `CERT_E_UNTRUSTEDROOT`／`CERT_E_CHAINING`；壞雜湊、錯誤發布者及其他 Authenticode 失敗仍會安全拒絕。
+- 本版為 Beta，僅在 GitHub 發布原始碼並標示為研發中；正式簽署 Windows 與 Android 建置只留作本機驗證，不上傳安裝包、可執行檔、APK、簽章、雜湊或其他二進位成品。
+
 ## 1.2.9-beta.2 — 背景服務相容性自助修復版（研發中）
 
 - 當新版 GUI 偵測到舊版 Windows Service 不具 API 1.6 Minecraft EULA 能力時，伺服器操作仍會安全保持停用，並在主視窗底部直接顯示「更新背景服務」，不再只留下版本不相容訊息與一整排灰色按鈕。

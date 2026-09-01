@@ -5,7 +5,7 @@ namespace MinecraftServerManager.Updater.Tests;
 
 public sealed class ProductRepairStagingPolicyTests : IDisposable
 {
-    private const string Version = "1.2.9-beta.2";
+    private const string Version = "1.2.9-beta.3";
     private const string Nonce = "0123456789abcdef0123456789abcdef";
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -54,10 +54,10 @@ public sealed class ProductRepairStagingPolicyTests : IDisposable
     }
 
     [Theory]
-    [InlineData(".repair-staging-1.2.9-beta.2-abc")]
-    [InlineData("repair-staging-1.2.9-beta.2-0123456789abcdef0123456789abcdef")]
+    [InlineData(".repair-staging-1.2.9-beta.3-abc")]
+    [InlineData("repair-staging-1.2.9-beta.3-0123456789abcdef0123456789abcdef")]
     [InlineData(".repair-staging-01.2.9-0123456789abcdef0123456789abcdef")]
-    [InlineData(".repair-staging-1.2.9-beta.2-0123456789abcdef0123456789abcdeg")]
+    [InlineData(".repair-staging-1.2.9-beta.3-0123456789abcdef0123456789abcdeg")]
     public void ResolveBoundary_RejectsMalformedStagingName(string name)
     {
         var (installRoot, launcherRoot, _) = CreateBoundary();
@@ -156,7 +156,7 @@ public sealed class ProductRepairStagingPolicyTests : IDisposable
             release,
             requireRunningFromReleaseUpdater: false);
 
-        var wrongVersion = release with { UpdateManifest = CreateManifest("1.2.9-beta.3", true) };
+        var wrongVersion = release with { UpdateManifest = CreateManifest("1.2.9-beta.2", true) };
         Assert.Throws<InvalidDataException>(() =>
             ProductRepairStagingPolicy.ValidateVerifiedRelease(
                 identity,
