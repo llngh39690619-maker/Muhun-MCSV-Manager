@@ -456,6 +456,38 @@ public sealed class OnlineModpackViewModelTests
     }
 
     [Fact]
+    public async Task FtbInstall_RequiresFreshExplicitMinecraftEulaConsentAndCarriesItInRequest()
+    {
+        var result = Project(OnlineModpackProvider.Ftb, "ftb-project", "FTB Pack");
+        var version = Version(result, "server", true);
+        var workflow = new FakeWorkflow
+        {
+            SearchResults = [result],
+            VersionResults = [version]
+        };
+        var viewModel = new OnlineModpackViewModel(workflow) { SearchQuery = "ftb" };
+
+        await viewModel.SearchAsync(null);
+        await viewModel.SelectResultAsync(Assert.Single(viewModel.Results), null);
+
+        Assert.True(viewModel.RequiresMinecraftEulaAcceptance);
+        Assert.False(viewModel.MinecraftEulaAccepted);
+        Assert.False(viewModel.CanInstall);
+        Assert.False(viewModel.TryBuildInstallRequest(out _));
+        Assert.Contains("Minecraft EULA", viewModel.ErrorMessage, StringComparison.Ordinal);
+
+        viewModel.MinecraftEulaAccepted = true;
+
+        Assert.True(viewModel.CanInstall);
+        Assert.True(viewModel.TryBuildInstallRequest(out var request));
+        Assert.True(request.MinecraftEulaAccepted);
+
+        await viewModel.SearchAsync(null);
+        Assert.False(viewModel.MinecraftEulaAccepted);
+        Assert.False(viewModel.CanInstall);
+    }
+
+    [Fact]
     public async Task SelectingFilteredProject_KeepsGameVersionAndLoaderAppliedToVersionChoices()
     {
         var result = Project(OnlineModpackProvider.Modrinth, "filtered-project", "Filtered Pack");
@@ -669,6 +701,10 @@ public sealed class OnlineModpackViewModelTests
         await viewModel.SearchAsync(null);
         await viewModel.SelectResultAsync(Assert.Single(viewModel.Results), null);
         viewModel.ServerName = serverName;
+        if (result.Provider == OnlineModpackProvider.Ftb)
+        {
+            viewModel.MinecraftEulaAccepted = true;
+        }
         Assert.True(viewModel.CanInstall);
         return viewModel;
     }

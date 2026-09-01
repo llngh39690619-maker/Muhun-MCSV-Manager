@@ -85,6 +85,12 @@ public sealed record ProductIpcRequest(
 
     public ProductServerSettingsUpdateRequest? ServerSettings { get; init; }
 
+    /// <summary>
+    /// One-shot, local interactive confirmation. It is valid only for start/restart and is never
+    /// persisted as a blanket acceptance preference by the IPC layer.
+    /// </summary>
+    public bool? AcceptMinecraftEula { get; init; }
+
     public Guid? ImportId { get; init; }
 
     public ProductServerImportBeginRequest? ImportBegin { get; init; }
@@ -256,6 +262,16 @@ public static class ProductIpcRequestValidator
         if (requiresServerId && request.ServerId.GetValueOrDefault() == Guid.Empty)
         {
             return new ProductIpcError("protocol.server_id_required", "A non-empty server id is required.");
+        }
+
+        if (request.AcceptMinecraftEula is not null
+            && request.Method is not (
+                ProductIpcProtocol.ServerStartMethod
+                or ProductIpcProtocol.ServerRestartMethod))
+        {
+            return new ProductIpcError(
+                "protocol.eula_confirmation_not_allowed",
+                "Minecraft EULA confirmation is valid only for a server start or restart request.");
         }
 
         if (request.Method == ProductIpcProtocol.ServerRegisterMethod && request.Server is null)

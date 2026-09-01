@@ -37,6 +37,62 @@ public sealed class ProductServiceClientTests
     }
 
     [Fact]
+    public async Task ConfirmedMinecraftEulaStart_RequiresApi16AndRoundTripsOneShotFlag()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerStartMethod, request.Method);
+            Assert.Equal(serverId, request.ServerId);
+            Assert.Equal(
+                ProductApiProtocol.MinecraftEulaConsentVersion,
+                request.ClientMinimumApiVersion);
+            Assert.Equal(ProductApiProtocol.CurrentVersion, request.ClientMaximumApiVersion);
+            Assert.True(request.AcceptMinecraftEula is true);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                Mutation = new ProductServerMutationResult(
+                    serverId,
+                    true,
+                    CreateStatus(serverId, "Paper")),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var result = await client.StartAsync(serverId, acceptMinecraftEula: true);
+
+        Assert.Equal(serverId, result.ServerId);
+        Assert.True(result.Changed);
+        await server;
+    }
+
+    [Fact]
+    public async Task UnconfirmedMinecraftEulaStart_RemainsCompatibleAndOmitsOneShotFlag()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductApiProtocol.MinimumSupportedVersion, request.ClientMinimumApiVersion);
+            Assert.Null(request.AcceptMinecraftEula);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                Mutation = new ProductServerMutationResult(
+                    serverId,
+                    false,
+                    CreateStatus(serverId, "Paper")),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var result = await client.StartAsync(serverId);
+
+        Assert.False(result.Changed);
+        await server;
+    }
+
+    [Fact]
     public async Task ServiceError_PreservesStableCode()
     {
         var pipeName = $"muhun-test-{Guid.NewGuid():N}";

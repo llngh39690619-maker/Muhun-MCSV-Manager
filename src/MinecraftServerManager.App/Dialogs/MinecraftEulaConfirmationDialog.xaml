@@ -1,0 +1,58 @@
+<Window x:Class="MinecraftServerManager.App.Dialogs.MinecraftEulaConfirmationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal"
+        Title="{DynamicResource L10n.main.vm.confirm.minecraftEulaTitle}"
+        Width="610" MinWidth="460" SizeToContent="Height"
+        MaxHeight="680"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Style="{StaticResource AppWindowStyle}"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        Loaded="OnWindowLoaded">
+    <Grid Margin="20" Background="{DynamicResource WindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="{DynamicResource L10n.main.vm.confirm.minecraftEulaTitle}"
+                   FontSize="20" FontWeight="SemiBold" />
+
+        <Border Grid.Row="1" Margin="0,16,0,18" Padding="16"
+                Background="{DynamicResource PanelRaisedBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1" CornerRadius="9">
+            <StackPanel>
+                <TextBlock x:Name="DescriptionText"
+                           TextWrapping="Wrap"
+                           LineHeight="21" />
+                <TextBlock Margin="0,14,0,0">
+                    <Hyperlink NavigateUri="https://aka.ms/MinecraftEULA"
+                               RequestNavigate="OnMinecraftEulaLinkRequestNavigate">
+                        <Run Text="{DynamicResource L10n.core.eula.link}" />
+                    </Hyperlink>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="CancelButton"
+                    MinWidth="104" Margin="0,0,8,0"
+                    Content="{DynamicResource L10n.common.cancel}"
+                    IsDefault="True" IsCancel="True"
+                    Click="OnCancelClick" />
+            <Button x:Name="AgreeButton"
+                    MinWidth="138"
+                    Content="{DynamicResource L10n.main.vm.confirm.minecraftEulaAgree}"
+                    IsDefault="False"
+                    Style="{StaticResource PrimaryButton}"
+                    Click="OnAgreeClick" />
+        </StackPanel>
+    </Grid>
+</Window>

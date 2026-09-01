@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Navigation;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Core.Models;
@@ -97,6 +98,14 @@ public partial class CoreServerCreationDialog : Window
 
         _completed = true;
         DialogResult = true;
+    }
+
+    private void OnMinecraftEulaLinkRequestNavigate(
+        object sender,
+        RequestNavigateEventArgs e)
+    {
+        _ = MinecraftEulaLinkOpener.TryOpen(this);
+        e.Handled = true;
     }
 
     private void OnCancelClick(object sender, RoutedEventArgs e)

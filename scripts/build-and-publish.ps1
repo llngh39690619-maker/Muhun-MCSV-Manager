@@ -13,7 +13,26 @@ $dotnet = if (Test-Path -LiteralPath $bundledDotnet) {
 
 & $dotnet --version
 & $dotnet restore (Join-Path $projectRoot 'MinecraftServerManager.sln')
-& $dotnet test (Join-Path $projectRoot 'MinecraftServerManager.sln') --configuration $Configuration --no-restore
+$testProjects = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'tests') `
+    -Recurse -Filter '*.Tests.csproj' -File | Sort-Object FullName)
+foreach ($testProject in $testProjects) {
+    $testArguments = @(
+        'test', $testProject.FullName,
+        '--configuration', $Configuration,
+        '--no-restore'
+    )
+    if ($testProject.Name -ceq 'MinecraftServerManager.App.Tests.csproj') {
+        & (Join-Path $PSScriptRoot 'Invoke-IsolatedDesktopProcess.ps1') `
+            -FilePath $dotnet `
+            -WorkingDirectory $projectRoot `
+            -ArgumentList $testArguments
+    } else {
+        & $dotnet @testArguments
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Test project failed with exit code ${LASTEXITCODE}: $($testProject.Name)"
+    }
+}
 & $dotnet publish (Join-Path $projectRoot 'src\MinecraftServerManager.App\MinecraftServerManager.App.csproj') `
     --configuration $Configuration `
     --runtime win-x64 `

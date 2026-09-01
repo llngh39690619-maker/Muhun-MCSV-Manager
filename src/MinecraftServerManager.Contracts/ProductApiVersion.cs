@@ -54,7 +54,14 @@ public static class ProductApiProtocol
 {
     public static ProductApiVersion MinimumSupportedVersion { get; } = new(1, 0);
 
-    public static ProductApiVersion CurrentVersion { get; } = new(1, 5);
+    /// <summary>
+    /// First API version that binds an explicit Minecraft EULA confirmation to one local
+    /// start/restart request. Desktop clients require this safety-critical capability so an older
+    /// Service cannot silently ignore the confirmation field and launch without the preflight.
+    /// </summary>
+    public static ProductApiVersion MinecraftEulaConsentVersion { get; } = new(1, 6);
+
+    public static ProductApiVersion CurrentVersion { get; } = MinecraftEulaConsentVersion;
 
     public const string RestBasePath = "/api/v1";
 

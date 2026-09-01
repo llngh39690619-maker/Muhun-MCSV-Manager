@@ -2,6 +2,16 @@
 
 ## 未發布
 
+## 1.2.9-beta.1 — 主螢幕定位與 EULA 啟動前檢查修正版（研發中）
+
+- X MCSV 主視窗固定在 Windows 主要顯示器置中開啟；由 X MCSV 開啟的子視窗與檔案選擇器跟隨所屬視窗，螢幕配置變更後會回到可見工作區，同時保留使用者開啟後自由移動視窗的行為。
+- 所有會建立 WPF 視窗的自動化測試都必須在獨立、非互動的 Windows desktop 內執行；隔離失敗時直接停止，不會退回玩家正在遊戲的桌面，也不再跳到第二螢幕或搶走焦點。
+- Minecraft 核心在建立與每次啟動前都會於受鎖定的實例目錄檢查 `eula.txt`；只有使用者在建立介面勾選，或於手動啟動／重新啟動時明確確認後，才會以安全寫入流程設定並再次驗證 `eula=true`。
+- Windows Service、GUI 直接啟動與既有 Paper／Vanilla 實例共用相同的 EULA 啟動前檢查；遠端啟動、自動重啟與服務復原不會暗中接受 EULA，代理伺服器核心則維持不需要 Minecraft EULA 的正確行為。
+- FTB Server 模組包的新安裝與更新都新增未預勾的 Minecraft EULA 確認與官方連結；只有目前操作明確同意後才會傳遞 `-accept-eula`，背景工作與既有更新流程不再暗中代為接受。
+- 本機 Named Pipe IPC 升級為 API 1.6；`AcceptMinecraftEula` 只能在協商到 1.6 後用於單次啟動／重新啟動，新 GUI 會將不具此能力的舊 Service 判定為不相容，避免同意旗標被靜默忽略。
+- 本版為 Beta，僅在 GitHub 發布原始碼並標示為研發中；正式簽署 Windows 與 Android 建置只留作本機驗證，不上傳安裝包、可執行檔、APK、簽章、雜湊或其他二進位成品。
+
 ## 1.2.8 — 客戶端實例自動命名修正版（研發中）
 
 - 原版實例名稱會隨遊戲版本更新為 `Minecraft 版本`；Fabric、Forge、Quilt、NeoForge、OptiFine 與 LabyMod 則更新為 `載入器 版本`，不把載入器的具體建置版號加入名稱。

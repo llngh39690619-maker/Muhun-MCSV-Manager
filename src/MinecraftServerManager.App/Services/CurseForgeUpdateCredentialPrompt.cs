@@ -42,9 +42,13 @@ internal sealed class CurseForgeUpdateCredentialPrompt : ICurseForgeUpdateCreden
 }
 
 /// <summary>Test seam around the existing modal version picker.</summary>
+internal sealed record ModpackUpdateSelection(
+    OnlineModpackVersion Version,
+    bool MinecraftEulaAccepted);
+
 internal interface IModpackUpdateSelectionService
 {
-    OnlineModpackVersion? SelectVersion(
+    ModpackUpdateSelection? SelectUpdate(
         ServerInstance instance,
         IReadOnlyList<OnlineModpackVersion> availableVersions,
         Window? owner);
@@ -52,7 +56,7 @@ internal interface IModpackUpdateSelectionService
 
 internal sealed class ModpackUpdateSelectionService : IModpackUpdateSelectionService
 {
-    public OnlineModpackVersion? SelectVersion(
+    public ModpackUpdateSelection? SelectUpdate(
         ServerInstance instance,
         IReadOnlyList<OnlineModpackVersion> availableVersions,
         Window? owner)
@@ -67,6 +71,8 @@ internal sealed class ModpackUpdateSelectionService : IModpackUpdateSelectionSer
             dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
         }
 
-        return dialog.ShowDialog() == true ? dialog.SelectedVersion : null;
+        return dialog.ShowDialog() == true && dialog.SelectedVersion is { } selectedVersion
+            ? new ModpackUpdateSelection(selectedVersion, dialog.MinecraftEulaAccepted)
+            : null;
     }
 }

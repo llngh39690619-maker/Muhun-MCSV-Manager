@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using MinecraftServerManager.App.Dialogs;
 using MinecraftServerManager.App.Services;
+using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Core.Models;
 
 namespace MinecraftServerManager.App.Tests;
@@ -83,6 +84,9 @@ public sealed class CoreServerCreationDialogServiceTests
             {
                 var coreList = Assert.IsType<ListBox>(dialog.FindName("CoreList"));
                 coreList.SelectedItem = Assert.Single(coreList.Items.Cast<CoreServerProduct>());
+                var viewModel = Assert.IsType<CoreServerCreationViewModel>(dialog.DataContext);
+                Assert.True(viewModel.RequiresMinecraftEula);
+                viewModel.MinecraftEulaAccepted = true;
                 var createButton = Assert.IsType<Button>(dialog.FindName("CreateServerButton"));
                 Assert.True(createButton.IsEnabled);
                 createButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -114,7 +118,17 @@ public sealed class CoreServerCreationDialogServiceTests
                 var dialog = Application.Current.Windows
                     .OfType<CoreServerCreationDialog>()
                     .Single(window => window.IsVisible);
-                action(dialog);
+                try
+                {
+                    action(dialog);
+                }
+                catch
+                {
+                    // An assertion in the scheduled modal action must not leave a visible dialog
+                    // behind and poison every later WPF test in this shared process.
+                    dialog.Close();
+                    throw;
+                }
             },
             DispatcherPriority.ApplicationIdle);
     }

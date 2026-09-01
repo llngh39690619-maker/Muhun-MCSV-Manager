@@ -224,6 +224,21 @@ public sealed class Preview5FeatureSurfaceContractTests
             dialog.Descendants(Presentation + "CheckBox"),
             element => (string?)element.Attribute("Content")
                        == "{DynamicResource L10n.modpackUpdate.acknowledge}");
+        var minecraftEulaConsent = Assert.Single(
+            dialog.Descendants(Presentation + "CheckBox"),
+            element => (string?)element.Attribute("Content")
+                       == "{DynamicResource L10n.online.minecraftEula.accept}");
+        Assert.Null(minecraftEulaConsent.Attribute("IsChecked"));
+        var minecraftEulaLink = Assert.Single(
+            dialog.Descendants(Presentation + "Hyperlink"),
+            element => (string?)element.Attribute("NavigateUri")
+                       == "https://aka.ms/MinecraftEULA");
+        Assert.Equal(
+            "OnMinecraftEulaLinkRequestNavigate",
+            (string?)minecraftEulaLink.Attribute("RequestNavigate"));
+        var dialogCode = File.ReadAllText(GetAppSourcePath(
+            Path.Combine("Dialogs", "ModpackUpdateSelectionDialog.xaml.cs")));
+        Assert.Contains("MinecraftEulaLinkOpener.TryOpen(this)", dialogCode, StringComparison.Ordinal);
         Assert.Contains(
             dialog.Descendants(Presentation + "Button"),
             element => (string?)element.Attribute("Content") == "{DynamicResource L10n.modpackUpdate.confirm}"

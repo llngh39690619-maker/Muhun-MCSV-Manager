@@ -225,7 +225,8 @@ public sealed record FtbInstallRequest(
     int PackId,
     int VersionId,
     string InstallerPath,
-    string InstallationDirectory);
+    string InstallationDirectory,
+    bool MinecraftEulaAccepted = false);
 
 public sealed record FtbInstallerOutputLine(bool IsError, string Text);
 

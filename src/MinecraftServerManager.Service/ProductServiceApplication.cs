@@ -142,12 +142,15 @@ public static class ProductServiceApplication
                 provider.GetRequiredService<INotificationMessageRenderer>()));
         builder.Services.AddSingleton<ProductServerRestartBlocker>();
         builder.Services.AddSingleton<ServerPropertiesPortService>();
+        builder.Services.AddSingleton<MinecraftEulaAcceptanceService>();
+        builder.Services.AddSingleton<ProductServerEulaCoordinator>();
         builder.Services.AddSingleton<ProductServerPortCoordinator>();
         builder.Services.AddSingleton<ProductServerDirectoryLeaseProvider>();
         builder.Services.AddSingleton(provider =>
         {
             var registry = provider.GetRequiredService<ProductServerRegistry>();
             var restartBlocker = provider.GetRequiredService<ProductServerRestartBlocker>();
+            var eulaCoordinator = provider.GetRequiredService<ProductServerEulaCoordinator>();
             var portCoordinator = provider.GetRequiredService<ProductServerPortCoordinator>();
             var directoryLeaseProvider = provider.GetRequiredService<ProductServerDirectoryLeaseProvider>();
             var manager = new ServerProcessManager(new ServerProcessManagerOptions
@@ -170,8 +173,20 @@ public static class ProductServiceApplication
                     ProductServerRuntime.ApplyRegistrationLaunchSnapshot(snapshot, latest, layout);
                     return Task.CompletedTask;
                 },
-                PrepareStartAsync = portCoordinator.PrepareStartAsync,
-                PreparedStartAborted = portCoordinator.PreparedStartAborted,
+                PrepareStartWithContextAsync = async (snapshot, startContext, cancellationToken) =>
+                {
+                    await eulaCoordinator.PrepareStartAsync(
+                            snapshot,
+                            startContext,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    await portCoordinator.PrepareStartAsync(snapshot, cancellationToken)
+                        .ConfigureAwait(false);
+                },
+                PreparedStartAborted = instanceId =>
+                {
+                    portCoordinator.PreparedStartAborted(instanceId);
+                },
             });
             manager.StateChanged += portCoordinator.ObserveStateChanged;
             return manager;

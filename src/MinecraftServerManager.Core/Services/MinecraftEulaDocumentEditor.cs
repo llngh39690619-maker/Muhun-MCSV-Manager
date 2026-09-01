@@ -11,7 +11,6 @@ public static class MinecraftEulaDocumentEditor
     private static readonly Regex EulaPropertyPattern = new(
         @"^(?<prefix>[ \t]*eula[ \t]*=[ \t]*)(?<value>[^\r\n]*)",
         RegexOptions.CultureInvariant
-        | RegexOptions.IgnoreCase
         | RegexOptions.Multiline
         | RegexOptions.NonBacktracking);
 
@@ -57,7 +56,7 @@ public static class MinecraftEulaDocumentEditor
             : string.Empty;
         return contents
                + separator
-               + $"# Automatically accepted by configured user preference at {acceptedAt:O}{newline}"
+               + $"# Accepted by X MCSV after explicit user confirmation at {acceptedAt:O}{newline}"
                + $"eula=true{newline}";
     }
 }

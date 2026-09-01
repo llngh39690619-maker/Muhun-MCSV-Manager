@@ -32,6 +32,29 @@ public sealed class ProductIpcFoundationTests
         Assert.Equal("service.not_ready", response.Error?.Code);
     }
 
+    [Theory]
+    [InlineData(ProductIpcProtocol.ServerStartMethod, true)]
+    [InlineData(ProductIpcProtocol.ServerStartMethod, false)]
+    [InlineData(ProductIpcProtocol.ServerRestartMethod, true)]
+    [InlineData(ProductIpcProtocol.ServerRestartMethod, false)]
+    public void MinecraftEulaConfirmation_RequiresNegotiatedApi16(
+        string method,
+        bool acceptMinecraftEula)
+    {
+        var request = ValidRequest() with
+        {
+            Method = method,
+            ServerId = Guid.NewGuid(),
+            ClientMaximumApiVersion = new ProductApiVersion(1, 5),
+            AcceptMinecraftEula = acceptMinecraftEula,
+        };
+
+        var response = new ProductIpcMessageProcessor(ReadyState()).Process(request);
+
+        Assert.False(response.Success);
+        Assert.Equal("protocol.field_version_unsupported", response.Error?.Code);
+    }
+
     [Fact]
     public async Task OversizedFrame_IsRejectedBeforeAllocation()
     {

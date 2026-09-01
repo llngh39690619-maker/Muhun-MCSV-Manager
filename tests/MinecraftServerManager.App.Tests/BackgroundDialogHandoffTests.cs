@@ -21,6 +21,8 @@ public sealed class BackgroundDialogHandoffTests
             viewModel.SelectCoreAsync(viewModel.Cores.Single()).GetAwaiter().GetResult();
             viewModel.SelectedVersion = viewModel.Versions.Single();
             viewModel.ServerName = "  Background Core  ";
+            Assert.True(viewModel.RequiresMinecraftEula);
+            viewModel.MinecraftEulaAccepted = true;
             CoreServerCreationRequest? submitted = null;
             var dialog = new CoreServerCreationDialog(
                 viewModel,
@@ -29,11 +31,11 @@ public sealed class BackgroundDialogHandoffTests
                     submitted = request;
                     return BackgroundJobSubmissionResult.Success();
                 });
-            dialog.ContentRendered += (_, _) =>
+            dialog.ContentRendered += (_, _) => RunDialogActionWithCleanup(dialog, () =>
             {
                 var button = Assert.IsType<Button>(dialog.FindName("CreateServerButton"));
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            };
+            });
 
             var result = dialog.ShowDialog();
 
@@ -41,6 +43,7 @@ public sealed class BackgroundDialogHandoffTests
             Assert.NotNull(submitted);
             Assert.Equal("Background Core", submitted.ServerName);
             Assert.Equal(CoreWorkflow.Version, submitted.Version);
+            Assert.True(submitted.MinecraftEulaAccepted);
             Assert.Equal(0, workflow.CreateCount);
         });
     }
@@ -56,6 +59,7 @@ public sealed class BackgroundDialogHandoffTests
             viewModel.SelectResultAsync(viewModel.Results.Single(), null).GetAwaiter().GetResult();
             viewModel.SelectedVersion = viewModel.Versions.Single();
             viewModel.ServerName = "  Background Pack  ";
+            viewModel.MinecraftEulaAccepted = true;
             OnlineModpackInstallRequest? submitted = null;
             var dialog = new OnlineModpackDialog(
                 viewModel,
@@ -65,13 +69,13 @@ public sealed class BackgroundDialogHandoffTests
                     submitted = request;
                     return BackgroundJobSubmissionResult.Success();
                 });
-            dialog.ContentRendered += (_, _) =>
+            dialog.ContentRendered += (_, _) => RunDialogActionWithCleanup(dialog, () =>
             {
                 var button = Assert.Single(
                     FindVisualChildren<Button>(dialog),
                     candidate => candidate.Content as string == "下載並安裝");
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            };
+            });
 
             var result = dialog.ShowDialog();
 
@@ -79,8 +83,22 @@ public sealed class BackgroundDialogHandoffTests
             Assert.NotNull(submitted);
             Assert.Equal("Background Pack", submitted.ServerName);
             Assert.Equal(OnlineWorkflow.Version, submitted.Version);
+            Assert.True(submitted.MinecraftEulaAccepted);
             Assert.Equal(0, workflow.InstallCount);
         });
+    }
+
+    private static void RunDialogActionWithCleanup(Window dialog, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch
+        {
+            dialog.Close();
+            throw;
+        }
     }
 
     private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent)

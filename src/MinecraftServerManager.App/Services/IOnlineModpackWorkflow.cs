@@ -286,7 +286,8 @@ public sealed record OnlineModpackInstallProgress(
 public sealed record OnlineModpackInstallRequest(
     OnlineModpackSearchResult Project,
     OnlineModpackVersion Version,
-    string ServerName);
+    string ServerName,
+    bool MinecraftEulaAccepted = false);
 
 /// <summary>
 /// Provider-neutral application workflow used by <c>OnlineModpackDialog</c>. Implementations own

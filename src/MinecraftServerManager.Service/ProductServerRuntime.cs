@@ -23,6 +23,7 @@ public sealed class ProductServerRuntime : IAsyncDisposable
     private readonly ServerProcessManager _processManager;
     private readonly ProductDesiredRunIntentStore _desiredRunIntent;
     private readonly ProductServerRestartBlocker _restartBlocker;
+    private readonly ProductServerEulaCoordinator? _eulaCoordinator;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _operationGates = new();
     private readonly ConcurrentDictionary<Guid, ProductConsoleJournal> _journals = new();
     private int _shutdown;
@@ -32,13 +33,15 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         ProductDataLayout layout,
         ServerProcessManager processManager,
         ProductDesiredRunIntentStore desiredRunIntent,
-        ProductServerRestartBlocker? restartBlocker = null)
+        ProductServerRestartBlocker? restartBlocker = null,
+        ProductServerEulaCoordinator? eulaCoordinator = null)
     {
         _registry = registry;
         _layout = layout;
         _processManager = processManager;
         _desiredRunIntent = desiredRunIntent;
         _restartBlocker = restartBlocker ?? new ProductServerRestartBlocker();
+        _eulaCoordinator = eulaCoordinator;
         _processManager.ConsoleLineReceived += OnConsoleLineReceived;
         _processManager.StateChanged += OnStateChanged;
     }
@@ -257,12 +260,23 @@ public sealed class ProductServerRuntime : IAsyncDisposable
     public async Task<ProductServerMutationResult> StartAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)
+        => await StartAsync(
+                serverId,
+                acceptMinecraftEula: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<ProductServerMutationResult> StartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfShuttingDown();
         var gate = GetGate(serverId);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            EnsureEulaContextAvailable(acceptMinecraftEula);
             var registration = GetRegistration(serverId);
             if (_restartBlocker.IsBlocked(serverId))
             {
@@ -281,7 +295,10 @@ public sealed class ProductServerRuntime : IAsyncDisposable
             var started = false;
             try
             {
-                await _processManager.StartAsync(ToCoreInstance(registration), cancellationToken)
+                await _processManager.StartAsync(
+                        ToCoreInstance(registration),
+                        new ServerStartContext(acceptMinecraftEula),
+                        cancellationToken)
                     .ConfigureAwait(false);
                 started = true;
                 // Commit desired=true only after the Core process manager accepted the launch.
@@ -341,13 +358,33 @@ public sealed class ProductServerRuntime : IAsyncDisposable
     public async Task<ProductServerMutationResult> RestartAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)
+        => await RestartAsync(
+                serverId,
+                acceptMinecraftEula: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<ProductServerMutationResult> RestartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfShuttingDown();
         var gate = GetGate(serverId);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            EnsureEulaContextAvailable(acceptMinecraftEula);
             var registration = GetRegistration(serverId);
+            var startContext = new ServerStartContext(acceptMinecraftEula);
+            if (_eulaCoordinator is not null)
+            {
+                await _eulaCoordinator.EnsureRestartMayProceedAsync(
+                        ToCoreInstance(registration),
+                        startContext,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
             await _desiredRunIntent.LoadAsync(cancellationToken).ConfigureAwait(false);
             var wasDesired = _desiredRunIntent.IsDesired(serverId);
             // A restart never clears an existing desired=true commit during its stop/start gap.
@@ -363,7 +400,10 @@ public sealed class ProductServerRuntime : IAsyncDisposable
             var started = false;
             try
             {
-                await _processManager.StartAsync(ToCoreInstance(registration), cancellationToken)
+                await _processManager.StartAsync(
+                        ToCoreInstance(registration),
+                        startContext,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 started = true;
                 await _desiredRunIntent.SetDesiredAsync(serverId, true, cancellationToken)
@@ -386,6 +426,15 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         finally
         {
             gate.Release();
+        }
+    }
+
+    private void EnsureEulaContextAvailable(bool acceptMinecraftEula)
+    {
+        if (acceptMinecraftEula && _eulaCoordinator is null)
+        {
+            throw new InvalidOperationException(
+                "Minecraft EULA confirmation cannot be applied because launch preflight is unavailable.");
         }
     }
 

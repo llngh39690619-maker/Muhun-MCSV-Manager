@@ -17,6 +17,39 @@ namespace MinecraftServerManager.App.Tests;
 public sealed class OnlineModpackWorkflowTests
 {
     [Fact]
+    public async Task InstallFtb_RejectsMissingMinecraftEulaConsentBeforeAnyDownload()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        using var workflow = new OnlineModpackWorkflow(new ApplicationPaths(directory.Path));
+        var project = new OnlineModpackSearchResult(
+            OnlineModpackProvider.Ftb,
+            "134",
+            "FTB Fixture",
+            "Fixture",
+            "Tests");
+        var version = new OnlineModpackVersion(
+            OnlineModpackProvider.Ftb,
+            "134",
+            "100466",
+            "FTB Fixture 1.0",
+            "1.21.1",
+            "NeoForge",
+            "release",
+            DateTimeOffset.UtcNow,
+            HasOfficialServerPack: true);
+        var request = new OnlineModpackInstallRequest(project, version, "FTB Fixture");
+
+        await Assert.ThrowsAsync<MinecraftEulaAcceptanceRequiredException>(() =>
+            workflow.InstallAsync(
+                request,
+                transientApiKey: null,
+                new InlineProgress<OnlineModpackInstallProgress>(),
+                CancellationToken.None));
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(directory.Path));
+    }
+
+    [Fact]
     public async Task BrowseCurseForge_DeduplicatesModIdsAndAdvancesAcrossBoundedPages()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();

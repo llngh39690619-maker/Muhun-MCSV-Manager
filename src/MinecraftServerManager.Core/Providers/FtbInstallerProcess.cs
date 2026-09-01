@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using MinecraftServerManager.Core.Models;
+using MinecraftServerManager.Core.Services;
 
 namespace MinecraftServerManager.Core.Providers;
 
@@ -21,6 +22,11 @@ public sealed class FtbInstallerCommandBuilder
 
         ArgumentException.ThrowIfNullOrWhiteSpace(request.InstallerPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.InstallationDirectory);
+        if (!request.MinecraftEulaAccepted)
+        {
+            throw new MinecraftEulaAcceptanceRequiredException();
+        }
+
         var installerPath = Path.GetFullPath(request.InstallerPath);
         var installDirectory = Path.GetFullPath(request.InstallationDirectory);
 
@@ -48,6 +54,8 @@ public sealed class FtbInstallerCommandBuilder
         // across the many small files in a typical pack.
         Add(startInfo, "-threads", "16");
         Add(startInfo, "-timeout", "5m");
+        // This flag is legal only because the current immutable request carries explicit consent.
+        // Never infer acceptance from a previous install, an existing file, or unattended mode.
         startInfo.ArgumentList.Add("-accept-eula");
         return startInfo;
     }

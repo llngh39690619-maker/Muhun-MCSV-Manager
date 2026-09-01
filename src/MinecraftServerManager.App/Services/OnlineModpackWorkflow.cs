@@ -443,7 +443,12 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
                 progress.Report(ftbProgress.Format(line)));
             ownsStaging = true;
             var installed = await _ftbInstaller.InstallAsync(
-                    new FtbInstallRequest(packId, versionId, installerPath, staging),
+                    new FtbInstallRequest(
+                        packId,
+                        versionId,
+                        installerPath,
+                        staging,
+                        request.MinecraftEulaAccepted),
                     output,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -1416,6 +1421,12 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         if (!request.Version.HasOfficialServerPack)
         {
             throw new InvalidOperationException(L("online.workflow.error.noServerPack"));
+        }
+
+        if (request.Project.Provider == OnlineModpackProvider.Ftb
+            && !request.MinecraftEulaAccepted)
+        {
+            throw new MinecraftEulaAcceptanceRequiredException();
         }
 
         if (string.IsNullOrWhiteSpace(request.ServerName) || request.ServerName.Trim().Length > 80)

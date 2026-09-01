@@ -252,6 +252,12 @@ internal sealed class ProductServiceDesktopController :
         CancellationToken cancellationToken = default)
         => _client.StartAsync(serverId, cancellationToken);
 
+    public Task<ProductServerMutationResult> StartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => _client.StartAsync(serverId, acceptMinecraftEula, cancellationToken);
+
     public Task<ProductServerMutationResult> StopAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)
@@ -261,6 +267,12 @@ internal sealed class ProductServiceDesktopController :
         Guid serverId,
         CancellationToken cancellationToken = default)
         => _client.RestartAsync(serverId, cancellationToken);
+
+    public Task<ProductServerMutationResult> RestartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => _client.RestartAsync(serverId, acceptMinecraftEula, cancellationToken);
 
     public Task<ProductServerStatus> SendCommandAsync(
         Guid serverId,

@@ -20,6 +20,8 @@ public sealed class CoreServerCreationProgressVisualTests
             var viewModel = new CoreServerCreationViewModel(workflow);
             viewModel.InitializeAsync().GetAwaiter().GetResult();
             viewModel.SelectCoreAsync(Assert.Single(viewModel.Cores)).GetAwaiter().GetResult();
+            Assert.True(viewModel.RequiresMinecraftEula);
+            viewModel.MinecraftEulaAccepted = true;
             var dialog = new CoreServerCreationDialog(viewModel);
 
             try

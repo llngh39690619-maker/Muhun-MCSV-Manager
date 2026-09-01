@@ -135,7 +135,10 @@ public sealed class ClientWorkspacePresentationTests
             StringComparison.Ordinal);
         Assert.True(activateEnd > activateStart);
         var activateMethod = mainWindowSource[activateStart..activateEnd];
-        Assert.Contains("existing.Activate();", activateMethod, StringComparison.Ordinal);
+        Assert.Contains(
+            "PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);",
+            activateMethod,
+            StringComparison.Ordinal);
         Assert.Contains("window.Show();", activateMethod, StringComparison.Ordinal);
     }
 

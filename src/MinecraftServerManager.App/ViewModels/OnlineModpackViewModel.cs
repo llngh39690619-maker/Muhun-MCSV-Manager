@@ -164,6 +164,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
     private double _progressPercentage;
     private bool _isProgressIndeterminate;
     private bool _isInstallOperation;
+    private bool _minecraftEulaAccepted;
     private bool _disposed;
     private OnlineModpackSortChoice _selectedSort;
     private int _selectedResultLimit = 20;
@@ -413,6 +414,15 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _selectedResult, value))
             {
+                // Consent is operation-scoped. Selecting another project (or clearing the current
+                // one while filters change) must never carry acceptance into a later FTB install.
+                if (_minecraftEulaAccepted)
+                {
+                    _minecraftEulaAccepted = false;
+                    OnPropertyChanged(nameof(MinecraftEulaAccepted));
+                }
+
+                OnPropertyChanged(nameof(RequiresMinecraftEulaAcceptance));
                 NotifyActionStateChanged();
             }
         }
@@ -434,6 +444,21 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
     public string SelectedVersionAvailability => SelectedVersion is { HasOfficialServerPack: false }
         ? L("online.validation.noServerPack")
         : string.Empty;
+
+    public bool RequiresMinecraftEulaAcceptance
+        => SelectedResult?.Provider == OnlineModpackProvider.Ftb;
+
+    public bool MinecraftEulaAccepted
+    {
+        get => _minecraftEulaAccepted;
+        set
+        {
+            if (SetProperty(ref _minecraftEulaAccepted, value))
+            {
+                NotifyActionStateChanged();
+            }
+        }
+    }
 
     public string ServerName
     {
@@ -486,6 +511,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
     public bool CanInstall => !IsBusy
         && SelectedResult is not null
         && SelectedVersion is { HasOfficialServerPack: true }
+        && (!RequiresMinecraftEulaAcceptance || MinecraftEulaAccepted)
         && !string.IsNullOrWhiteSpace(ServerName);
 
     public string CancelButtonText => IsBusy ? L("online.cancelOperation") : L("common.close");
@@ -810,6 +836,13 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        if (SelectedResult.Provider == OnlineModpackProvider.Ftb
+            && !MinecraftEulaAccepted)
+        {
+            ErrorMessage = L("online.validation.minecraftEulaRequired");
+            return false;
+        }
+
         var serverName = ServerName.Trim();
         if (serverName.Length == 0)
         {
@@ -818,7 +851,11 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
         }
 
         ErrorMessage = string.Empty;
-        request = new OnlineModpackInstallRequest(SelectedResult, SelectedVersion, serverName);
+        request = new OnlineModpackInstallRequest(
+            SelectedResult,
+            SelectedVersion,
+            serverName,
+            MinecraftEulaAccepted);
         return true;
     }
 

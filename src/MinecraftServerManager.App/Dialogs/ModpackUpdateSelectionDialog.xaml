@@ -1,7 +1,7 @@
 <Window x:Class="MinecraftServerManager.App.Dialogs.ModpackUpdateSelectionDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="{DynamicResource L10n.modpackUpdate.window.title}" Width="720" Height="570" MinWidth="620" MinHeight="500"
+        Title="{DynamicResource L10n.modpackUpdate.window.title}" Width="720" Height="630" MinWidth="620" MinHeight="560"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         Style="{StaticResource AppWindowStyle}">
     <Grid Margin="18">
@@ -66,6 +66,21 @@
                            Text="{DynamicResource L10n.modpackUpdate.warning}" />
                 <CheckBox x:Name="AcknowledgementCheckBox" Margin="0,16,0,0"
                           Content="{DynamicResource L10n.modpackUpdate.acknowledge}" />
+                <Border Margin="0,16,0,0" Padding="12" CornerRadius="7"
+                        Background="{DynamicResource PanelRaisedBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                        Visibility="{Binding RequiresMinecraftEulaAcceptance, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <CheckBox x:Name="MinecraftEulaAcceptanceCheckBox"
+                                  Content="{DynamicResource L10n.online.minecraftEula.accept}" />
+                        <TextBlock Margin="22,7,0,0">
+                            <Hyperlink NavigateUri="https://aka.ms/MinecraftEULA"
+                                       RequestNavigate="OnMinecraftEulaLinkRequestNavigate">
+                                <Run Text="{DynamicResource L10n.online.minecraftEula.link}" />
+                            </Hyperlink>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </Border>
 

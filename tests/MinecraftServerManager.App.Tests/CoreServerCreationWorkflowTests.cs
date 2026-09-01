@@ -36,7 +36,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "中文 核心 Server"),
+            new CoreServerCreationRequest(product, version, "中文 核心 Server", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -48,7 +48,10 @@ public sealed class CoreServerCreationWorkflowTests
         Assert.True(File.Exists(instance.JavaExecutablePath));
         Assert.Equal(["nogui"], instance.ServerArguments);
         Assert.Null(instance.StopCommand);
-        Assert.False(File.Exists(Path.Combine(instance.DirectoryPath, "eula.txt")));
+        Assert.Contains(
+            "eula=true",
+            await File.ReadAllTextAsync(Path.Combine(instance.DirectoryPath, "eula.txt")),
+            StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(Path.Combine(instance.DirectoryPath, "server.properties")));
         Assert.False(File.Exists(fixture.Paths.SettingsFile));
         AssertNoTemporaryTrees(fixture.Paths.Servers);
@@ -114,7 +117,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Forge Argfile"),
+            new CoreServerCreationRequest(product, version, "Forge Argfile", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -167,7 +170,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Fabric 26.2 中文 Server"),
+            new CoreServerCreationRequest(product, version, "Fabric 26.2 中文 Server", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -218,7 +221,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "NeoForge 26.2 中文 Server"),
+            new CoreServerCreationRequest(product, version, "NeoForge 26.2 中文 Server", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -254,7 +257,7 @@ public sealed class CoreServerCreationWorkflowTests
         using var cancellation = new CancellationTokenSource();
 
         var operation = fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Cancelled Server"),
+            new CoreServerCreationRequest(product, version, "Cancelled Server", true),
             new InlineProgress<CoreServerCreationProgress>(),
             cancellation.Token);
         await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -292,7 +295,7 @@ public sealed class CoreServerCreationWorkflowTests
         using var cancellation = new CancellationTokenSource();
 
         var operation = fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Cancelled ReadOnly Build"),
+            new CoreServerCreationRequest(product, version, "Cancelled ReadOnly Build", true),
             new InlineProgress<CoreServerCreationProgress>(),
             cancellation.Token);
         await installStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -339,7 +342,7 @@ public sealed class CoreServerCreationWorkflowTests
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
             fixture.Workflow.CreateAsync(
-                new CoreServerCreationRequest(product, version, "Rejected Wrapper"),
+                new CoreServerCreationRequest(product, version, "Rejected Wrapper", true),
                 new InlineProgress<CoreServerCreationProgress>(),
                 CancellationToken.None));
 
@@ -364,14 +367,16 @@ public sealed class CoreServerCreationWorkflowTests
             new CoreServerCreationRequest(
                 product with { Software = CoreServerSoftware.Vanilla },
                 version,
-                "Mutated"),
+                "Mutated",
+                true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None));
         await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Workflow.CreateAsync(
             new CoreServerCreationRequest(
                 product,
                 version with { Build = "untrusted-wrapper-build" },
-                "Mutated"),
+                "Mutated",
+                true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None));
 
@@ -465,7 +470,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, $"{software} exact output"),
+            new CoreServerCreationRequest(product, version, $"{software} exact output", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -491,7 +496,7 @@ public sealed class CoreServerCreationWorkflowTests
 
         var progress = new InlineProgress<CoreServerCreationProgress>();
         var instance = await workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Spigot-1.21.4"),
+            new CoreServerCreationRequest(product, version, "Spigot-1.21.4", true),
             progress,
             CancellationToken.None);
 
@@ -571,7 +576,7 @@ public sealed class CoreServerCreationWorkflowTests
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
             fixture.Workflow.CreateAsync(
-                new CoreServerCreationRequest(product, version, "mutated Spigot"),
+                new CoreServerCreationRequest(product, version, "mutated Spigot", true),
                 new InlineProgress<CoreServerCreationProgress>(),
                 CancellationToken.None));
 
@@ -662,7 +667,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Spigot-1.8.8"),
+            new CoreServerCreationRequest(product, version, "Spigot-1.8.8", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -698,7 +703,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Paper-1.12.2"),
+            new CoreServerCreationRequest(product, version, "Paper-1.12.2", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -739,7 +744,7 @@ public sealed class CoreServerCreationWorkflowTests
         var (product, version) = await ReadSingleSelectionAsync(fixture.Workflow);
 
         var instance = await fixture.Workflow.CreateAsync(
-            new CoreServerCreationRequest(product, version, "Vanilla-1.2.5"),
+            new CoreServerCreationRequest(product, version, "Vanilla-1.2.5", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 
@@ -785,7 +790,7 @@ public sealed class CoreServerCreationWorkflowTests
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
             fixture.Workflow.CreateAsync(
-                new CoreServerCreationRequest(product, version, "Rejected Vanilla"),
+                new CoreServerCreationRequest(product, version, "Rejected Vanilla", true),
                 new InlineProgress<CoreServerCreationProgress>(),
                 CancellationToken.None));
 
@@ -872,7 +877,7 @@ public sealed class CoreServerCreationWorkflowTests
         var forge = versions.Single(item => item.DisplayName.EndsWith("· forge", StringComparison.Ordinal));
 
         var instance = await workflow.CreateAsync(
-            new CoreServerCreationRequest(product, forge, "Arclight 中文 Server"),
+            new CoreServerCreationRequest(product, forge, "Arclight 中文 Server", true),
             new InlineProgress<CoreServerCreationProgress>(),
             CancellationToken.None);
 

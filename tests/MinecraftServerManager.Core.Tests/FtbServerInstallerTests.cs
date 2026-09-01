@@ -78,7 +78,12 @@ public sealed class FtbServerInstallerTests
         var runner = new RecordingRunner();
         var validator = new RecordingValidator();
         var installer = new FtbServerInstaller(runner, validator);
-        var request = new FtbInstallRequest(134, 100466, installerPath, staging);
+        var request = new FtbInstallRequest(
+            134,
+            100466,
+            installerPath,
+            staging,
+            MinecraftEulaAccepted: true);
 
         var result = await installer.InstallAsync(request);
 
@@ -104,7 +109,12 @@ public sealed class FtbServerInstallerTests
             new RecordingValidator());
 
         await Assert.ThrowsAsync<FtbInstallerProcessException>(() => installer.InstallAsync(
-            new FtbInstallRequest(134, 100466, installerPath, staging)));
+            new FtbInstallRequest(
+                134,
+                100466,
+                installerPath,
+                staging,
+                MinecraftEulaAccepted: true)));
 
         Assert.False(Directory.Exists(staging));
         Assert.True(File.Exists(installerPath));
@@ -122,7 +132,12 @@ public sealed class FtbServerInstallerTests
             new RecordingValidator(_ => throw new InvalidDataException("manifest mismatch")));
 
         await Assert.ThrowsAsync<InvalidDataException>(() => installer.InstallAsync(
-            new FtbInstallRequest(134, 100466, installerPath, staging)));
+            new FtbInstallRequest(
+                134,
+                100466,
+                installerPath,
+                staging,
+                MinecraftEulaAccepted: true)));
 
         Assert.False(Directory.Exists(staging));
     }
@@ -140,9 +155,32 @@ public sealed class FtbServerInstallerTests
         var installer = new FtbServerInstaller(new RecordingRunner(), new RecordingValidator());
 
         await Assert.ThrowsAsync<IOException>(() => installer.InstallAsync(
-            new FtbInstallRequest(134, 100466, installerPath, staging)));
+            new FtbInstallRequest(
+                134,
+                100466,
+                installerPath,
+                staging,
+                MinecraftEulaAccepted: true)));
 
         Assert.Equal("user data", await File.ReadAllTextAsync(sentinel));
+    }
+
+    [Fact]
+    public async Task InstallAsync_RejectsMissingMinecraftEulaConsentBeforeFilesystemOrProcessWork()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var installerPath = Path.Combine(temporaryDirectory.Path, "missing-installer.exe");
+        var staging = Path.Combine(temporaryDirectory.Path, "must-not-exist");
+        var runner = new RecordingRunner();
+        var validator = new RecordingValidator();
+        var installer = new FtbServerInstaller(runner, validator);
+
+        await Assert.ThrowsAsync<MinecraftEulaAcceptanceRequiredException>(() =>
+            installer.InstallAsync(new FtbInstallRequest(134, 100466, installerPath, staging)));
+
+        Assert.False(Directory.Exists(staging));
+        Assert.Empty(runner.StartInfos);
+        Assert.Empty(validator.Calls);
     }
 
     private static async Task CreateRunnableNeoForgePackAsync(

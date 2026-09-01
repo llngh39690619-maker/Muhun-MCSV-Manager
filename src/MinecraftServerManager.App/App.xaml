@@ -51,6 +51,7 @@
             <Setter Property="UseLayoutRounding" Value="True" />
             <Setter Property="SnapsToDevicePixels" Value="True" />
             <Setter Property="infra:DarkWindowSurface.IsEnabled" Value="True" />
+            <Setter Property="infra:PrimaryDisplayWindowPlacement.IsEnabled" Value="True" />
         </Style>
         <Style TargetType="Window" BasedOn="{StaticResource AppWindowStyle}" />
         <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextBrush}" /></Style>

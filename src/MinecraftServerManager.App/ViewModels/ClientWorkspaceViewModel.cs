@@ -3575,7 +3575,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             AddExtension = true,
             DefaultExt = ".png",
         };
-        if (dialog.ShowDialog() == true)
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(dialog) == true)
         {
             if (!MinecraftSkin3DView.TryLoadSkinFileForPreview(dialog.FileName, out _))
             {
@@ -4634,7 +4634,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             Multiselect = false,
             Filter = L("client.vm.dialog.iconFilter"),
         };
-        if (picker.ShowDialog() == true)
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) == true)
         {
             SettingsEditor.IconImagePath = picker.FileName;
         }
@@ -4655,7 +4655,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             Multiselect = false,
             Filter = L("client.vm.dialog.javaFilter"),
         };
-        if (picker.ShowDialog() != true)
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true)
         {
             return;
         }
@@ -5997,7 +5997,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 Title = L("client.vm.dialog.importWorldTitle"),
                 Multiselect = false,
             };
-            return folderPicker.ShowDialog() == true ? [folderPicker.FolderName] : [];
+            return PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(folderPicker) == true
+                ? [folderPicker.FolderName]
+                : [];
         }
 
         var filePicker = new OpenFileDialog
@@ -6014,7 +6016,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 _ => L("client.vm.dialog.importAllFilter"),
             },
         };
-        return filePicker.ShowDialog() == true ? filePicker.FileNames : [];
+        return PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(filePicker) == true
+            ? filePicker.FileNames
+            : [];
     }
 
     private async Task ToggleSelectedContentEnabledAsync()

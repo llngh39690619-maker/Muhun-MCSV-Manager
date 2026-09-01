@@ -97,6 +97,24 @@ public sealed class ProductServiceConnectionProbeTests
         Assert.Null(result.Handshake);
     }
 
+    [Fact]
+    public async Task Probe_RejectsServiceWithoutMinecraftEulaConsentCapability()
+    {
+        var client = new StubClient
+        {
+            Handshake = Handshake(
+                ready: true,
+                ProductApiProtocol.MinimumSupportedVersion,
+                new ProductApiVersion(1, 5)),
+        };
+
+        var result = await ProductServiceConnectionProbe.ProbeAsync(client);
+
+        Assert.Equal(ProductServiceConnectionState.Incompatible, result.State);
+        Assert.Equal("protocol.version_incompatible", result.Code);
+        Assert.Null(result.Handshake);
+    }
+
     private static ProductLocalHandshakePayload Handshake(
         bool ready,
         ProductApiVersion minimum,

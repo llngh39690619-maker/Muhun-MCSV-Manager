@@ -74,7 +74,10 @@ public static class ProductServiceConnectionProbe
                && clientMinimum.Major == serviceMinimum.Major
                && clientMaximum.Major == serviceMaximum.Major
                && clientMinimum.CompareTo(serviceMaximum) <= 0
-               && serviceMinimum.CompareTo(clientMaximum) <= 0;
+               && serviceMinimum.CompareTo(clientMaximum) <= 0
+               // EULA enforcement is part of every desktop lifecycle operation, rather than an
+               // optional panel that can simply be hidden when an older Service is installed.
+               && serviceMaximum.CompareTo(ProductApiProtocol.MinecraftEulaConsentVersion) >= 0;
     }
 
     private static ProductServiceConnectionState Classify(string? code)

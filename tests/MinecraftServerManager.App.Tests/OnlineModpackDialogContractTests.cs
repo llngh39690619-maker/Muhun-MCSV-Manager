@@ -217,6 +217,34 @@ public sealed class OnlineModpackDialogContractTests
     }
 
     [Fact]
+    public void FtbMinecraftEulaConsent_IsUncheckedBoundAndUsesGuardedOfficialLink()
+    {
+        var xaml = File.ReadAllText(GetAppSourcePath(
+            Path.Combine("Dialogs", "OnlineModpackDialog.xaml")));
+        var code = File.ReadAllText(GetAppSourcePath(
+            Path.Combine("Dialogs", "OnlineModpackDialog.xaml.cs")));
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var consent = Assert.Single(
+            document.Descendants(presentation + "CheckBox"),
+            element => (string?)element.Attribute(x + "Name") == "MinecraftEulaAcceptanceCheckBox");
+        Assert.Equal(
+            "{Binding MinecraftEulaAccepted, Mode=TwoWay}",
+            (string?)consent.Attribute("IsChecked"));
+        Assert.NotEqual("True", (string?)consent.Attribute("IsChecked"));
+
+        var link = Assert.Single(
+            document.Descendants(presentation + "Hyperlink"),
+            element => (string?)element.Attribute("NavigateUri") == "https://aka.ms/MinecraftEULA");
+        Assert.Equal(
+            "OnMinecraftEulaLinkRequestNavigate",
+            (string?)link.Attribute("RequestNavigate"));
+        Assert.Contains("MinecraftEulaLinkOpener.TryOpen(this)", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ApplicationResources_AreUniqueAndEveryDialogReferenceResolves()
     {
         var application = XDocument.Load(GetAppSourcePath("App.xaml"));

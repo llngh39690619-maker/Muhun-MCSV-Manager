@@ -18,6 +18,7 @@ $dotnet = if (Test-Path -LiteralPath $bundledDotnet) {
 } else {
     (Get-Command dotnet -ErrorAction Stop).Source
 }
+$isolatedDesktopRunner = Join-Path $PSScriptRoot 'Invoke-IsolatedDesktopProcess.ps1'
 $solution = Join-Path $projectRoot 'MinecraftServerManager.sln'
 $serviceProject = Join-Path $projectRoot 'src\MinecraftServerManager.Service\MinecraftServerManager.Service.csproj'
 $appProject = Join-Path $projectRoot 'src\MinecraftServerManager.App\MinecraftServerManager.App.csproj'
@@ -62,6 +63,18 @@ function Invoke-Dotnet {
     & $dotnet @DotnetArguments
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet command failed with exit code ${LASTEXITCODE}: $($DotnetArguments -join ' ')"
+    }
+}
+
+function Invoke-IsolatedDotnet {
+    param([Parameter(Mandatory = $true, Position = 0)][string[]]$DotnetArguments)
+
+    & $isolatedDesktopRunner `
+        -FilePath $dotnet `
+        -WorkingDirectory $projectRoot `
+        -ArgumentList $DotnetArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "isolated dotnet command failed with exit code ${LASTEXITCODE}: $($DotnetArguments -join ' ')"
     }
 }
 
@@ -120,7 +133,7 @@ if (Compare-Object $discoveredTests $configuredTests) {
 }
 
 foreach ($testProject in $testProjects.GetEnumerator()) {
-    Invoke-Dotnet @(
+    $testArguments = @(
         'test', (Join-Path $projectRoot $testProject.Value),
         '--configuration', $Configuration,
         '--no-build',
@@ -129,6 +142,11 @@ foreach ($testProject in $testProjects.GetEnumerator()) {
         '--logger', "trx;LogFileName=$($testProject.Key).trx",
         '--results-directory', $testResultsRoot
     )
+    if ($testProject.Key -ceq 'App') {
+        Invoke-IsolatedDotnet $testArguments
+    } else {
+        Invoke-Dotnet $testArguments
+    }
 }
 
 # A self-contained RID publish needs RID-specific assets. Restore it explicitly so

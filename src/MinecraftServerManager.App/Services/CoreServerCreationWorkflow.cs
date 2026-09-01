@@ -31,6 +31,7 @@ public sealed partial class CoreServerCreationWorkflow :
     private readonly object _catalogStateSync = new();
     private readonly ServerPackDetector _serverPackDetector = new();
     private readonly JarCoreDetector _jarCoreDetector = new();
+    private readonly MinecraftEulaAcceptanceService _eulaAcceptance = new();
     private IReadOnlyList<CoreServerBackendProduct>? _catalogProducts;
     private Dictionary<string, CoreServerCatalogCacheEntry>? _catalogEntries;
     private string? _catalogCacheLoadWarning;
@@ -89,6 +90,11 @@ public sealed partial class CoreServerCreationWorkflow :
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(progress);
         ValidateServerName(request.ServerName);
+        if (request.Core.Software is not CoreServerSoftware.Velocity
+            && !request.MinecraftEulaAccepted)
+        {
+            throw new MinecraftEulaAcceptanceRequiredException();
+        }
         cancellationToken.ThrowIfCancellationRequested();
 
         progress.Report(new(
@@ -141,6 +147,15 @@ public sealed partial class CoreServerCreationWorkflow :
                     installed,
                     cancellationToken)
                 .ConfigureAwait(false);
+
+            if (MinecraftEulaAcceptanceService.IsRequired(plan.ExpectedCoreType))
+            {
+                await _eulaAcceptance.EnsureAcceptedAsync(
+                        staging,
+                        request.MinecraftEulaAccepted,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             progress.Report(new(
                 CoreServerCreationStage.Finalizing,

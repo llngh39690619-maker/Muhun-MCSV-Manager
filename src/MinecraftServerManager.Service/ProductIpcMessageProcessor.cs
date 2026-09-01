@@ -177,6 +177,17 @@ public sealed class ProductIpcMessageProcessor
                     "Server runtime methods require API version 1.1 or newer."));
         }
 
+        if (request.AcceptMinecraftEula is not null
+            && negotiation.SelectedVersion.Value.CompareTo(
+                ProductApiProtocol.MinecraftEulaConsentVersion) < 0)
+        {
+            return Failure(
+                request.RequestId,
+                new ProductIpcError(
+                    "protocol.field_version_unsupported",
+                    "Minecraft EULA confirmation requires API version 1.6 or newer."));
+        }
+
         var isUpdateMethod = request.Method is
             ProductIpcProtocol.UpdateStatusMethod or
             ProductIpcProtocol.UpdateCheckMethod or
@@ -464,7 +475,10 @@ public sealed class ProductIpcMessageProcessor
                 },
                 ProductIpcProtocol.ServerStartMethod => Success(request.RequestId) with
                 {
-                    Mutation = await _runtime.StartAsync(request.ServerId!.Value, cancellationToken)
+                    Mutation = await _runtime.StartAsync(
+                            request.ServerId!.Value,
+                            request.AcceptMinecraftEula == true,
+                            cancellationToken)
                         .ConfigureAwait(false),
                 },
                 ProductIpcProtocol.ServerStopMethod => Success(request.RequestId) with
@@ -474,7 +488,10 @@ public sealed class ProductIpcMessageProcessor
                 },
                 ProductIpcProtocol.ServerRestartMethod => Success(request.RequestId) with
                 {
-                    Mutation = await _runtime.RestartAsync(request.ServerId!.Value, cancellationToken)
+                    Mutation = await _runtime.RestartAsync(
+                            request.ServerId!.Value,
+                            request.AcceptMinecraftEula == true,
+                            cancellationToken)
                         .ConfigureAwait(false),
                 },
                 ProductIpcProtocol.ServerConsoleMethod => Success(request.RequestId) with

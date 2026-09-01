@@ -198,6 +198,7 @@ public sealed class CoreServerCreationViewModelTests
             Assert.Equal("My Arclight", workflow.LastCreateRequest?.ServerName);
             Assert.Same(core, workflow.LastCreateRequest?.Core);
             Assert.Same(version, workflow.LastCreateRequest?.Version);
+            Assert.True(workflow.LastCreateRequest?.MinecraftEulaAccepted);
         }
         finally
         {
@@ -334,6 +335,10 @@ public sealed class CoreServerCreationViewModelTests
         await viewModel.InitializeAsync();
         await viewModel.SelectCoreAsync(Assert.Single(viewModel.Cores));
         viewModel.ServerName = serverName;
+        if (viewModel.RequiresMinecraftEula)
+        {
+            viewModel.MinecraftEulaAccepted = true;
+        }
         Assert.True(viewModel.CanCreate);
         return viewModel;
     }

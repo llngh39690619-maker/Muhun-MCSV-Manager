@@ -59,6 +59,7 @@ $resolvedToolingRoot = if ([string]::IsNullOrWhiteSpace($ToolingRoot)) {
     [IO.Path]::GetFullPath($ToolingRoot).TrimEnd('\', '/')
 }
 $dotnet = Join-Path $resolvedToolingRoot 'dotnet10\dotnet.exe'
+$isolatedDesktopRunner = Join-Path $PSScriptRoot 'Invoke-IsolatedDesktopProcess.ps1'
 $stagingParent = Join-Path $projectRoot 'artifacts\formal-staging'
 $stagingRoot = Join-Path $stagingParent "$Version-$([guid]::NewGuid().ToString('N'))"
 $stagingMarker = Join-Path $stagingRoot '.muhun-formal-staging'
@@ -290,6 +291,20 @@ function Invoke-Dotnet {
     & $dotnet @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet failed with exit code ${LASTEXITCODE}: $($Arguments -join ' ')"
+    }
+}
+
+function Invoke-IsolatedDotnet {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    if (-not (Test-Path -LiteralPath $isolatedDesktopRunner -PathType Leaf)) {
+        throw 'The fail-closed isolated desktop test runner is missing.'
+    }
+    & $isolatedDesktopRunner `
+        -FilePath $dotnet `
+        -WorkingDirectory $projectRoot `
+        -ArgumentList $Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "isolated dotnet failed with exit code ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
 }
 
@@ -637,7 +652,7 @@ try {
     }
     foreach ($testProject in $testProjects) {
         Invoke-Dotnet @('restore', $testProject.FullName, '--locked-mode', '--nologo')
-        Invoke-Dotnet @(
+        $testArguments = @(
             'test', $testProject.FullName,
             '--configuration', 'Release',
             '--no-restore',
@@ -647,6 +662,11 @@ try {
             '-p:IncludeSourceRevisionInInformationalVersion=false',
             '-p:TreatWarningsAsErrors=true'
         )
+        if ($testProject.Name -ceq 'MinecraftServerManager.App.Tests.csproj') {
+            Invoke-IsolatedDotnet $testArguments
+        } else {
+            Invoke-Dotnet $testArguments
+        }
     }
 
     $testTotals = [ordered]@{ total = 0L; executed = 0L; passed = 0L; failed = 0L }

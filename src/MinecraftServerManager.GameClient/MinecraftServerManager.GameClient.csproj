@@ -23,10 +23,10 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.2.8</Version>
-    <AssemblyVersion>1.2.8.0</AssemblyVersion>
-    <FileVersion>1.2.8.0</FileVersion>
-    <InformationalVersion>1.2.8</InformationalVersion>
+    <Version>1.2.9-beta.1</Version>
+    <AssemblyVersion>1.2.9.0</AssemblyVersion>
+    <FileVersion>1.2.9.0</FileVersion>
+    <InformationalVersion>1.2.9-beta.1</InformationalVersion>
     <Description>Interactive Minecraft client installer and launcher for X MCSV.</Description>
   </PropertyGroup>
 

@@ -13,7 +13,8 @@ public sealed class FtbInstallerProcessTests
             134,
             100466,
             Path.Combine(Path.GetTempPath(), "官方 工具", "ftb installer.exe"),
-            Path.Combine(Path.GetTempPath(), "伺服器 分區", "FTB 天空：Aero 1.6.1"));
+            Path.Combine(Path.GetTempPath(), "伺服器 分區", "FTB 天空：Aero 1.6.1"),
+            MinecraftEulaAccepted: true);
 
         var startInfo = new FtbInstallerCommandBuilder().Build(request);
 
@@ -41,6 +42,19 @@ public sealed class FtbInstallerProcessTests
         Assert.DoesNotContain("-no-java", startInfo.ArgumentList);
         Assert.DoesNotContain("-skip-modloader", startInfo.ArgumentList);
         Assert.DoesNotContain("cmd.exe", startInfo.FileName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CommandBuilder_RejectsMissingMinecraftEulaConsentBeforeBuildingCommand()
+    {
+        var request = new FtbInstallRequest(
+            134,
+            100466,
+            Path.Combine(Path.GetTempPath(), "ftb installer.exe"),
+            Path.Combine(Path.GetTempPath(), "ftb-staging"));
+
+        Assert.Throws<MinecraftServerManager.Core.Services.MinecraftEulaAcceptanceRequiredException>(
+            () => new FtbInstallerCommandBuilder().Build(request));
     }
 
     [Fact]

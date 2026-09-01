@@ -124,6 +124,7 @@ public partial class App : Application
             || renderClientCatalogPreviewPath is not null
             || detectPackPath is not null
             || singleInstanceReadyPath is not null;
+        PrimaryDisplayWindowPlacement.SuppressActivationForNewWindows = diagnosticMode;
         MainWindow? applicationWindow = null;
         ProductGuiActivationAcknowledgementRequest? activationAcknowledgementRequest = null;
 

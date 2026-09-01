@@ -41,7 +41,10 @@ public sealed class GeneralSettingsUnsavedChangesDialogVisualTests
                         Assert.InRange(dialog.ActualWidth, 418, 422);
                         Assert.InRange(dialog.ActualHeight, 198, 202);
                         Assert.Equal(ResizeMode.NoResize, dialog.ResizeMode);
-                        Assert.Equal(WindowStartupLocation.CenterOwner, dialog.WindowStartupLocation);
+                        // The product placement behavior consumes CenterOwner after the HWND is
+                        // created and switches to Manual so later user movement is not overridden.
+                        // The physical owner-centered bounds are asserted below.
+                        Assert.Equal(WindowStartupLocation.Manual, dialog.WindowStartupLocation);
                         var background = Assert.IsType<SolidColorBrush>(dialog.Background);
                         Assert.False(background.Color.R > 240
                                      && background.Color.G > 240

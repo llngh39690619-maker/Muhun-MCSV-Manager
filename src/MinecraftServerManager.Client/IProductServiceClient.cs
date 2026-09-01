@@ -93,6 +93,15 @@ public interface IProductServiceClient : IAsyncDisposable
         Guid serverId,
         CancellationToken cancellationToken = default);
 
+    Task<ProductServerMutationResult> StartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => acceptMinecraftEula
+            ? Task.FromException<ProductServerMutationResult>(
+                new NotSupportedException("This client does not support explicit Minecraft EULA confirmation."))
+            : StartAsync(serverId, cancellationToken);
+
     Task<ProductServerMutationResult> StopAsync(
         Guid serverId,
         CancellationToken cancellationToken = default);
@@ -100,6 +109,15 @@ public interface IProductServiceClient : IAsyncDisposable
     Task<ProductServerMutationResult> RestartAsync(
         Guid serverId,
         CancellationToken cancellationToken = default);
+
+    Task<ProductServerMutationResult> RestartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => acceptMinecraftEula
+            ? Task.FromException<ProductServerMutationResult>(
+                new NotSupportedException("This client does not support explicit Minecraft EULA confirmation."))
+            : RestartAsync(serverId, cancellationToken);
 
     Task<ProductConsolePage> ReadConsoleAsync(
         Guid serverId,

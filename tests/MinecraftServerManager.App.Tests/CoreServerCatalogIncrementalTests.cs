@@ -95,6 +95,8 @@ public sealed class CoreServerCatalogIncrementalTests
         Assert.True(viewModel.IsCatalogRefreshing);
         await viewModel.SelectCoreAsync(product);
         Assert.Equal(version, Assert.Single(viewModel.Versions));
+        Assert.True(viewModel.RequiresMinecraftEula);
+        viewModel.MinecraftEulaAccepted = true;
         Assert.True(viewModel.CanCreate);
         Assert.Contains("可信快取", viewModel.VersionStateText, StringComparison.Ordinal);
 

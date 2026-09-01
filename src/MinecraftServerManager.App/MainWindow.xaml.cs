@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using MinecraftServerManager.App.Dialogs;
+using MinecraftServerManager.App.Infrastructure;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
 
@@ -492,7 +493,7 @@ public partial class MainWindow : Window
         Show();
         WindowState = _restoreWindowState;
         SafeHideTrayIcon();
-        Activate();
+        PrimaryDisplayWindowPlacement.ActivateWhenInteractive(this);
     }
 
     private void ExitFromTray()

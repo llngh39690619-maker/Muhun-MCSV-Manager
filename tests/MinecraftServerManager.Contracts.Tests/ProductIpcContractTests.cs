@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Contracts.Plugins;
 
@@ -78,8 +79,59 @@ public sealed class ProductIpcContractTests
     public void RuntimeContracts_AdvanceMinorApiWithoutDroppingVersionOneClients()
     {
         Assert.Equal(new ProductApiVersion(1, 0), ProductApiProtocol.MinimumSupportedVersion);
-        Assert.Equal(new ProductApiVersion(1, 5), ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 6), ProductApiProtocol.MinecraftEulaConsentVersion);
+        Assert.Equal(ProductApiProtocol.MinecraftEulaConsentVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void MinecraftEulaConfirmation_RoundTripsAndLegacyPayloadDefaultsToNull()
+    {
+        var serverId = Guid.NewGuid();
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var request = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerStartMethod,
+            ServerId = serverId,
+            ClientMinimumApiVersion = ProductApiProtocol.MinecraftEulaConsentVersion,
+            AcceptMinecraftEula = true,
+        };
+
+        var roundTripped = JsonSerializer.Deserialize<ProductIpcRequest>(
+            JsonSerializer.SerializeToUtf8Bytes(request, options),
+            options);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(ProductApiProtocol.MinecraftEulaConsentVersion, roundTripped.ClientMinimumApiVersion);
+        Assert.True(roundTripped.AcceptMinecraftEula is true);
+        Assert.Null(ProductIpcRequestValidator.Validate(roundTripped));
+
+        var legacyPayload = JsonSerializer.SerializeToUtf8Bytes(
+            new
+            {
+                schemaVersion = ProductIpcProtocol.CurrentSchemaVersion,
+                requestId = Guid.NewGuid(),
+                method = ProductIpcProtocol.ServerStartMethod,
+                clientMinimumApiVersion = ProductApiProtocol.MinimumSupportedVersion,
+                clientMaximumApiVersion = new ProductApiVersion(1, 5),
+                serverId,
+            },
+            options);
+        var legacyRequest = JsonSerializer.Deserialize<ProductIpcRequest>(legacyPayload, options);
+
+        Assert.NotNull(legacyRequest);
+        Assert.Null(legacyRequest.AcceptMinecraftEula);
+        Assert.Null(ProductIpcRequestValidator.Validate(legacyRequest));
+    }
+
+    [Fact]
+    public void MinecraftEulaConfirmation_IsRejectedOutsideStartOrRestart()
+    {
+        var request = ValidRequest() with { AcceptMinecraftEula = false };
+
+        Assert.Equal(
+            "protocol.eula_confirmation_not_allowed",
+            ProductIpcRequestValidator.Validate(request)?.Code);
     }
 
     [Fact]

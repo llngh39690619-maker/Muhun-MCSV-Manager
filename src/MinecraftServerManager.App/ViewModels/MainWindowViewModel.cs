@@ -88,6 +88,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly CancellationTokenSource _sessionServicesCancellation = new();
     private readonly CancellationTokenSource _applicationShutdownCancellation = new();
     private readonly ServerPropertiesPortService _serverPropertiesPortService = new();
+    private readonly MinecraftEulaAcceptanceService _minecraftEulaAcceptanceService = new();
     private readonly Func<PortOccupancySnapshot> _capturePortOccupancy;
     private readonly SemaphoreSlim _portAssignmentGate = new(1, 1);
     // Every operation that exposes a Server directory to the manager must hold this gate from
@@ -336,7 +337,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ShouldAutoRestartAsync = ShouldAutomaticallyRestartAsync,
             GetAutoRestartDelayAsync = GetAutomaticRestartDelayAsync,
             PrepareAutoRestartAsync = PrepareAutomaticRestartAsync,
-            PrepareStartAsync = PrepareServerStartAsync,
+            PrepareStartWithContextAsync = PrepareServerStartAsync,
             PreparedStartAborted = instanceId => ReleasePendingLaunchPort(instanceId)
         });
 
@@ -2136,7 +2137,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CheckFileExists = true,
             Multiselect = false
         };
-        if (picker.ShowDialog() != true) return;
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true) return;
 
         SetStatus("main.vm.status.analyzingJar");
         var detection = await _coreDetector.DetectAsync(picker.FileName);
@@ -2299,7 +2300,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             Title = L("main.vm.filePicker.serverFolderTitle"),
             Multiselect = false
         };
-        if (picker.ShowDialog() != true) return;
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true) return;
 
         SetStatus("main.vm.status.analyzingFolder");
         var detection = await _serverPackDetector.DetectAsync(picker.FolderName);
@@ -2814,7 +2815,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 existing.WindowState = WindowState.Normal;
             }
 
-            existing.Activate();
+            PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
             return;
         }
 
@@ -2839,7 +2840,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 existing.WindowState = WindowState.Normal;
             }
 
-            existing.Activate();
+            PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
             return;
         }
 
@@ -3272,7 +3273,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private async Task StartServerAsync(
         ServerInstanceViewModel server,
         bool allowInteractiveJavaDownload,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool userConfirmedMinecraftEula = false)
     {
         if (_modpackRecoveryFailures.ContainsKey(server.Id))
         {
@@ -3294,9 +3296,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             EnsureProductServiceConnected();
             SetStatus("main.vm.status.serviceStartRequest", server.Name);
-            var result = await ExecuteProductServiceOperationAsync(
-                token => _productServiceController.StartAsync(server.Id, token),
+            var result = await ExecuteProductServiceLifecycleWithEulaConfirmationAsync(
+                server,
+                restart: false,
+                allowInteractiveEulaConfirmation: allowInteractiveJavaDownload,
                 cancellationToken);
+            if (result is null)
+            {
+                return;
+            }
             ApplyProductServiceStatus(server, result.Status);
             OnPropertyChanged(nameof(RunningSummary));
             OnPropertyChanged(nameof(HasRunningServers));
@@ -3361,7 +3369,26 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         SetStatus("main.vm.status.lockingAndCheckingPort", server.Name);
-        await StartProcessCoordinatedAsync(server.Model, cancellationToken);
+        try
+        {
+            await StartProcessCoordinatedAsync(
+                server.Model,
+                cancellationToken,
+                userConfirmedMinecraftEula);
+        }
+        catch (MinecraftEulaAcceptanceRequiredException) when (
+            allowInteractiveJavaDownload && !userConfirmedMinecraftEula)
+        {
+            if (!ConfirmMinecraftEulaAcceptance(server))
+            {
+                return;
+            }
+
+            await StartProcessCoordinatedAsync(
+                server.Model,
+                cancellationToken,
+                userConfirmedMinecraftEula: true);
+        }
     }
 
     private async Task StopSelectedAsync()
@@ -3373,12 +3400,106 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         await StopServerCoordinatedAsync(server.Id, CancellationToken.None);
     }
 
-    private Task PrepareServerStartAsync(ServerInstance launchSnapshot, CancellationToken cancellationToken)
+    private async Task<ProductServerMutationResult?> ExecuteProductServiceLifecycleWithEulaConfirmationAsync(
+        ServerInstanceViewModel server,
+        bool restart,
+        bool allowInteractiveEulaConfirmation,
+        CancellationToken cancellationToken)
+    {
+        var controller = _productServiceController
+            ?? throw new InvalidOperationException(L("main.vm.service.operationFailed"));
+        try
+        {
+            return await ExecuteProductServiceOperationAsync(
+                token => restart
+                    ? controller.RestartAsync(server.Id, token)
+                    : controller.StartAsync(server.Id, token),
+                cancellationToken);
+        }
+        catch (InvalidOperationException error) when (
+            allowInteractiveEulaConfirmation && IsEulaConfirmationRequired(error))
+        {
+            if (!ConfirmMinecraftEulaAcceptance(server))
+            {
+                return null;
+            }
+
+            return await ExecuteProductServiceOperationAsync(
+                token => restart
+                    ? controller.RestartAsync(
+                        server.Id,
+                        acceptMinecraftEula: true,
+                        token)
+                    : controller.StartAsync(
+                        server.Id,
+                        acceptMinecraftEula: true,
+                        token),
+                cancellationToken);
+        }
+    }
+
+    private static bool IsEulaConfirmationRequired(Exception error)
+    {
+        for (var current = error; current is not null; current = current.InnerException)
+        {
+            if (current is ProductServiceClientException
+                {
+                    Code: "server.eula_acceptance_required"
+                })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool ConfirmMinecraftEulaAcceptance(ServerInstanceViewModel server)
+    {
+        var accepted = MinecraftEulaConfirmationDialog.Show(
+            Application.Current?.MainWindow,
+            server.Name);
+        if (!accepted)
+        {
+            SetStatus("main.vm.status.serverState", server.Name, server.StateText);
+        }
+
+        return accepted;
+    }
+
+    private async Task<bool?> ResolveRestartEulaAuthorizationAsync(
+        ServerInstanceViewModel server,
+        bool allowInteractiveConfirmation,
+        CancellationToken cancellationToken)
+    {
+        if (!MinecraftEulaAcceptanceService.IsRequired(server.Model.CoreType)
+            || await _minecraftEulaAcceptanceService.IsAcceptedAsync(
+                    server.DirectoryPath,
+                    cancellationToken))
+        {
+            return false;
+        }
+
+        if (!allowInteractiveConfirmation)
+        {
+            throw new MinecraftEulaAcceptanceRequiredException();
+        }
+
+        return ConfirmMinecraftEulaAcceptance(server) ? true : null;
+    }
+
+    private Task PrepareServerStartAsync(
+        ServerInstance launchSnapshot,
+        ServerStartContext startContext,
+        CancellationToken cancellationToken)
     {
         var dispatcher = Application.Current?.Dispatcher
             ?? throw new InvalidOperationException(L("main.vm.error.startDispatcherUnavailable"));
         return dispatcher.InvokeAsync(
-                () => PrepareServerStartOnUiAsync(launchSnapshot, cancellationToken),
+                () => PrepareServerStartOnUiAsync(
+                    launchSnapshot,
+                    startContext,
+                    cancellationToken),
                 System.Windows.Threading.DispatcherPriority.Normal,
                 cancellationToken)
             .Task
@@ -3437,13 +3558,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task PrepareServerStartOnUiAsync(
         ServerInstance launchSnapshot,
+        ServerStartContext startContext,
         CancellationToken cancellationToken)
     {
         var server = Servers.FirstOrDefault(item => item.Id == launchSnapshot.Id)
             ?? throw new InvalidOperationException(L("main.vm.error.startInstanceNotFound"));
         if (server.Model.CoreType is not (CoreType.Velocity or CoreType.Waterfall or CoreType.BungeeCord))
         {
-            await EnsureEulaAcceptedUnderLockAsync(server, cancellationToken);
+            await EnsureEulaAcceptedUnderLockAsync(
+                launchSnapshot.DirectoryPath,
+                startContext.UserConfirmedMinecraftEula,
+                cancellationToken);
         }
         await ApplyEffectiveMemoryForLaunchAsync(server, launchSnapshot, cancellationToken);
         try
@@ -3562,18 +3687,36 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             EnsureProductServiceConnected();
             SetStatus("main.vm.status.serviceRestartRequest", server.Name);
-            var result = await ExecuteProductServiceOperationAsync(
-                token => _productServiceController.RestartAsync(server.Id, token),
+            var result = await ExecuteProductServiceLifecycleWithEulaConfirmationAsync(
+                server,
+                restart: true,
+                allowInteractiveEulaConfirmation: true,
                 CancellationToken.None);
+            if (result is null)
+            {
+                return;
+            }
             ApplyProductServiceStatus(server, result.Status);
             OnPropertyChanged(nameof(RunningSummary));
             OnPropertyChanged(nameof(HasRunningServers));
             SetStatus("main.vm.status.serviceRestartAccepted", server.Name);
             return;
         }
+        var restartEulaAuthorization = await ResolveRestartEulaAuthorizationAsync(
+            server,
+            allowInteractiveConfirmation: true,
+            CancellationToken.None);
+        if (restartEulaAuthorization is null)
+        {
+            return;
+        }
         InvalidateAutomaticRestartIntent(server.Id);
         await StopServerCoordinatedAsync(server.Id, CancellationToken.None);
-        await StartServerAsync(server, allowInteractiveJavaDownload: true, CancellationToken.None);
+        await StartServerAsync(
+            server,
+            allowInteractiveJavaDownload: true,
+            CancellationToken.None,
+            restartEulaAuthorization.Value);
     }
 
     private async Task StopAllServersCoordinatedAsync(CancellationToken cancellationToken)
@@ -3629,14 +3772,19 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task<Guid> StartProcessCoordinatedAsync(
         ServerInstance instance,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool userConfirmedMinecraftEula = false)
     {
         var lifecycleGate = await EnterLifecycleTransitionAsync(instance.Id, cancellationToken)
             .ConfigureAwait(false);
         try
         {
             await WaitForBackupIdleAsync(instance.Id, cancellationToken).ConfigureAwait(false);
-            return await _processManager.StartAsync(instance, cancellationToken).ConfigureAwait(false);
+            return await _processManager.StartAsync(
+                    instance,
+                    new ServerStartContext(userConfirmedMinecraftEula),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -3779,9 +3927,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ApplyProductServiceStatus(server, result.Status);
             return;
         }
+        var restartEulaAuthorization = await ResolveRestartEulaAuthorizationAsync(
+            server,
+            allowInteractiveConfirmation: false,
+            cancellationToken);
         InvalidateAutomaticRestartIntent(instanceId);
         await StopServerCoordinatedAsync(instanceId, cancellationToken);
-        await StartServerAsync(server, allowInteractiveJavaDownload: false, cancellationToken);
+        await StartServerAsync(
+            server,
+            allowInteractiveJavaDownload: false,
+            cancellationToken,
+            restartEulaAuthorization.GetValueOrDefault());
     }
 
     internal async Task SendCommandForRemoteAsync(
@@ -4279,7 +4435,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 ?? throw new InvalidOperationException(L("main.vm.error.remoteNotInitialized"));
             if (_remoteAccessDialog is { IsLoaded: true } existing)
             {
-                existing.Activate();
+                PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
                 return;
             }
 
@@ -4354,7 +4510,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (_remoteWebConsoleDialog is { IsLoaded: true } existing)
         {
             if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
-            existing.Activate();
+            PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
             return;
         }
 
@@ -4393,7 +4549,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 {
                     existing.WindowState = WindowState.Normal;
                 }
-                existing.Activate();
+                PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
                 return;
             }
 
@@ -5370,7 +5526,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             Title = L("main.vm.filePicker.backgroundTitle"),
             Filter = L("main.vm.filePicker.backgroundFilter")
         };
-        if (picker.ShowDialog() != true) return;
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true) return;
 
         var backgroundRoot = Path.Combine(_paths.Themes, "backgrounds");
         Directory.CreateDirectory(backgroundRoot);
@@ -5396,7 +5552,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             Title = L("main.vm.filePicker.iconTitle"),
             Filter = L("main.vm.filePicker.iconFilter")
         };
-        if (picker.ShowDialog() != true) return;
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true) return;
 
         var iconRoot = Path.Combine(_paths.Themes, "icons");
         Directory.CreateDirectory(iconRoot);
@@ -6033,7 +6189,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CheckFileExists = true,
             Multiselect = false
         };
-        if (picker.ShowDialog() != true) return;
+        if (PrimaryDisplayWindowPlacement.ShowDialogOnProductDisplay(picker) != true) return;
         var archivePath = SafePath.EnsureWithinRoot(recoveryRoot, picker.FileName, allowRoot: false);
         SafePath.EnsureNoReparsePointsUnderRoot(recoveryRoot, archivePath);
         var answer = DarkMessageBox.Show(
@@ -6280,11 +6436,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var targetVersion = _modpackUpdateSelectionService.SelectVersion(
+        var updateSelection = _modpackUpdateSelectionService.SelectUpdate(
             server.Model,
             available,
             GetDialogOwner());
-        if (targetVersion is null)
+        if (updateSelection is null)
         {
             SetStatus("main.vm.status.modpackUpdateCancelled");
             return;
@@ -6293,9 +6449,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         await ApplyModpackUpdateAsync(
             server,
             project,
-            targetVersion,
+            updateSelection.Version,
             cancellationToken,
-            transientApiKey);
+            transientApiKey,
+            updateSelection.MinecraftEulaAccepted);
     }
 
     private static Window? GetDialogOwner()
@@ -6311,7 +6468,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnlineModpackSearchResult project,
         OnlineModpackVersion targetVersion,
         CancellationToken cancellationToken,
-        SecureString? transientApiKey = null)
+        SecureString? transientApiKey = null,
+        bool minecraftEulaAccepted = false)
     {
         if (!_modpackUpdates.TryAdd(server.Id, 0))
         {
@@ -6329,7 +6487,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                     project,
                     targetVersion,
                     cancellationToken,
-                    transientApiKey);
+                    transientApiKey,
+                    minecraftEulaAccepted);
             }
             finally
             {
@@ -6369,7 +6528,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 SetStatus("main.vm.status.modpackUpdateProgress", value.Message, percentage);
             });
             candidate = await _onlineModpackWorkflow.InstallAsync(
-                new OnlineModpackInstallRequest(project, targetVersion, candidateName),
+                new OnlineModpackInstallRequest(
+                    project,
+                    targetVersion,
+                    candidateName,
+                    minecraftEulaAccepted),
                 transientApiKey,
                 installProgress,
                 cancellationToken);
@@ -6532,7 +6695,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnlineModpackSearchResult project,
         OnlineModpackVersion targetVersion,
         CancellationToken cancellationToken,
-        SecureString? transientApiKey)
+        SecureString? transientApiKey,
+        bool minecraftEulaAccepted)
     {
         var controller = _productServiceController
             ?? throw new InvalidOperationException(L("main.vm.error.serviceModpackUpdateNotInitialized"));
@@ -6561,7 +6725,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         try
         {
             candidate = await _onlineModpackWorkflow.InstallAsync(
-                new OnlineModpackInstallRequest(project, targetVersion, candidateName),
+                new OnlineModpackInstallRequest(
+                    project,
+                    targetVersion,
+                    candidateName,
+                    minecraftEulaAccepted),
                 transientApiKey,
                 installProgress,
                 cancellationToken);
@@ -7682,39 +7850,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     }
 
     private async Task EnsureEulaAcceptedUnderLockAsync(
-        ServerInstanceViewModel server,
+        string launchDirectoryPath,
+        bool userConfirmedMinecraftEula,
         CancellationToken cancellationToken)
     {
-        // This personal build is configured at the user's explicit request to remember EULA
-        // acceptance. ProcessManager calls this hook only after taking the cross-process Server
-        // directory lock, and calls it again for automatic restarts as well as manual starts.
-        var serverRoot = Path.GetFullPath(server.DirectoryPath);
-        var path = Path.Combine(serverRoot, "eula.txt");
-        SafePath.EnsureNoReparsePointsUnderRoot(serverRoot, serverRoot);
-        if (File.Exists(path) || Directory.Exists(path))
-        {
-            SafePath.EnsureNoReparsePointsUnderRoot(serverRoot, path);
-        }
-
-        var document = await _serverPropertiesPortService.ReadDocumentAsync(path, cancellationToken);
-        if (document is not null && MinecraftEulaDocumentEditor.IsAccepted(document.Text))
-        {
-            return;
-        }
-
-        var newline = document?.Text.Contains("\r\n", StringComparison.Ordinal) == true
-            ? "\r\n"
-            : Environment.NewLine;
-        var contents = document?.Text ?? string.Empty;
-        var accepted = MinecraftEulaDocumentEditor.EnsureAccepted(
-            contents,
-            newline,
-            DateTimeOffset.Now);
-
-        await _serverPropertiesPortService.SaveDocumentAsync(
-            path,
-            accepted,
-            document?.FormatToken,
+        // ProcessManager invokes this only while holding the cross-process directory lease. The
+        // confirmation belongs to this exact StartAsync call; automatic restarts always carry the
+        // default context and may proceed only when eula.txt was already accepted.
+        await _minecraftEulaAcceptanceService.EnsureAcceptedAsync(
+            launchDirectoryPath,
+            userConfirmedMinecraftEula,
             cancellationToken);
     }
 

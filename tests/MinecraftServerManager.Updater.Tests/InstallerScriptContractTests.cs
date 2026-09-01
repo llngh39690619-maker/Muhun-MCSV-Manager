@@ -445,6 +445,10 @@ public sealed class InstallerScriptContractTests
             RepositoryRoot,
             "scripts",
             "Build-MuhunMcsvFormalRelease.ps1"));
+        var isolatedDesktopRunner = File.ReadAllText(Path.Combine(
+            RepositoryRoot,
+            "scripts",
+            "Invoke-IsolatedDesktopProcess.ps1"));
 
         Assert.Contains("[ValidateRange(3072, 8192)]", identity, StringComparison.Ordinal);
         Assert.Contains("ConvertFrom-SecureString", identity, StringComparison.Ordinal);
@@ -515,7 +519,18 @@ public sealed class InstallerScriptContractTests
         Assert.Contains("-p:IncludeSourceRevisionInInformationalVersion=false", formalBuild, StringComparison.Ordinal);
         Assert.Contains("New-MuhunMcsvRelease.ps1", formalBuild, StringComparison.Ordinal);
         Assert.Contains("Muhun MCSV Manager", formalBuild, StringComparison.Ordinal);
+        Assert.Contains("Invoke-IsolatedDotnet $testArguments", formalBuild, StringComparison.Ordinal);
+        Assert.Contains(
+            "$testProject.Name -ceq 'MinecraftServerManager.App.Tests.csproj'",
+            formalBuild,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("ExecutionPolicy Bypass", formalBuild, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("CreateDesktopW", isolatedDesktopRunner, StringComparison.Ordinal);
+        Assert.Contains("CreateProcessW", isolatedDesktopRunner, StringComparison.Ordinal);
+        Assert.Contains("WinSta0\\\\{desktopName}", isolatedDesktopRunner, StringComparison.Ordinal);
+        Assert.Contains("X_MCSV_ISOLATED_TEST_DESKTOP", isolatedDesktopRunner, StringComparison.Ordinal);
+        Assert.Contains("CreateNoWindow", isolatedDesktopRunner, StringComparison.Ordinal);
 
         Assert.Contains("service-win-x64", release, StringComparison.Ordinal);
         Assert.Contains("update-signing-public-key.json", release, StringComparison.Ordinal);

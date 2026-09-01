@@ -3,6 +3,13 @@ using MinecraftServerManager.Core.Models;
 
 namespace MinecraftServerManager.Core.Runtime;
 
+/// <summary>
+/// Immutable authorization attached to exactly one explicit process-manager start call. Internal
+/// automatic restarts always use the default value, so they cannot inherit or consume a user's
+/// one-time confirmation from another operation.
+/// </summary>
+public readonly record struct ServerStartContext(bool UserConfirmedMinecraftEula = false);
+
 public sealed record ServerProcessManagerOptions
 {
     private Encoding _standardInputEncoding = new UTF8Encoding(false);
@@ -55,7 +62,15 @@ public sealed record ServerProcessManagerOptions
     public Func<ServerInstance, CancellationToken, Task>? PrepareStartAsync { get; init; }
 
     /// <summary>
-    /// Optional synchronous cleanup hook invoked exactly once when <see cref="PrepareStartAsync"/>
+    /// Context-aware alternative to <see cref="PrepareStartAsync"/>. Only one of the two hooks may
+    /// be configured. The context is captured by the exact public StartAsync call; automatic
+    /// restarts receive <see langword="default"/>.
+    /// </summary>
+    public Func<ServerInstance, ServerStartContext, CancellationToken, Task>?
+        PrepareStartWithContextAsync { get; init; }
+
+    /// <summary>
+    /// Optional synchronous cleanup hook invoked exactly once when the configured preparation hook
     /// completed successfully but that prepared launch did not commit a running process session.
     /// The supplied value is the original server instance ID. Implementations should be short and
     /// non-throwing; exceptions from this best-effort cleanup hook are ignored by the manager.

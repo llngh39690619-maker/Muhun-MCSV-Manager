@@ -83,7 +83,8 @@ public sealed record CoreServerCreationProgress(
 public sealed record CoreServerCreationRequest(
     CoreServerProduct Core,
     CoreServerVersion Version,
-    string ServerName);
+    string ServerName,
+    bool MinecraftEulaAccepted = false);
 
 public enum CoreServerCatalogBootstrapKind
 {

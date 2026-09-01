@@ -388,6 +388,16 @@ public sealed class ProductServiceClient : IProductServiceClient
         CancellationToken cancellationToken = default)
         => MutateAsync(ProductIpcProtocol.ServerStartMethod, serverId, cancellationToken);
 
+    public Task<ProductServerMutationResult> StartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => MutateAsync(
+            ProductIpcProtocol.ServerStartMethod,
+            serverId,
+            cancellationToken,
+            acceptMinecraftEula);
+
     public Task<ProductServerMutationResult> StopAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)
@@ -397,6 +407,16 @@ public sealed class ProductServiceClient : IProductServiceClient
         Guid serverId,
         CancellationToken cancellationToken = default)
         => MutateAsync(ProductIpcProtocol.ServerRestartMethod, serverId, cancellationToken);
+
+    public Task<ProductServerMutationResult> RestartAsync(
+        Guid serverId,
+        bool acceptMinecraftEula,
+        CancellationToken cancellationToken = default)
+        => MutateAsync(
+            ProductIpcProtocol.ServerRestartMethod,
+            serverId,
+            cancellationToken,
+            acceptMinecraftEula);
 
     public async Task<ProductConsolePage> ReadConsoleAsync(
         Guid serverId,
@@ -1061,11 +1081,24 @@ public sealed class ProductServiceClient : IProductServiceClient
     private async Task<ProductServerMutationResult> MutateAsync(
         string method,
         Guid serverId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool acceptMinecraftEula = false)
     {
-        var response = await SendAsync(
-            CreateServerRequest(method, serverId),
-            cancellationToken).ConfigureAwait(false);
+        var request = CreateServerRequest(method, serverId) with
+        {
+            AcceptMinecraftEula = acceptMinecraftEula ? true : null,
+        };
+        if (acceptMinecraftEula)
+        {
+            // Advertise the operation's real minimum instead of allowing an older Service to
+            // negotiate 1.5 and silently ignore an unknown JSON field.
+            request = request with
+            {
+                ClientMinimumApiVersion = ProductApiProtocol.MinecraftEulaConsentVersion,
+            };
+        }
+
+        var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
         return response.Mutation
             ?? throw new ProductServiceClientException(
                 "protocol.payload_missing",

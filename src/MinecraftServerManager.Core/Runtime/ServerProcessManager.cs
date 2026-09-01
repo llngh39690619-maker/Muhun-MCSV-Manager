@@ -39,12 +39,21 @@ public sealed class ServerProcessManager : IAsyncDisposable
     public async Task<Guid> StartAsync(
         ServerInstance instance,
         CancellationToken cancellationToken = default)
-        => await StartCoreAsync(instance, restartGuard: null, cancellationToken).ConfigureAwait(false)
+        => await StartAsync(instance, default, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Starts one instance with authorization scoped to this exact start operation.</summary>
+    public async Task<Guid> StartAsync(
+        ServerInstance instance,
+        ServerStartContext startContext,
+        CancellationToken cancellationToken = default)
+        => await StartCoreAsync(instance, restartGuard: null, startContext, cancellationToken)
+               .ConfigureAwait(false)
            ?? throw new InvalidOperationException("A manual server start was unexpectedly cancelled.");
 
     private async Task<Guid?> StartCoreAsync(
         ServerInstance instance,
         ProcessSession? restartGuard,
+        ServerStartContext startContext,
         CancellationToken cancellationToken)
     {
         ThrowIfNotAcceptingOperations();
@@ -102,7 +111,13 @@ public sealed class ServerProcessManager : IAsyncDisposable
                     instanceSnapshot.DirectoryPath)
                 ?? throw new InvalidOperationException("The directory lease provider returned null.");
 
-            if (_options.PrepareStartAsync is { } prepareStart)
+            if (_options.PrepareStartWithContextAsync is { } prepareStartWithContext)
+            {
+                await prepareStartWithContext(instanceSnapshot, startContext, cancellationToken)
+                    .ConfigureAwait(false);
+                preparationCompleted = true;
+            }
+            else if (_options.PrepareStartAsync is { } prepareStart)
             {
                 await prepareStart(instanceSnapshot, cancellationToken).ConfigureAwait(false);
                 preparationCompleted = true;
@@ -846,6 +861,7 @@ public sealed class ServerProcessManager : IAsyncDisposable
                 await StartCoreAsync(
                         restartInstance,
                         exitedSession,
+                        default,
                         _shutdownCancellation.Token)
                     .ConfigureAwait(false);
             }
@@ -1215,6 +1231,14 @@ public sealed class ServerProcessManager : IAsyncDisposable
         ValidateTimeout(options.ForcedKillWaitTimeout, nameof(options.ForcedKillWaitTimeout));
         ValidateBoundedTimeout(options.MonitorDrainTimeout, nameof(options.MonitorDrainTimeout));
         ValidateTimeout(options.AutoRestartDelay, nameof(options.AutoRestartDelay));
+
+        if (options.PrepareStartAsync is not null
+            && options.PrepareStartWithContextAsync is not null)
+        {
+            throw new ArgumentException(
+                "Only one server-start preparation hook may be configured.",
+                nameof(options));
+        }
 
         if (options.ResourceSamplingInterval == TimeSpan.Zero)
         {

@@ -136,6 +136,13 @@ public sealed class FtbServerInstaller(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (!request.MinecraftEulaAccepted)
+        {
+            // Reject before inspecting the executable, creating staging, or starting the official
+            // installer. The command builder repeats this guard as defense in depth.
+            throw new MinecraftEulaAcceptanceRequiredException();
+        }
+
         if (request.PackId <= 0 || request.VersionId <= 0)
         {
             throw new ArgumentOutOfRangeException(

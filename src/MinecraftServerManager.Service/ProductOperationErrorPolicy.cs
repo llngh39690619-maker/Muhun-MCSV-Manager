@@ -1,3 +1,5 @@
+using MinecraftServerManager.Core.Services;
+
 namespace MinecraftServerManager.Service;
 
 internal sealed record ProductPublicOperationError(
@@ -24,6 +26,10 @@ internal static class ProductOperationErrorPolicy
 
     public static ProductPublicOperationError ToPublic(Exception error) => error switch
     {
+        MinecraftEulaAcceptanceRequiredException => new(
+            StatusCodes.Status409Conflict,
+            "server.eula_acceptance_required",
+            "Minecraft EULA acceptance must be confirmed before this server can start."),
         KeyNotFoundException => new(
             StatusCodes.Status404NotFound,
             "server.not_found",

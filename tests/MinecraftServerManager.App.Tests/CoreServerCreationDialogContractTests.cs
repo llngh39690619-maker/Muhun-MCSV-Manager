@@ -47,6 +47,11 @@ public sealed class CoreServerCreationDialogContractTests
                 nameof(CoreServerCreationViewModel.ServerName),
                 StringComparison.Ordinal) == true);
         Assert.Contains(
+            document.Descendants(presentation + "CheckBox"),
+            element => ((string?)element.Attribute("IsChecked"))?.Contains(
+                nameof(CoreServerCreationViewModel.MinecraftEulaAccepted),
+                StringComparison.Ordinal) == true);
+        Assert.Contains(
             document.Descendants(presentation + "TextBlock"),
             element => ((string?)element.Attribute("Text"))?.Contains(
                 nameof(CoreServerCreationViewModel.VersionStateText),

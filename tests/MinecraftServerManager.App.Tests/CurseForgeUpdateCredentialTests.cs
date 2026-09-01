@@ -102,6 +102,31 @@ public sealed class CurseForgeUpdateCredentialTests
     }
 
     [Fact]
+    public async Task FtbUpdate_ExplicitSelectionConsentIsCarriedToImmutableInstallRequest()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var paths = new ApplicationPaths(directory.Path);
+        paths.EnsureCreated();
+        var workflow = new RecordingUpdateWorkflow(OnlineModpackProvider.Ftb);
+        var selection = new FirstUpdateSelectionService(minecraftEulaAccepted: true);
+        await using var viewModel = new MainWindowViewModel(
+            paths,
+            new AlwaysConfirmRemovalService(),
+            workflow,
+            onlineModpackDialogService: null,
+            modpackUpdateSelectionService: selection);
+        var server = CreateServer(paths, ModpackSourceKind.Ftb);
+        viewModel.Servers.Add(server);
+
+        await Assert.ThrowsAsync<ExpectedInstallException>(() =>
+            viewModel.SelectAndUpdateModpackAsync(server, CancellationToken.None));
+
+        Assert.Equal(1, selection.RequestCount);
+        Assert.NotNull(workflow.LastInstallRequest);
+        Assert.True(workflow.LastInstallRequest.MinecraftEulaAccepted);
+    }
+
+    [Fact]
     public void CredentialDialog_UsesDarkPasswordInputWithoutPlainTextBinding()
     {
         var document = XDocument.Load(GetAppSourcePath(Path.Combine(
@@ -168,17 +193,20 @@ public sealed class CurseForgeUpdateCredentialTests
         }
     }
 
-    private sealed class FirstUpdateSelectionService : IModpackUpdateSelectionService
+    private sealed class FirstUpdateSelectionService(bool minecraftEulaAccepted = false)
+        : IModpackUpdateSelectionService
     {
         public int RequestCount { get; private set; }
 
-        public OnlineModpackVersion? SelectVersion(
+        public ModpackUpdateSelection? SelectUpdate(
             ServerInstance instance,
             IReadOnlyList<OnlineModpackVersion> availableVersions,
             System.Windows.Window? owner)
         {
             RequestCount++;
-            return Assert.Single(availableVersions);
+            return new ModpackUpdateSelection(
+                Assert.Single(availableVersions),
+                minecraftEulaAccepted);
         }
     }
 
@@ -192,6 +220,8 @@ public sealed class CurseForgeUpdateCredentialTests
         public int VersionRequestCount { get; private set; }
 
         public int InstallRequestCount { get; private set; }
+
+        public OnlineModpackInstallRequest? LastInstallRequest { get; private set; }
 
         public bool CredentialWasReadOnlyAtVersionQuery { get; private set; }
 
@@ -244,6 +274,7 @@ public sealed class CurseForgeUpdateCredentialTests
             CancellationToken cancellationToken)
         {
             InstallRequestCount++;
+            LastInstallRequest = request;
             InstallCredential = transientApiKey;
             CredentialWasReadOnlyAtInstall = transientApiKey?.IsReadOnly() ?? false;
             throw new ExpectedInstallException();

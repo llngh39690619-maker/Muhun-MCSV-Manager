@@ -415,6 +415,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" /><RowDefinition Height="*" />
                             <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <TextBlock Text="{DynamicResource L10n.online.availableVersions}" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <ListBox Grid.Row="1" ItemsSource="{Binding Versions}"
@@ -459,6 +460,19 @@
                             <TextBlock Text="{DynamicResource L10n.online.serverName}" Style="{StaticResource DialogLabel}" />
                             <TextBox Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}"
                                      IsEnabled="{Binding IsInputEnabled}" AutomationProperties.Name="{DynamicResource L10n.online.serverName}" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="4" Margin="0,12,0,0"
+                                    Visibility="{Binding RequiresMinecraftEulaAcceptance, Converter={StaticResource BoolToVisibility}}">
+                            <CheckBox x:Name="MinecraftEulaAcceptanceCheckBox"
+                                      IsChecked="{Binding MinecraftEulaAccepted, Mode=TwoWay}"
+                                      IsEnabled="{Binding IsInputEnabled}"
+                                      Content="{DynamicResource L10n.online.minecraftEula.accept}" />
+                            <TextBlock Margin="22,7,0,0">
+                                <Hyperlink NavigateUri="https://aka.ms/MinecraftEULA"
+                                           RequestNavigate="OnMinecraftEulaLinkRequestNavigate">
+                                    <Run Text="{DynamicResource L10n.online.minecraftEula.link}" />
+                                </Hyperlink>
+                            </TextBlock>
                         </StackPanel>
                     </Grid>
                 </Border>

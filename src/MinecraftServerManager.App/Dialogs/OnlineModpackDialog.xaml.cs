@@ -3,6 +3,7 @@ using System.Security;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Navigation;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Core.Models;
@@ -192,6 +193,14 @@ public partial class OnlineModpackDialog : Window
 
         _completed = true;
         DialogResult = false;
+    }
+
+    private void OnMinecraftEulaLinkRequestNavigate(
+        object sender,
+        RequestNavigateEventArgs e)
+    {
+        _ = MinecraftEulaLinkOpener.TryOpen(this);
+        e.Handled = true;
     }
 
     private void OnProviderSelectionChanged(object sender, SelectionChangedEventArgs e)

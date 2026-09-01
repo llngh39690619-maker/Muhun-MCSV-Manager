@@ -43,6 +43,7 @@ public sealed class CoreServerCreationViewModel : ObservableObject, IDisposable
     private bool _isCreateOperation;
     private bool _serverNameWasManuallyEdited;
     private bool _isApplyingAutomaticServerName;
+    private bool _minecraftEulaAccepted;
     private bool _incrementalInitializationStarted;
     private bool _isCatalogRefreshing;
     private bool _disposed;
@@ -69,12 +70,28 @@ public sealed class CoreServerCreationViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _selectedCore, value))
             {
                 OnPropertyChanged(nameof(HasSelectedCore));
+                OnPropertyChanged(nameof(RequiresMinecraftEula));
                 NotifyActionStateChanged();
             }
         }
     }
 
     public bool HasSelectedCore => SelectedCore is not null;
+
+    public bool RequiresMinecraftEula
+        => SelectedCore is { Software: not CoreServerSoftware.Velocity };
+
+    public bool MinecraftEulaAccepted
+    {
+        get => _minecraftEulaAccepted;
+        set
+        {
+            if (SetProperty(ref _minecraftEulaAccepted, value))
+            {
+                NotifyActionStateChanged();
+            }
+        }
+    }
 
     public CoreServerVersion? SelectedVersion
     {
@@ -154,7 +171,8 @@ public sealed class CoreServerCreationViewModel : ObservableObject, IDisposable
     public bool CanCreate => !IsBusy
         && SelectedCore is not null
         && SelectedVersion is not null
-        && !string.IsNullOrWhiteSpace(ServerName);
+        && !string.IsNullOrWhiteSpace(ServerName)
+        && (!RequiresMinecraftEula || MinecraftEulaAccepted);
 
     public string CancelButtonText => IsBusy ? L("core.cancelOperation") : L("common.close");
 
@@ -435,7 +453,17 @@ public sealed class CoreServerCreationViewModel : ObservableObject, IDisposable
         }
 
         ErrorMessage = string.Empty;
-        request = new CoreServerCreationRequest(SelectedCore, SelectedVersion, serverName);
+        if (RequiresMinecraftEula && !MinecraftEulaAccepted)
+        {
+            ErrorMessage = L("core.validation.eulaRequired");
+            return false;
+        }
+
+        request = new CoreServerCreationRequest(
+            SelectedCore,
+            SelectedVersion,
+            serverName,
+            MinecraftEulaAccepted);
         return true;
     }
 
