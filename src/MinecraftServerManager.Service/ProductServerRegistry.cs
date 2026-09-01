@@ -394,6 +394,26 @@ public static class ProductServerRegistrationValidator
             throw new ArgumentException("Server memory range is invalid.", nameof(registration));
         }
 
+        if (!Enum.IsDefined(registration.MemoryAllocationMode))
+        {
+            throw new ArgumentException(
+                "Server memory allocation mode is unsupported.",
+                nameof(registration));
+        }
+
+        if (!ProductServerInstanceSettingsContract.AreReliabilityValuesValid(
+                registration.WatchdogCheckIntervalSeconds,
+                registration.WatchdogProbeTimeoutSeconds,
+                registration.WatchdogFailureThreshold,
+                registration.WatchdogStartupGraceSeconds,
+                registration.RecoveryPointIntervalMinutes,
+                registration.RecoveryPointRetentionCount))
+        {
+            throw new ArgumentException(
+                "Server reliability settings are invalid.",
+                nameof(registration));
+        }
+
         ValidateArguments(registration.JvmArguments, "JVM arguments", paths: false);
         ValidateArguments(registration.ServerArguments, "Server arguments", paths: false);
         if (registration.StopCommand is not null)

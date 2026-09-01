@@ -36,6 +36,92 @@ public sealed class MemoryRecommendationServiceTests
     }
 
     [Fact]
+    public void Recommend_FromAggregateMetadata_MatchesDirectoryRecommendation()
+    {
+        using var server = new TemporaryDirectory();
+        var mods = Directory.CreateDirectory(Path.Combine(server.Path, "mods")).FullName;
+        var plugins = Directory.CreateDirectory(Path.Combine(server.Path, "plugins")).FullName;
+        CreateSizedFile(Path.Combine(mods, "first.jar"), 123);
+        CreateSizedFile(Path.Combine(mods, "second.jar"), 456);
+        CreateSizedFile(Path.Combine(plugins, "third.jar"), 789);
+        var service = CreateService(totalGib: 64, availableGib: 64);
+
+        var directoryResult = service.Recommend(server.Path);
+        var aggregateResult = service.Recommend(
+            addonJarCount: 3,
+            addonJarBytes: 123 + 456 + 789);
+
+        Assert.Equal(directoryResult, aggregateResult);
+    }
+
+    [Fact]
+    public void Recommend_TruncatedAggregateUsesHighestTierAndReportsKnownEvidence()
+    {
+        const int knownCount = 200;
+        const long knownBytes = 512 * Mebibyte;
+        var service = CreateService(totalGib: 64, availableGib: 64);
+
+        var result = service.Recommend(
+            knownCount,
+            knownBytes,
+            addonsTruncated: true);
+
+        Assert.Equal(8192, result.MinimumMemoryMb);
+        Assert.Equal(12288, result.MaximumMemoryMb);
+        Assert.Equal(knownCount, result.AddonJarCount);
+        Assert.Equal(knownBytes, result.AddonJarBytes);
+        Assert.False(result.WasConstrainedBySystemMemory);
+        Assert.Contains("清單已截斷", result.Explanation, StringComparison.Ordinal);
+        Assert.Contains($"已知 {knownCount}", result.Explanation, StringComparison.Ordinal);
+        Assert.Contains("至少 351 個", result.Explanation, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(-1, 0, "addonJarCount")]
+    [InlineData(0, -1, "addonJarBytes")]
+    public void Recommend_FromAggregateMetadataRejectsNegativeEvidence(
+        int addonJarCount,
+        long addonJarBytes,
+        string expectedParameter)
+    {
+        var service = CreateService(totalGib: 64, availableGib: 64);
+
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            service.Recommend(addonJarCount, addonJarBytes));
+
+        Assert.Equal(expectedParameter, error.ParamName);
+    }
+
+    [Fact]
+    public void Recommend_FromAggregateMetadataHonorsPreCancellationBeforeMemoryProbe()
+    {
+        var probe = new RecordingMemoryProbe(new SystemMemorySnapshot(
+            64 * Gibibyte,
+            64 * Gibibyte));
+        var service = new MemoryRecommendationService(probe);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            service.Recommend(200, 512 * Mebibyte, cancellationToken: cancellation.Token));
+        Assert.Equal(0, probe.CallCount);
+    }
+
+    [Fact]
+    public void Recommend_FromAggregateMetadataHonorsCancellationDuringMemoryProbe()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var probe = new RecordingMemoryProbe(
+            new SystemMemorySnapshot(64 * Gibibyte, 64 * Gibibyte),
+            cancellation.Cancel);
+        var service = new MemoryRecommendationService(probe);
+
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            service.Recommend(200, 512 * Mebibyte, cancellationToken: cancellation.Token));
+        Assert.Equal(1, probe.CallCount);
+    }
+
+    [Fact]
     public void Recommend_ScansOnlyTopLevelJarMetadataInModsAndPlugins()
     {
         using var server = new TemporaryDirectory();
@@ -108,5 +194,19 @@ public sealed class MemoryRecommendationServiceTests
     private sealed class FixedMemoryProbe(SystemMemorySnapshot snapshot) : ISystemMemoryProbe
     {
         public SystemMemorySnapshot GetSnapshot() => snapshot;
+    }
+
+    private sealed class RecordingMemoryProbe(
+        SystemMemorySnapshot snapshot,
+        Action? onSnapshot = null) : ISystemMemoryProbe
+    {
+        public int CallCount { get; private set; }
+
+        public SystemMemorySnapshot GetSnapshot()
+        {
+            CallCount++;
+            onSnapshot?.Invoke();
+            return snapshot;
+        }
     }
 }

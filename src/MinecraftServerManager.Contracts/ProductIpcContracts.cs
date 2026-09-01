@@ -296,12 +296,7 @@ public static class ProductIpcRequestValidator
         }
 
         if (request.ServerSettings is { } settings &&
-            (string.IsNullOrWhiteSpace(settings.Name) || settings.Name.Length > 128 ||
-             settings.Name.Any(character => char.IsControl(character)) ||
-             settings.MinimumMemoryMb is < 128 or > 1_048_576 ||
-             settings.MaximumMemoryMb < settings.MinimumMemoryMb ||
-             settings.MaximumMemoryMb > 1_048_576 ||
-             settings.Port is < 1 or > 65535))
+            !AreServerSettingsValid(settings, request.ClientMaximumApiVersion))
         {
             return new ProductIpcError(
                 "protocol.server_settings_invalid",
@@ -612,6 +607,63 @@ public static class ProductIpcRequestValidator
         }
 
         return null;
+    }
+
+    private static bool AreServerSettingsValid(
+        ProductServerSettingsUpdateRequest settings,
+        ProductApiVersion clientMaximumApiVersion)
+    {
+        if (string.IsNullOrWhiteSpace(settings.Name) || settings.Name.Length > 128 ||
+            settings.Name.Any(character => char.IsControl(character)) ||
+            settings.MinimumMemoryMb is < 128 or > 1_048_576 ||
+            settings.MaximumMemoryMb < settings.MinimumMemoryMb ||
+            settings.MaximumMemoryMb > 1_048_576 ||
+            settings.Port is < 1 or > 65535)
+        {
+            return false;
+        }
+
+        var hasAnyServiceInstanceSetting =
+            ProductServerInstanceSettingsContract.HasAnyServiceInstanceSetting(settings);
+        if (!hasAnyServiceInstanceSetting)
+        {
+            return true;
+        }
+
+        // The Service owns field-version rejection after negotiation. Let an API 1.7 request
+        // containing any one unknown extension reach that gate instead of misclassifying it as a
+        // malformed API 1.8 snapshot.
+        if (clientMaximumApiVersion.CompareTo(
+                ProductApiProtocol.ServiceInstanceSettingsVersion) < 0)
+        {
+            return true;
+        }
+
+        // API 1.8 defines this as one complete settings snapshot. Rejecting partial payloads keeps
+        // cross-field validation deterministic and prevents a future client from accidentally
+        // resetting only part of the authoritative Service policy.
+        if (settings.MemoryAllocationMode is not { } memoryAllocationMode ||
+            settings.SeparateDiagnosticOutput is null ||
+            settings.EnableHangWatchdog is null ||
+            settings.WatchdogCheckIntervalSeconds is not { } watchdogCheckIntervalSeconds ||
+            settings.WatchdogProbeTimeoutSeconds is not { } watchdogProbeTimeoutSeconds ||
+            settings.WatchdogFailureThreshold is not { } watchdogFailureThreshold ||
+            settings.WatchdogStartupGraceSeconds is not { } watchdogStartupGraceSeconds ||
+            settings.EnableAutomaticRecoveryPoints is null ||
+            settings.RecoveryPointIntervalMinutes is not { } recoveryPointIntervalMinutes ||
+            settings.RecoveryPointRetentionCount is not { } recoveryPointRetentionCount ||
+            !Enum.IsDefined(memoryAllocationMode))
+        {
+            return false;
+        }
+
+        return ProductServerInstanceSettingsContract.AreReliabilityValuesValid(
+            watchdogCheckIntervalSeconds,
+            watchdogProbeTimeoutSeconds,
+            watchdogFailureThreshold,
+            watchdogStartupGraceSeconds,
+            recoveryPointIntervalMinutes,
+            recoveryPointRetentionCount);
     }
 
     private static bool IsSafeProviderIdentifier(string? value)

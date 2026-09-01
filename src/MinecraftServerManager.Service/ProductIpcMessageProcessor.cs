@@ -191,6 +191,17 @@ public sealed class ProductIpcMessageProcessor
                     "Minecraft EULA confirmation requires API version 1.6 or newer."));
         }
 
+        if (ProductServerInstanceSettingsContract.HasAnyServiceInstanceSetting(request.ServerSettings)
+            && negotiation.SelectedVersion.Value.CompareTo(
+                ProductApiProtocol.ServiceInstanceSettingsVersion) < 0)
+        {
+            return Failure(
+                request.RequestId,
+                new ProductIpcError(
+                    "protocol.field_version_unsupported",
+                    "Service-owned instance settings require API version 1.8 or newer."));
+        }
+
         var isUpdateMethod = request.Method is
             ProductIpcProtocol.UpdateStatusMethod or
             ProductIpcProtocol.UpdateCheckMethod or

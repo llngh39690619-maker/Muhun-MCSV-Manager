@@ -307,7 +307,19 @@ internal sealed class ProductServiceDesktopController :
                     registration.MinimumMemoryMb,
                     registration.MaximumMemoryMb,
                     registration.Port,
-                    registration.AutoRestart),
+                    registration.AutoRestart)
+                {
+                    MemoryAllocationMode = registration.MemoryAllocationMode,
+                    SeparateDiagnosticOutput = registration.SeparateDiagnosticOutput,
+                    EnableHangWatchdog = registration.EnableHangWatchdog,
+                    WatchdogCheckIntervalSeconds = registration.WatchdogCheckIntervalSeconds,
+                    WatchdogProbeTimeoutSeconds = registration.WatchdogProbeTimeoutSeconds,
+                    WatchdogFailureThreshold = registration.WatchdogFailureThreshold,
+                    WatchdogStartupGraceSeconds = registration.WatchdogStartupGraceSeconds,
+                    EnableAutomaticRecoveryPoints = registration.EnableAutomaticRecoveryPoints,
+                    RecoveryPointIntervalMinutes = registration.RecoveryPointIntervalMinutes,
+                    RecoveryPointRetentionCount = registration.RecoveryPointRetentionCount,
+                },
                 cancellationToken)
             .ConfigureAwait(false);
         if (result.Status.Server.Id != registration.Id ||

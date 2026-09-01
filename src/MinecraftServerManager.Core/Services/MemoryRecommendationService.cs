@@ -23,6 +23,7 @@ public sealed class MemoryRecommendationService
     private const int MinimumValidAllocationMb = 512;
     private const int MinimumSystemReserveMb = 4096;
     private const int AllocationStepMb = 256;
+    private const int HighestTierMinimumAddonCount = 351;
 
     private readonly ISystemMemoryProbe _memoryProbe;
 
@@ -54,8 +55,47 @@ public sealed class MemoryRecommendationService
         ScanTopLevelJarDirectory(root, "mods", scan, cancellationToken);
         ScanTopLevelJarDirectory(root, "plugins", scan, cancellationToken);
 
-        var tier = SelectTier(scan.Count);
+        return RecommendCore(
+            scan.Count,
+            scan.Bytes,
+            addonsTruncated: false,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Recommends a JVM range from already-bounded add-on metadata without accessing a server
+    /// directory. A truncated list is conservatively assigned the highest add-on-count tier.
+    /// </summary>
+    public MemoryRecommendation Recommend(
+        int addonJarCount,
+        long addonJarBytes,
+        bool addonsTruncated = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(addonJarCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(addonJarBytes);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return RecommendCore(
+            addonJarCount,
+            addonJarBytes,
+            addonsTruncated,
+            cancellationToken);
+    }
+
+    private MemoryRecommendation RecommendCore(
+        int addonJarCount,
+        long addonJarBytes,
+        bool addonsTruncated,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var tierCount = addonsTruncated
+            ? Math.Max(addonJarCount, HighestTierMinimumAddonCount)
+            : addonJarCount;
+        var tier = SelectTier(tierCount);
         var snapshot = NormalizeSnapshot(_memoryProbe.GetSnapshot());
+        cancellationToken.ThrowIfCancellationRequested();
         var totalMb = BytesToWholeMebibytes(snapshot.TotalPhysicalBytes);
         var availableMb = Math.Min(
             totalMb,
@@ -80,14 +120,19 @@ public sealed class MemoryRecommendationService
         minimumMb = Math.Clamp(minimumMb, MinimumValidAllocationMb, maximumMb);
 
         var constrained = maximumMb < tier.MaximumMb;
-        var sizeMib = scan.Bytes / (double)Mebibyte;
+        var sizeMib = addonJarBytes / (double)Mebibyte;
         var fallbackText = snapshot.IsFallback ? "；系統記憶體探測使用保守備援值" : string.Empty;
         var constrainedText = constrained
             ? $"；因目前可用記憶體而將上限縮減為 {maximumMb.ToString(CultureInfo.InvariantCulture)} MB"
             : string.Empty;
-        var explanation =
-            $"偵測到 {scan.Count.ToString(CultureInfo.InvariantCulture)} 個頂層模組/插件 JAR" +
-            $"（{sizeMib.ToString("0.##", CultureInfo.InvariantCulture)} MiB），" +
+        var addonEvidence = addonsTruncated
+            ? "模組/插件清單已截斷" +
+              $"（已知 {addonJarCount.ToString(CultureInfo.InvariantCulture)} 個頂層 JAR，" +
+              $"共 {sizeMib.ToString("0.##", CultureInfo.InvariantCulture)} MiB），" +
+              $"為避免低估而按至少 {HighestTierMinimumAddonCount.ToString(CultureInfo.InvariantCulture)} 個估算"
+            : $"偵測到 {addonJarCount.ToString(CultureInfo.InvariantCulture)} 個頂層模組/插件 JAR" +
+              $"（{sizeMib.ToString("0.##", CultureInfo.InvariantCulture)} MiB）";
+        var explanation = addonEvidence + "，" +
             $"基準範圍 {tier.MinimumMb.ToString(CultureInfo.InvariantCulture)}–" +
             $"{tier.MaximumMb.ToString(CultureInfo.InvariantCulture)} MB；" +
             $"為系統保留 {reserveMb.ToString(CultureInfo.InvariantCulture)} MB" +
@@ -96,8 +141,8 @@ public sealed class MemoryRecommendationService
         return new MemoryRecommendation(
             minimumMb,
             maximumMb,
-            scan.Count,
-            scan.Bytes,
+            addonJarCount,
+            addonJarBytes,
             reserveMb,
             safeCeilingMb,
             constrained,

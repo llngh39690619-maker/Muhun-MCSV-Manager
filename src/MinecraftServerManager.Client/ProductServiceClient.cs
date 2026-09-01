@@ -178,11 +178,20 @@ public sealed class ProductServiceClient : IProductServiceClient
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        var request = CreateServerRequest(ProductIpcProtocol.ServerSettingsUpdateMethod, serverId) with
+        {
+            ServerSettings = settings,
+        };
+        if (HasServiceInstanceSettings(settings))
+        {
+            request = request with
+            {
+                ClientMinimumApiVersion = ProductApiProtocol.ServiceInstanceSettingsVersion,
+            };
+        }
+
         var response = await SendAsync(
-                CreateServerRequest(ProductIpcProtocol.ServerSettingsUpdateMethod, serverId) with
-                {
-                    ServerSettings = settings,
-                },
+                request,
                 cancellationToken)
             .ConfigureAwait(false);
         var registration = response.Registration ?? throw MissingPayload("updated server registration");
@@ -199,6 +208,18 @@ public sealed class ProductServiceClient : IProductServiceClient
 
         return new ProductServerSettingsUpdateResult(registration, status);
     }
+
+    private static bool HasServiceInstanceSettings(ProductServerSettingsUpdateRequest settings)
+        => settings.MemoryAllocationMode is not null ||
+           settings.SeparateDiagnosticOutput is not null ||
+           settings.EnableHangWatchdog is not null ||
+           settings.WatchdogCheckIntervalSeconds is not null ||
+           settings.WatchdogProbeTimeoutSeconds is not null ||
+           settings.WatchdogFailureThreshold is not null ||
+           settings.WatchdogStartupGraceSeconds is not null ||
+           settings.EnableAutomaticRecoveryPoints is not null ||
+           settings.RecoveryPointIntervalMinutes is not null ||
+           settings.RecoveryPointRetentionCount is not null;
 
     public async Task RemoveAsync(Guid serverId, CancellationToken cancellationToken = default)
         => _ = await SendAsync(

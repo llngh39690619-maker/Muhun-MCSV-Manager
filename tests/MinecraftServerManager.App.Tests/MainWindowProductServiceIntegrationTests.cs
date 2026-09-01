@@ -74,6 +74,10 @@ public sealed class MainWindowProductServiceIntegrationTests
         Assert.True(viewModel.CanReloadSelectedServerProperties);
         Assert.False(viewModel.CanSaveSelectedServerProperties);
         Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+        Assert.False(viewModel.CanEditSelectedInstanceConfiguration);
+        Assert.False(viewModel.CanSaveSelectedInstanceConfiguration);
+        Assert.False(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+        Assert.True(viewModel.HasSelectedInstanceConfigurationStatus);
     }
 
     [Fact]
@@ -180,6 +184,54 @@ public sealed class MainWindowProductServiceIntegrationTests
     }
 
     [Fact]
+    public async Task ServiceOwnedProperties_TransientReadFailureShowsInlineStatusAndKeepsReloadAvailable()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var retryReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            ServerPropertiesText = "motd=initial\nserver-port=25565\n",
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        await client.PropertiesRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => viewModel.CanSaveSelectedServerProperties);
+
+        client.ServerPropertiesReadHandler = (call, _) => call switch
+        {
+            2 => Task.FromException<ProductServerPropertiesDocument>(
+                new IOException("temporary read failure")),
+            _ => RetryAsync(),
+        };
+
+        viewModel.ReloadPropertiesCommand.Execute(null);
+        await WaitUntilAsync(() => !viewModel.IsSelectedServerPropertiesOperationRunning);
+
+        Assert.True(viewModel.HasSelectedServerPropertiesStatus);
+        Assert.Contains("server.properties", viewModel.SelectedServerPropertiesStatusText, StringComparison.Ordinal);
+        Assert.True(viewModel.CanReloadSelectedServerProperties);
+        Assert.True(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.False(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.CanSaveSelectedServerProperties);
+
+        viewModel.ReloadPropertiesCommand.Execute(null);
+        await retryReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.HasSelectedServerPropertiesStatus);
+
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.CanSaveSelectedServerProperties);
+
+        Task<ProductServerPropertiesDocument> RetryAsync()
+        {
+            retryReturned.TrySetResult();
+            return Task.FromResult(client.CreatePropertiesDocument(
+                "motd=recovered\nserver-port=25565\n"));
+        }
+    }
+
+    [Fact]
     public async Task Api16Service_RemainsConnectedButPropertiesEditorFailsClosed()
     {
         using var temporary = new TemporaryDirectory();
@@ -196,10 +248,85 @@ public sealed class MainWindowProductServiceIntegrationTests
         Assert.True(viewModel.IsProductServiceConnected);
         Assert.Equal(ProductApiProtocol.MinecraftEulaConsentVersion, viewModel.ProductServiceNegotiatedApiVersion);
         Assert.False(viewModel.SupportsProductServicePropertiesEditor);
+        Assert.False(viewModel.SupportsProductServiceInstanceSettings);
+        Assert.False(viewModel.CanEditSelectedInstanceConfiguration);
+        Assert.False(viewModel.CanSaveSelectedInstanceConfiguration);
         Assert.False(viewModel.CanEditSelectedServerProperties);
         Assert.False(viewModel.ReloadPropertiesCommand.CanExecute(null));
         Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+        Assert.True(viewModel.HasSelectedServerPropertiesStatus);
+        Assert.True(viewModel.HasSelectedInstanceConfigurationStatus);
+        Assert.True(viewModel.ShowProductServiceUpdateAction);
+        Assert.True(viewModel.UpdateProductServiceCommand.CanExecute(null));
         Assert.False(client.PropertiesRead.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Api16ConnectedService_UpdateActionReprobesCurrentApiAndAutomaticallyLoadsProperties()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            MaximumApiVersion = ProductApiProtocol.MinecraftEulaConsentVersion,
+            ServerPropertiesText = "motd=loaded after update\nserver-port=25565\n",
+        };
+        var launcher = new StubProductServiceUpdateLauncher(() =>
+        {
+            client.MaximumApiVersion = ProductApiProtocol.CurrentVersion;
+            return new BundledProductServiceUpdateResult(
+                BundledProductServiceUpdateOutcome.Completed,
+                0);
+        });
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(
+            paths,
+            client,
+            productServiceUpdateLauncher: launcher);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+
+        Assert.True(viewModel.IsProductServiceConnected);
+        Assert.True(viewModel.ShowProductServiceUpdateAction);
+        Assert.False(client.PropertiesRead.Task.IsCompleted);
+
+        await viewModel.UpdateProductServiceAsync();
+        await client.PropertiesRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var projected = Assert.Single(viewModel.Servers);
+        await WaitUntilAsync(() => projected.ServerPropertiesText.Contains("loaded after update", StringComparison.Ordinal));
+
+        Assert.Equal(1, launcher.InvocationCount);
+        Assert.Equal(ProductApiProtocol.CurrentVersion, viewModel.ProductServiceNegotiatedApiVersion);
+        Assert.True(viewModel.SupportsProductServicePropertiesEditor);
+        Assert.True(viewModel.SupportsProductServiceInstanceSettings);
+        Assert.False(viewModel.ShowProductServiceUpdateAction);
+        Assert.False(viewModel.HasSelectedServerPropertiesStatus);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+    }
+
+    [Fact]
+    public async Task Api17Service_KeepsPropertiesAvailableButInstanceSettingsRequireUpdate()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            MaximumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        await client.PropertiesRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => viewModel.CanEditSelectedServerProperties);
+
+        Assert.True(viewModel.SupportsProductServicePropertiesEditor);
+        Assert.False(viewModel.SupportsProductServiceInstanceSettings);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.CanEditSelectedInstanceConfiguration);
+        Assert.False(viewModel.CanSaveSelectedInstanceConfiguration);
+        Assert.False(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+        Assert.True(viewModel.HasSelectedInstanceConfigurationStatus);
+        Assert.True(viewModel.ShowProductServiceUpdateAction);
+        Assert.True(viewModel.UpdateProductServiceCommand.CanExecute(null));
     }
 
     [Fact]
@@ -355,30 +482,81 @@ public sealed class MainWindowProductServiceIntegrationTests
         var paths = new ApplicationPaths(temporary.Path);
         var serviceId = Guid.NewGuid();
         var client = new StubServiceClient(serviceId);
-        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
-        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
-        var projected = Assert.Single(viewModel.Servers);
+        await using (var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client))
+        {
+            await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+            var projected = Assert.Single(viewModel.Servers);
 
-        Assert.Equal(client.StoredRegistration.MinimumMemoryMb, projected.MinimumMemoryMb);
-        Assert.Equal(client.StoredRegistration.MaximumMemoryMb, projected.MaximumMemoryMb);
-        Assert.Equal(client.StoredRegistration.AutoRestart, projected.AutoRestart);
-        Assert.True(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
-        Assert.True(viewModel.DeleteServerCommand.CanExecute(projected));
-        Assert.True(viewModel.OpenSelectedFolderCommand.CanExecute(null));
+            Assert.Equal(client.StoredRegistration.MinimumMemoryMb, projected.MinimumMemoryMb);
+            Assert.Equal(client.StoredRegistration.MaximumMemoryMb, projected.MaximumMemoryMb);
+            Assert.Equal(client.StoredRegistration.AutoRestart, projected.AutoRestart);
+            Assert.True(viewModel.SupportsProductServiceInstanceSettings);
+            Assert.True(viewModel.CanEditSelectedInstanceConfiguration);
+            Assert.True(viewModel.CanSaveSelectedInstanceConfiguration);
+            Assert.True(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+            Assert.True(viewModel.DeleteServerCommand.CanExecute(projected));
+            Assert.True(viewModel.OpenSelectedFolderCommand.CanExecute(null));
 
-        projected.Name = "Edited display";
-        projected.Port = 25577;
-        projected.MinimumMemoryMb = 2048;
-        projected.MaximumMemoryMb = 6144;
-        projected.AutoRestart = false;
-        viewModel.SaveSelectedSettingsCommand.Execute(null);
-        await client.RegistrationUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            projected.Name = "Edited display";
+            projected.Port = 25577;
+            projected.IsMemoryManual = true;
+            projected.MinimumMemoryMb = 2048;
+            projected.MaximumMemoryMb = 6144;
+            projected.AutoRestart = false;
+            projected.SeparateDiagnosticOutput = true;
+            projected.EnableHangWatchdog = true;
+            projected.WatchdogCheckIntervalSeconds = 45;
+            projected.WatchdogProbeTimeoutSeconds = 9;
+            projected.WatchdogFailureThreshold = 4;
+            projected.WatchdogStartupGraceSeconds = 240;
+            projected.EnableAutomaticRecoveryPoints = true;
+            projected.RecoveryPointIntervalMinutes = 60;
+            projected.RecoveryPointRetentionCount = 5;
+            var releaseUpdate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            client.RegistrationUpdateRelease = releaseUpdate;
+            viewModel.SaveSelectedSettingsCommand.Execute(null);
+            await client.RegistrationUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal("Edited display", client.StoredRegistration.Name);
-        Assert.Equal(25577, client.StoredRegistration.Port);
-        Assert.Equal(2048, client.StoredRegistration.MinimumMemoryMb);
-        Assert.Equal(6144, client.StoredRegistration.MaximumMemoryMb);
-        Assert.False(client.StoredRegistration.AutoRestart);
+            Assert.True(viewModel.IsSelectedInstanceConfigurationSaveRunning);
+            Assert.False(viewModel.CanEditSelectedInstanceConfiguration);
+            Assert.False(viewModel.CanSaveSelectedInstanceConfiguration);
+            Assert.False(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+
+            releaseUpdate.SetResult();
+            await WaitUntilAsync(() => !viewModel.IsSelectedInstanceConfigurationSaveRunning);
+
+            Assert.Equal("Edited display", client.StoredRegistration.Name);
+            Assert.Equal(25577, client.StoredRegistration.Port);
+            Assert.Equal(ProductServerMemoryAllocationMode.Manual, client.StoredRegistration.MemoryAllocationMode);
+            Assert.Equal(2048, client.StoredRegistration.MinimumMemoryMb);
+            Assert.Equal(6144, client.StoredRegistration.MaximumMemoryMb);
+            Assert.False(client.StoredRegistration.AutoRestart);
+            Assert.True(client.StoredRegistration.SeparateDiagnosticOutput);
+            Assert.True(client.StoredRegistration.EnableHangWatchdog);
+            Assert.Equal(45, client.StoredRegistration.WatchdogCheckIntervalSeconds);
+            Assert.Equal(9, client.StoredRegistration.WatchdogProbeTimeoutSeconds);
+            Assert.Equal(4, client.StoredRegistration.WatchdogFailureThreshold);
+            Assert.Equal(240, client.StoredRegistration.WatchdogStartupGraceSeconds);
+            Assert.True(client.StoredRegistration.EnableAutomaticRecoveryPoints);
+            Assert.Equal(60, client.StoredRegistration.RecoveryPointIntervalMinutes);
+            Assert.Equal(5, client.StoredRegistration.RecoveryPointRetentionCount);
+        }
+
+        await using var reopened = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await reopened.InitializeAsync(allowInteractiveAutoImport: false);
+        var roundTripped = Assert.Single(reopened.Servers);
+        Assert.Equal(MemoryAllocationMode.Manual, roundTripped.MemoryAllocationMode);
+        Assert.Equal(2048, roundTripped.MinimumMemoryMb);
+        Assert.Equal(6144, roundTripped.MaximumMemoryMb);
+        Assert.True(roundTripped.SeparateDiagnosticOutput);
+        Assert.True(roundTripped.EnableHangWatchdog);
+        Assert.Equal(45, roundTripped.WatchdogCheckIntervalSeconds);
+        Assert.Equal(9, roundTripped.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(4, roundTripped.WatchdogFailureThreshold);
+        Assert.Equal(240, roundTripped.WatchdogStartupGraceSeconds);
+        Assert.True(roundTripped.EnableAutomaticRecoveryPoints);
+        Assert.Equal(60, roundTripped.RecoveryPointIntervalMinutes);
+        Assert.Equal(5, roundTripped.RecoveryPointRetentionCount);
     }
 
     [Fact]
@@ -404,6 +582,132 @@ public sealed class MainWindowProductServiceIntegrationTests
         Assert.False(Directory.Exists(projected.DirectoryPath));
         Assert.True(viewModel.CanRefreshSelectedPlayers);
         Assert.True(viewModel.RefreshPlayersCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task ServiceSettings_ManagerDefaultPersistsCurrentGlobalRangeAndMode()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        using (var store = new JsonSettingsStore<ManagerSettings>(paths.SettingsFile))
+        {
+            await store.SaveAsync(new ManagerSettings
+            {
+                NewServerDefaults = new NewServerDefaultsSettings
+                {
+                    MinimumMemoryMb = 3072,
+                    MaximumMemoryMb = 7168,
+                },
+            });
+        }
+
+        var client = new StubServiceClient(Guid.NewGuid());
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        var projected = Assert.Single(viewModel.Servers);
+
+        projected.IsMemoryUsingDefault = true;
+        viewModel.SaveSelectedSettingsCommand.Execute(null);
+        await client.RegistrationUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsSelectedInstanceConfigurationSaveRunning);
+
+        Assert.Equal(ProductServerMemoryAllocationMode.UseManagerDefault, client.StoredRegistration.MemoryAllocationMode);
+        Assert.Equal(3072, client.StoredRegistration.MinimumMemoryMb);
+        Assert.Equal(7168, client.StoredRegistration.MaximumMemoryMb);
+        Assert.Equal(MemoryAllocationMode.UseManagerDefault, projected.MemoryAllocationMode);
+        Assert.Equal(3072, projected.MinimumMemoryMb);
+        Assert.Equal(7168, projected.MaximumMemoryMb);
+    }
+
+    [Fact]
+    public async Task ServiceSettings_EditingAndSavingRequireExactStoppedState()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(
+            paths,
+            new StubServiceClient(Guid.NewGuid()));
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        var projected = Assert.Single(viewModel.Servers);
+
+        projected.SetState(ServerState.Stopped);
+        Assert.True(viewModel.CanEditSelectedInstanceConfiguration);
+        Assert.True(viewModel.CanSaveSelectedInstanceConfiguration);
+        Assert.True(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+
+        foreach (var state in new[]
+                 {
+                     ServerState.Starting,
+                     ServerState.Running,
+                     ServerState.Stopping,
+                     ServerState.Crashed,
+                     ServerState.Faulted,
+                 })
+        {
+            projected.SetState(state);
+            Assert.False(viewModel.CanEditSelectedInstanceConfiguration);
+            Assert.False(viewModel.CanSaveSelectedInstanceConfiguration);
+            Assert.False(viewModel.SaveSelectedSettingsCommand.CanExecute(null));
+            Assert.True(viewModel.HasSelectedInstanceConfigurationStatus);
+        }
+    }
+
+    [Fact]
+    public async Task ServiceSettings_AutomaticMemoryUsesPathFreeAdministrationMetricsAndPersistsRecommendation()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var serviceId = Guid.NewGuid();
+        var addons = Enumerable.Range(0, 51)
+            .Select(index => new ProductServerAddonSummary(
+                ProductServerAddonKind.Mod,
+                $"mod-{index:D2}.jar",
+                2L * 1024 * 1024))
+            .ToArray();
+        var client = new StubServiceClient(serviceId)
+        {
+            AdministrationSnapshot = new ProductServerAdministrationSnapshot(
+                serviceId,
+                DateTimeOffset.UtcNow,
+                true,
+                addons,
+                false,
+                new ProductServerJavaRuntimeSummary(
+                    true,
+                    true,
+                    21,
+                    "21.0.8",
+                    "JRE",
+                    "Temurin",
+                    "x64")),
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        var projected = Assert.Single(viewModel.Servers);
+        Assert.False(Directory.Exists(projected.DirectoryPath));
+
+        projected.IsMemoryAutomatic = true;
+        await client.AdministrationRequested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await viewModel.LastAutomaticMemoryRecommendation.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(MemoryAllocationMode.Automatic, projected.MemoryAllocationMode);
+        Assert.False(projected.IsAutomaticMemoryRecommendationRunning);
+        Assert.True(projected.HasSuccessfulAutomaticMemoryRecommendation);
+        Assert.InRange(projected.MinimumMemoryMb, 512, projected.MaximumMemoryMb);
+        Assert.Contains("51", projected.MemoryConfigurationHint, StringComparison.Ordinal);
+
+        var recommendedMinimum = projected.MinimumMemoryMb;
+        var recommendedMaximum = projected.MaximumMemoryMb;
+        viewModel.SaveSelectedSettingsCommand.Execute(null);
+        await client.RegistrationUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsSelectedInstanceConfigurationSaveRunning);
+
+        Assert.Equal(ProductServerMemoryAllocationMode.Automatic, client.StoredRegistration.MemoryAllocationMode);
+        Assert.Equal(recommendedMinimum, client.StoredRegistration.MinimumMemoryMb);
+        Assert.Equal(recommendedMaximum, client.StoredRegistration.MaximumMemoryMb);
     }
 
     [Fact]
@@ -744,7 +1048,7 @@ public sealed class MainWindowProductServiceIntegrationTests
 
         public ProductServiceClientException? HandshakeError { get; init; }
 
-        public ProductApiVersion MaximumApiVersion { get; init; } = ProductApiProtocol.CurrentVersion;
+        public ProductApiVersion MaximumApiVersion { get; set; } = ProductApiProtocol.CurrentVersion;
 
         public string ServerPropertiesText
         {
@@ -762,6 +1066,8 @@ public sealed class MainWindowProductServiceIntegrationTests
             ServerPropertiesReadHandler { get; set; }
 
         public TaskCompletionSource? PropertiesUpdateRelease { get; set; }
+
+        public TaskCompletionSource? RegistrationUpdateRelease { get; set; }
 
         public List<string> Mutations { get; } = [];
 
@@ -904,7 +1210,7 @@ public sealed class MainWindowProductServiceIntegrationTests
             return Task.FromResult(Status());
         }
 
-        public Task<ProductServerSettingsUpdateResult> UpdateServerSettingsAsync(
+        public async Task<ProductServerSettingsUpdateResult> UpdateServerSettingsAsync(
             Guid requestedServerId,
             ProductServerSettingsUpdateRequest settings,
             CancellationToken cancellationToken = default)
@@ -916,11 +1222,25 @@ public sealed class MainWindowProductServiceIntegrationTests
                 MaximumMemoryMb = settings.MaximumMemoryMb,
                 Port = settings.Port,
                 AutoRestart = settings.AutoRestart,
+                MemoryAllocationMode = settings.MemoryAllocationMode ?? _registration.MemoryAllocationMode,
+                SeparateDiagnosticOutput = settings.SeparateDiagnosticOutput ?? _registration.SeparateDiagnosticOutput,
+                EnableHangWatchdog = settings.EnableHangWatchdog ?? _registration.EnableHangWatchdog,
+                WatchdogCheckIntervalSeconds = settings.WatchdogCheckIntervalSeconds ?? _registration.WatchdogCheckIntervalSeconds,
+                WatchdogProbeTimeoutSeconds = settings.WatchdogProbeTimeoutSeconds ?? _registration.WatchdogProbeTimeoutSeconds,
+                WatchdogFailureThreshold = settings.WatchdogFailureThreshold ?? _registration.WatchdogFailureThreshold,
+                WatchdogStartupGraceSeconds = settings.WatchdogStartupGraceSeconds ?? _registration.WatchdogStartupGraceSeconds,
+                EnableAutomaticRecoveryPoints = settings.EnableAutomaticRecoveryPoints ?? _registration.EnableAutomaticRecoveryPoints,
+                RecoveryPointIntervalMinutes = settings.RecoveryPointIntervalMinutes ?? _registration.RecoveryPointIntervalMinutes,
+                RecoveryPointRetentionCount = settings.RecoveryPointRetentionCount ?? _registration.RecoveryPointRetentionCount,
             };
             RegistrationUpdated.TrySetResult();
-            return Task.FromResult(new ProductServerSettingsUpdateResult(
+            if (RegistrationUpdateRelease is { } release)
+            {
+                await release.Task.WaitAsync(cancellationToken);
+            }
+            return new ProductServerSettingsUpdateResult(
                 _registration,
-                Status()));
+                Status());
         }
 
         public Task RemoveAsync(Guid requestedServerId, CancellationToken cancellationToken = default)
@@ -1168,6 +1488,19 @@ public sealed class MainWindowProductServiceIntegrationTests
 
         private static string CalculatePropertiesRevision(string text)
             => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+    }
+
+    private sealed class StubProductServiceUpdateLauncher(
+        Func<BundledProductServiceUpdateResult> update) : IBundledProductServiceUpdateLauncher
+    {
+        public int InvocationCount { get; private set; }
+
+        public Task<BundledProductServiceUpdateResult> UpdateAsync(
+            CancellationToken cancellationToken = default)
+        {
+            InvocationCount++;
+            return Task.FromResult(update());
+        }
     }
 
     private sealed class CandidateWorkflow(ServerInstance candidate) : IOnlineModpackWorkflow

@@ -81,8 +81,52 @@ public sealed class ProductIpcContractTests
         Assert.Equal(new ProductApiVersion(1, 0), ProductApiProtocol.MinimumSupportedVersion);
         Assert.Equal(new ProductApiVersion(1, 6), ProductApiProtocol.MinecraftEulaConsentVersion);
         Assert.Equal(new ProductApiVersion(1, 7), ProductApiProtocol.ServerPropertiesEditorVersion);
-        Assert.Equal(ProductApiProtocol.ServerPropertiesEditorVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 8), ProductApiProtocol.ServiceInstanceSettingsVersion);
+        Assert.Equal(ProductApiProtocol.ServiceInstanceSettingsVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void ServiceInstanceSettings_RequireOneCompleteValidSnapshot()
+    {
+        var valid = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerSettingsUpdateMethod,
+            ServerId = Guid.NewGuid(),
+            ServerSettings = CompleteServiceInstanceSettings(),
+        };
+        var partial = valid with
+        {
+            ServerSettings = new ProductServerSettingsUpdateRequest(
+                "Server",
+                1024,
+                4096,
+                25565,
+                false)
+            {
+                MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+            },
+        };
+        var invalidMode = valid with
+        {
+            ServerSettings = CompleteServiceInstanceSettings() with
+            {
+                MemoryAllocationMode = (ProductServerMemoryAllocationMode)99,
+            },
+        };
+        var invalidTimeout = valid with
+        {
+            ServerSettings = CompleteServiceInstanceSettings() with
+            {
+                WatchdogProbeTimeoutSeconds = 30,
+                WatchdogCheckIntervalSeconds = 30,
+            },
+        };
+
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+        Assert.Equal("protocol.server_settings_invalid", ProductIpcRequestValidator.Validate(partial)?.Code);
+        Assert.Equal("protocol.server_settings_invalid", ProductIpcRequestValidator.Validate(invalidMode)?.Code);
+        Assert.Equal("protocol.server_settings_invalid", ProductIpcRequestValidator.Validate(invalidTimeout)?.Code);
     }
 
     [Fact]
@@ -380,6 +424,25 @@ public sealed class ProductIpcContractTests
             "ECDSA-P256-SHA256",
             Convert.ToBase64String([1, 2, 3, 4]),
             1));
+
+    private static ProductServerSettingsUpdateRequest CompleteServiceInstanceSettings() => new(
+        "Server",
+        1024,
+        4096,
+        25565,
+        false)
+    {
+        MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+        SeparateDiagnosticOutput = true,
+        EnableHangWatchdog = true,
+        WatchdogCheckIntervalSeconds = 45,
+        WatchdogProbeTimeoutSeconds = 9,
+        WatchdogFailureThreshold = 4,
+        WatchdogStartupGraceSeconds = 240,
+        EnableAutomaticRecoveryPoints = true,
+        RecoveryPointIntervalMinutes = 60,
+        RecoveryPointRetentionCount = 5,
+    };
 
     private static ProductIpcRequest ValidRequest() => new(
         ProductIpcProtocol.CurrentSchemaVersion,

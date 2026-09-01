@@ -34,6 +34,20 @@ public sealed class ProductApiProtocolTests
     }
 
     [Fact]
+    public void Negotiate_Api17Client_RemainsCompatibleWithoutApi18SettingsCapability()
+    {
+        var api17 = ProductApiProtocol.ServerPropertiesEditorVersion;
+
+        var result = ProductApiProtocol.Negotiate(api17, api17);
+
+        Assert.True(result.IsCompatible);
+        Assert.Equal(api17, result.SelectedVersion);
+        Assert.True(
+            result.SelectedVersion!.Value.CompareTo(
+                ProductApiProtocol.ServiceInstanceSettingsVersion) < 0);
+    }
+
+    [Fact]
     public void Negotiate_InvalidRange_Throws()
     {
         Assert.Throws<ArgumentException>(() =>

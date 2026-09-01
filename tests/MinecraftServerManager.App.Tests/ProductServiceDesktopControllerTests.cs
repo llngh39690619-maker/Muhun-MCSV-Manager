@@ -83,7 +83,21 @@ public sealed class ProductServiceDesktopControllerTests
         await using var controller = new ProductServiceDesktopController(client);
         var registration = await controller.GetRegistrationAsync(serverId);
 
-        await controller.UpdateRegistrationAsync(registration with { Name = "edited" });
+        var edited = registration with
+        {
+            Name = "edited",
+            MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+            SeparateDiagnosticOutput = true,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 45,
+            WatchdogProbeTimeoutSeconds = 9,
+            WatchdogFailureThreshold = 4,
+            WatchdogStartupGraceSeconds = 240,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 60,
+            RecoveryPointRetentionCount = 5,
+        };
+        await controller.UpdateRegistrationAsync(edited);
         var backups = await controller.ListBackupsAsync(serverId);
         await controller.CreateBackupAsync(serverId);
         await controller.RestoreBackupAsync(serverId, backups[0].BackupId);
@@ -92,6 +106,17 @@ public sealed class ProductServiceDesktopControllerTests
         Assert.Equal(
             ["register:edited", "backup:create", "backup:restore", "remove"],
             client.Mutations);
+        Assert.NotNull(client.LastSettingsUpdate);
+        Assert.Equal(edited.MemoryAllocationMode, client.LastSettingsUpdate.MemoryAllocationMode);
+        Assert.Equal(edited.SeparateDiagnosticOutput, client.LastSettingsUpdate.SeparateDiagnosticOutput);
+        Assert.Equal(edited.EnableHangWatchdog, client.LastSettingsUpdate.EnableHangWatchdog);
+        Assert.Equal(edited.WatchdogCheckIntervalSeconds, client.LastSettingsUpdate.WatchdogCheckIntervalSeconds);
+        Assert.Equal(edited.WatchdogProbeTimeoutSeconds, client.LastSettingsUpdate.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(edited.WatchdogFailureThreshold, client.LastSettingsUpdate.WatchdogFailureThreshold);
+        Assert.Equal(edited.WatchdogStartupGraceSeconds, client.LastSettingsUpdate.WatchdogStartupGraceSeconds);
+        Assert.Equal(edited.EnableAutomaticRecoveryPoints, client.LastSettingsUpdate.EnableAutomaticRecoveryPoints);
+        Assert.Equal(edited.RecoveryPointIntervalMinutes, client.LastSettingsUpdate.RecoveryPointIntervalMinutes);
+        Assert.Equal(edited.RecoveryPointRetentionCount, client.LastSettingsUpdate.RecoveryPointRetentionCount);
     }
 
     [Fact]
@@ -160,6 +185,8 @@ public sealed class ProductServiceDesktopControllerTests
         public List<string> Mutations { get; } = [];
 
         public List<string> ProviderMutations { get; } = [];
+
+        public ProductServerSettingsUpdateRequest? LastSettingsUpdate { get; private set; }
 
         public Task<ProductLocalHandshakePayload> HandshakeAsync(
             CancellationToken cancellationToken = default)
@@ -294,6 +321,7 @@ public sealed class ProductServiceDesktopControllerTests
             ProductServerSettingsUpdateRequest settings,
             CancellationToken cancellationToken = default)
         {
+            LastSettingsUpdate = settings;
             _registration = _registration with
             {
                 Name = settings.Name,
@@ -301,6 +329,16 @@ public sealed class ProductServiceDesktopControllerTests
                 MaximumMemoryMb = settings.MaximumMemoryMb,
                 Port = settings.Port,
                 AutoRestart = settings.AutoRestart,
+                MemoryAllocationMode = settings.MemoryAllocationMode ?? _registration.MemoryAllocationMode,
+                SeparateDiagnosticOutput = settings.SeparateDiagnosticOutput ?? _registration.SeparateDiagnosticOutput,
+                EnableHangWatchdog = settings.EnableHangWatchdog ?? _registration.EnableHangWatchdog,
+                WatchdogCheckIntervalSeconds = settings.WatchdogCheckIntervalSeconds ?? _registration.WatchdogCheckIntervalSeconds,
+                WatchdogProbeTimeoutSeconds = settings.WatchdogProbeTimeoutSeconds ?? _registration.WatchdogProbeTimeoutSeconds,
+                WatchdogFailureThreshold = settings.WatchdogFailureThreshold ?? _registration.WatchdogFailureThreshold,
+                WatchdogStartupGraceSeconds = settings.WatchdogStartupGraceSeconds ?? _registration.WatchdogStartupGraceSeconds,
+                EnableAutomaticRecoveryPoints = settings.EnableAutomaticRecoveryPoints ?? _registration.EnableAutomaticRecoveryPoints,
+                RecoveryPointIntervalMinutes = settings.RecoveryPointIntervalMinutes ?? _registration.RecoveryPointIntervalMinutes,
+                RecoveryPointRetentionCount = settings.RecoveryPointRetentionCount ?? _registration.RecoveryPointRetentionCount,
             };
             Mutations.Add("register:" + settings.Name);
             return Task.FromResult(new ProductServerSettingsUpdateResult(

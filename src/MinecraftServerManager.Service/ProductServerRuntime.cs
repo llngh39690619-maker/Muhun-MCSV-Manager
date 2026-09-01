@@ -91,6 +91,14 @@ public sealed class ProductServerRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(settings);
         ThrowIfShuttingDown();
+        var requiresExplicitStoppedState =
+            ProductServerInstanceSettingsContract.HasAnyServiceInstanceSetting(settings);
+        if (requiresExplicitStoppedState &&
+            _processManager.TryGetSnapshot(serverId, out var observedSnapshot))
+        {
+            EnsureSettingsUpdateState(observedSnapshot.State);
+        }
+
         var gate = GetGate(serverId);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -99,6 +107,25 @@ public sealed class ProductServerRuntime : IAsyncDisposable
                     serverId,
                     async token =>
                     {
+                        // ExecuteWhileInactiveAsync holds Core's per-instance lifecycle gate for
+                        // this entire callback. Reading the synchronized snapshot here is therefore
+                        // atomic with respect to start/stop/restart transitions: no lifecycle
+                        // operation can change Stopped into another state before the registry
+                        // commit completes. Inactive alone is insufficient because Crashed and
+                        // Faulted slots can also have no current process session.
+                        // A registration that has never been started has no Core slot yet and is
+                        // the canonical stopped state exposed by ToStatus/ToSummary. Because the
+                        // lifecycle gate is already held here, treating that absence as Stopped
+                        // cannot race a concurrent start. A complete API 1.8 preference snapshot
+                        // requires an existing slot to be exactly Stopped; the legacy five-field
+                        // mutation keeps its historical inactive-slot behavior so disabling
+                        // AutoRestart can still win during crash restart preparation.
+                        if (requiresExplicitStoppedState &&
+                            _processManager.TryGetSnapshot(serverId, out var snapshot))
+                        {
+                            EnsureSettingsUpdateState(snapshot.State);
+                        }
+
                         var current = GetRegistration(serverId);
                         var updated = current with
                         {
@@ -107,6 +134,26 @@ public sealed class ProductServerRuntime : IAsyncDisposable
                             MaximumMemoryMb = settings.MaximumMemoryMb,
                             Port = settings.Port,
                             AutoRestart = settings.AutoRestart,
+                            MemoryAllocationMode =
+                                settings.MemoryAllocationMode ?? current.MemoryAllocationMode,
+                            SeparateDiagnosticOutput =
+                                settings.SeparateDiagnosticOutput ?? current.SeparateDiagnosticOutput,
+                            EnableHangWatchdog =
+                                settings.EnableHangWatchdog ?? current.EnableHangWatchdog,
+                            WatchdogCheckIntervalSeconds =
+                                settings.WatchdogCheckIntervalSeconds ?? current.WatchdogCheckIntervalSeconds,
+                            WatchdogProbeTimeoutSeconds =
+                                settings.WatchdogProbeTimeoutSeconds ?? current.WatchdogProbeTimeoutSeconds,
+                            WatchdogFailureThreshold =
+                                settings.WatchdogFailureThreshold ?? current.WatchdogFailureThreshold,
+                            WatchdogStartupGraceSeconds =
+                                settings.WatchdogStartupGraceSeconds ?? current.WatchdogStartupGraceSeconds,
+                            EnableAutomaticRecoveryPoints =
+                                settings.EnableAutomaticRecoveryPoints ?? current.EnableAutomaticRecoveryPoints,
+                            RecoveryPointIntervalMinutes =
+                                settings.RecoveryPointIntervalMinutes ?? current.RecoveryPointIntervalMinutes,
+                            RecoveryPointRetentionCount =
+                                settings.RecoveryPointRetentionCount ?? current.RecoveryPointRetentionCount,
                         };
                         await _registry.UpsertAsync(updated, token).ConfigureAwait(false);
                         return new ProductServerSettingsUpdateResult(updated, ToStatus(updated));
@@ -670,11 +717,27 @@ public sealed class ProductServerRuntime : IAsyncDisposable
         instance.MinecraftVersion = registration.MinecraftVersion;
         instance.MinimumMemoryMb = registration.MinimumMemoryMb;
         instance.MaximumMemoryMb = registration.MaximumMemoryMb;
+        instance.MemoryAllocationMode = registration.MemoryAllocationMode switch
+        {
+            ProductServerMemoryAllocationMode.Manual => MemoryAllocationMode.Manual,
+            ProductServerMemoryAllocationMode.UseManagerDefault => MemoryAllocationMode.UseManagerDefault,
+            ProductServerMemoryAllocationMode.Automatic => MemoryAllocationMode.Automatic,
+            _ => throw new InvalidDataException("Stored memory allocation mode is unsupported."),
+        };
         instance.JvmArguments = registration.JvmArguments.ToList();
         instance.ServerArguments = registration.ServerArguments.ToList();
         instance.StopCommand = registration.StopCommand;
         instance.Port = registration.Port;
         instance.AutoRestart = registration.AutoRestart;
+        instance.SeparateDiagnosticOutput = registration.SeparateDiagnosticOutput;
+        instance.EnableHangWatchdog = registration.EnableHangWatchdog;
+        instance.WatchdogCheckIntervalSeconds = registration.WatchdogCheckIntervalSeconds;
+        instance.WatchdogProbeTimeoutSeconds = registration.WatchdogProbeTimeoutSeconds;
+        instance.WatchdogFailureThreshold = registration.WatchdogFailureThreshold;
+        instance.WatchdogStartupGraceSeconds = registration.WatchdogStartupGraceSeconds;
+        instance.EnableAutomaticRecoveryPoints = registration.EnableAutomaticRecoveryPoints;
+        instance.RecoveryPointIntervalMinutes = registration.RecoveryPointIntervalMinutes;
+        instance.RecoveryPointRetentionCount = registration.RecoveryPointRetentionCount;
         instance.ModpackProviderId = registration.ModpackProviderId;
         instance.ModpackSource = (ModpackSourceKind)registration.ModpackSource;
         instance.ModpackProjectId = registration.ModpackProjectId;
@@ -685,6 +748,15 @@ public sealed class ProductServerRuntime : IAsyncDisposable
 
     internal ServerInstance CreateCoreInstance(ProductServerRegistration registration)
         => ToCoreInstance(registration);
+
+    internal static void EnsureSettingsUpdateState(ServerState state)
+    {
+        if (state != ServerState.Stopped)
+        {
+            throw new InvalidOperationException(
+                "Server settings can be updated only while the server is stopped.");
+        }
+    }
 
     private string ResolveServerDirectory(ProductServerRegistration registration)
     {

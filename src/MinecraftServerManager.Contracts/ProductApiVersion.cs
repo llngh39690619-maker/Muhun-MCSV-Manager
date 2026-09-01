@@ -68,7 +68,14 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion ServerPropertiesEditorVersion { get; } = new(1, 7);
 
-    public static ProductApiVersion CurrentVersion { get; } = ServerPropertiesEditorVersion;
+    /// <summary>
+    /// First API version that round-trips all Service-owned instance memory and reliability
+    /// settings. Clients negotiated to an older version may keep using earlier capabilities, but
+    /// must not present these settings as persistable.
+    /// </summary>
+    public static ProductApiVersion ServiceInstanceSettingsVersion { get; } = new(1, 8);
+
+    public static ProductApiVersion CurrentVersion { get; } = ServiceInstanceSettingsVersion;
 
     public const string RestBasePath = "/api/v1";
 

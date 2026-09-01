@@ -104,6 +104,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, Guid> _pendingLaunchPortSessions = new();
     private readonly ConcurrentDictionary<Guid, ServerPropertiesDocumentFormatToken> _serverPropertiesFormats = new();
     private readonly ConcurrentDictionary<Guid, string> _serviceServerPropertiesRevisions = new();
+    private readonly ConcurrentDictionary<Guid, string> _serviceServerPropertiesLoadErrors = new();
     private readonly object _serviceServerPropertiesStateSync = new();
     private readonly Dictionary<Guid, long> _serviceServerPropertiesReloadGenerations = [];
     private readonly Dictionary<Guid, long> _serviceServerPropertiesReloadsInFlight = [];
@@ -194,6 +195,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private string _productServiceConnectionCode = "service.not_initialized";
     private ProductApiVersion? _productServiceNegotiatedApiVersion;
     private bool _isProductServiceUpdateRunning;
+    private bool _isSelectedInstanceConfigurationSaveRunning;
     private IReadOnlyList<ServerInstance>? _readOnlyLegacyInstances;
     private readonly Dictionary<Guid, Guid> _playerPresenceSessions = [];
     private readonly ConcurrentDictionary<Guid, byte> _loadedPlayerRegistries = new();
@@ -456,9 +458,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                           && !_isServerListMutationRunning);
         SaveSelectedSettingsCommand = new AsyncRelayCommand(
             () => GuardAsync(SaveSelectedSettingsAsync, "main.vm.operation.saveSettings"),
-            () => SelectedServer is not null
-                  && (SelectedServer.CanAccessLocalFiles
-                      || (SelectedServer.IsServiceManaged && IsProductServiceConnected)));
+            () => CanSaveSelectedInstanceConfiguration);
         SaveServerAppearanceCommand = new AsyncRelayCommand(
             parameter => GuardAsync(
                 () => SaveServerAppearanceAsync(parameter as ServerInstanceViewModel),
@@ -635,10 +635,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CancelAddonScan();
             OnPropertyChanged(nameof(HasSelectedServer));
             OnPropertyChanged(nameof(CanEditSelectedLocalConfiguration));
+            OnPropertyChanged(nameof(CanEditSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+            OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
             OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
             OnPropertyChanged(nameof(CanEditSelectedServerProperties));
             OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
             OnPropertyChanged(nameof(IsSelectedServerPropertiesOperationRunning));
+            OnPropertyChanged(nameof(SelectedServerPropertiesStatusText));
+            OnPropertyChanged(nameof(HasSelectedServerPropertiesStatus));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(CanManageLocalRecoveryPoints));
             OnPropertyChanged(nameof(CanRefreshSelectedPlayers));
@@ -718,6 +724,27 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedServer => SelectedServer is not null;
     public bool CanEditSelectedLocalConfiguration =>
         SelectedServer?.CanAccessLocalFiles == true;
+    public bool CanEditSelectedInstanceConfiguration => SelectedServer is { } server &&
+        !IsSelectedInstanceConfigurationSaveRunning &&
+        (server.CanAccessLocalFiles ||
+         (server.IsServiceManaged &&
+          SupportsProductServiceInstanceSettings &&
+          server.State == ServerState.Stopped));
+    public bool CanSaveSelectedInstanceConfiguration =>
+        CanEditSelectedInstanceConfiguration &&
+        (SelectedServer is not { IsServiceManaged: true } serviceServer ||
+         serviceServer.State == ServerState.Stopped);
+    public bool IsSelectedInstanceConfigurationSaveRunning
+    {
+        get => _isSelectedInstanceConfigurationSaveRunning;
+        private set
+        {
+            if (!SetProperty(ref _isSelectedInstanceConfigurationSaveRunning, value)) return;
+            OnPropertyChanged(nameof(CanEditSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
+        }
+    }
     public bool IsSelectedServerPropertiesOperationRunning =>
         SelectedServer is { IsServiceManaged: true } server &&
         IsServiceServerPropertiesOperationRunning(server.Id);
@@ -735,6 +762,68 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         CanEditSelectedServerProperties &&
         (SelectedServer is not { IsServiceManaged: true } serviceServer ||
          serviceServer.State is ServerState.Stopped or ServerState.Crashed or ServerState.Faulted);
+    public string SelectedServerPropertiesStatusText
+    {
+        get
+        {
+            if (SelectedServer is not { IsServiceManaged: true } server)
+            {
+                return string.Empty;
+            }
+
+            if (!IsProductServiceConnected)
+            {
+                return L("main.vm.properties.serviceDisconnected");
+            }
+
+            if (!SupportsProductServicePropertiesEditor)
+            {
+                return L("main.vm.properties.serviceUpdateRequired");
+            }
+
+            if (_serviceServerPropertiesLoadErrors.TryGetValue(server.Id, out var error))
+            {
+                return L("main.vm.properties.serviceLoadFailed", error);
+            }
+
+            if (IsSelectedServerPropertiesOperationRunning)
+            {
+                return L("main.vm.properties.serviceLoading");
+            }
+
+            return _serviceServerPropertiesRevisions.ContainsKey(server.Id)
+                ? string.Empty
+                : L("main.vm.properties.serviceReloadRequired");
+        }
+    }
+    public bool HasSelectedServerPropertiesStatus =>
+        !string.IsNullOrWhiteSpace(SelectedServerPropertiesStatusText);
+    public string SelectedInstanceConfigurationStatusText
+    {
+        get
+        {
+            if (SelectedServer is not { IsServiceManaged: true } server)
+            {
+                return string.Empty;
+            }
+
+            if (!IsProductServiceConnected)
+            {
+                return L("main.vm.settings.serviceDisconnected");
+            }
+
+            if (!SupportsProductServiceInstanceSettings)
+            {
+                return L("main.vm.settings.serviceUpdateRequired");
+            }
+
+            return server.State == ServerState.Stopped
+                ? string.Empty
+                : L("main.vm.settings.serviceSaveRequiresStopped");
+        }
+    }
+    public bool HasSelectedInstanceConfigurationStatus =>
+        !string.IsNullOrWhiteSpace(SelectedInstanceConfigurationStatusText);
     public bool CanBrowseSelectedServerFiles => SelectedServer is { } server
         && (server.CanAccessLocalFiles
             || (server.IsServiceManaged && SupportsProductServiceFileAdministration));
@@ -748,7 +837,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _productServiceConnectionState == ProductServiceConnectionState.Connected;
     public bool ShowProductServiceUpdateAction =>
         _productServiceUpdateLauncher is not null &&
-        _productServiceConnectionState == ProductServiceConnectionState.Incompatible;
+        (_productServiceConnectionState == ProductServiceConnectionState.Incompatible ||
+         (_productServiceConnectionState == ProductServiceConnectionState.Connected &&
+          _productServiceNegotiatedApiVersion is { } apiVersion &&
+          apiVersion.CompareTo(ProductApiProtocol.CurrentVersion) < 0));
     public bool IsProductServiceUpdateRunning
     {
         get => _isProductServiceUpdateRunning;
@@ -768,6 +860,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IsProductServiceConnected &&
         _productServiceNegotiatedApiVersion is { } version &&
         version.CompareTo(ProductApiProtocol.ServerPropertiesEditorVersion) >= 0;
+    public bool SupportsProductServiceInstanceSettings =>
+        IsProductServiceConnected &&
+        _productServiceNegotiatedApiVersion is { } version &&
+        version.CompareTo(ProductApiProtocol.ServiceInstanceSettingsVersion) >= 0;
     public bool KeepsRunningServersOnGuiExit => IsProductServiceRuntime;
     public string ProductServiceConnectionText => FormatProductServiceConnection(
         _productServiceConnectionState,
@@ -1248,7 +1344,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 ApplyProductServiceSnapshot(snapshot);
                 if (snapshot.Connection.IsConnected &&
                     _productServiceNegotiatedApiVersion is { } apiVersion &&
-                    apiVersion.CompareTo(ProductApiProtocol.MinecraftEulaConsentVersion) >= 0)
+                    apiVersion.CompareTo(ProductApiProtocol.CurrentVersion) >= 0)
                 {
                     SetStatus("main.vm.service.updateCompleted");
                     return;
@@ -1286,6 +1382,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _productServiceConnectionState = snapshot.Connection.State;
         _productServiceConnectionCode = snapshot.Connection.Code;
         _productServiceNegotiatedApiVersion = NegotiateProductServiceApiVersion(snapshot.Connection);
+        var propertiesEditorBecameAvailable = SupportsProductServicePropertiesEditor &&
+            (previousState != ProductServiceConnectionState.Connected ||
+             previousNegotiatedApiVersion is null ||
+             previousNegotiatedApiVersion.Value.CompareTo(
+                 ProductApiProtocol.ServerPropertiesEditorVersion) < 0);
         if (previousState != _productServiceConnectionState ||
             previousNegotiatedApiVersion != _productServiceNegotiatedApiVersion)
         {
@@ -1293,22 +1394,36 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 _serviceServerPropertiesRevisions.TryRemove(serverId, out _);
             }
+            foreach (var serverId in _serviceServerPropertiesLoadErrors.Keys)
+            {
+                _serviceServerPropertiesLoadErrors.TryRemove(serverId, out _);
+            }
         }
         if (previousNegotiatedApiVersion != _productServiceNegotiatedApiVersion)
         {
             OnPropertyChanged(nameof(ProductServiceNegotiatedApiVersion));
             OnPropertyChanged(nameof(SupportsProductServiceFileAdministration));
             OnPropertyChanged(nameof(SupportsProductServicePropertiesEditor));
+            OnPropertyChanged(nameof(SupportsProductServiceInstanceSettings));
+            OnPropertyChanged(nameof(CanEditSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+            OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
             OnPropertyChanged(nameof(CanEditSelectedServerProperties));
             OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+            OnPropertyChanged(nameof(SelectedServerPropertiesStatusText));
+            OnPropertyChanged(nameof(HasSelectedServerPropertiesStatus));
+            OnPropertyChanged(nameof(ShowProductServiceUpdateAction));
             OpenSelectedFolderCommand.NotifyCanExecuteChanged();
             CheckAddonUpdatesCommand.NotifyCanExecuteChanged();
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             DeleteServerCommand.NotifyCanExecuteChanged();
             ReloadPropertiesCommand.NotifyCanExecuteChanged();
             SavePropertiesCommand.NotifyCanExecuteChanged();
+            SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
+            UpdateProductServiceCommand.NotifyCanExecuteChanged();
         }
         if (previousState != _productServiceConnectionState ||
             !string.Equals(previousCode, _productServiceConnectionCode, StringComparison.Ordinal))
@@ -1321,10 +1436,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ShowProductServiceUpdateAction));
             OnPropertyChanged(nameof(SupportsProductServiceFileAdministration));
             OnPropertyChanged(nameof(SupportsProductServicePropertiesEditor));
+            OnPropertyChanged(nameof(SupportsProductServiceInstanceSettings));
+            OnPropertyChanged(nameof(CanEditSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+            OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
             OnPropertyChanged(nameof(CanEditSelectedServerProperties));
             OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+            OnPropertyChanged(nameof(SelectedServerPropertiesStatusText));
+            OnPropertyChanged(nameof(HasSelectedServerPropertiesStatus));
             OnPropertyChanged(nameof(ProductServiceConnectionText));
             OnPropertyChanged(nameof(CanRefreshSelectedPlayers));
             NotifySelectedLifecycleCommandsCanExecuteChanged();
@@ -1371,6 +1493,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        if (propertiesEditorBecameAvailable &&
+            SelectedServer is { IsServiceManaged: true } propertiesServer)
+        {
+            _ = GuardAsync(
+                () => ReloadPropertiesQuietlyAsync(propertiesServer),
+                "main.vm.operation.reloadProperties");
+        }
+
         if (!snapshot.Connection.IsConnected)
         {
             return;
@@ -1381,6 +1511,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             Servers.Remove(stale);
             _serviceServerPropertiesRevisions.TryRemove(stale.Id, out _);
+            _serviceServerPropertiesLoadErrors.TryRemove(stale.Id, out _);
             RemoveServiceServerPropertiesState(stale.Id);
             _dirtyProductServiceRegistrations.Remove(stale.Id);
             _instanceModels.TryRemove(stale.Id, out _);
@@ -1507,14 +1638,26 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         model.MinecraftVersion = registration.MinecraftVersion;
         model.MinimumMemoryMb = registration.MinimumMemoryMb;
         model.MaximumMemoryMb = registration.MaximumMemoryMb;
-        model.MemoryAllocationMode = MemoryAllocationMode.Manual;
+        model.MemoryAllocationMode = registration.MemoryAllocationMode switch
+        {
+            ProductServerMemoryAllocationMode.UseManagerDefault => MemoryAllocationMode.UseManagerDefault,
+            ProductServerMemoryAllocationMode.Automatic => MemoryAllocationMode.Automatic,
+            _ => MemoryAllocationMode.Manual,
+        };
         model.JvmArguments = registration.JvmArguments.ToList();
         model.ServerArguments = registration.ServerArguments.ToList();
         model.StopCommand = registration.StopCommand;
         model.Port = registration.Port;
         model.AutoRestart = registration.AutoRestart;
-        model.EnableHangWatchdog = false;
-        model.EnableAutomaticRecoveryPoints = false;
+        model.SeparateDiagnosticOutput = registration.SeparateDiagnosticOutput;
+        model.EnableHangWatchdog = registration.EnableHangWatchdog;
+        model.WatchdogCheckIntervalSeconds = registration.WatchdogCheckIntervalSeconds;
+        model.WatchdogProbeTimeoutSeconds = registration.WatchdogProbeTimeoutSeconds;
+        model.WatchdogFailureThreshold = registration.WatchdogFailureThreshold;
+        model.WatchdogStartupGraceSeconds = registration.WatchdogStartupGraceSeconds;
+        model.EnableAutomaticRecoveryPoints = registration.EnableAutomaticRecoveryPoints;
+        model.RecoveryPointIntervalMinutes = registration.RecoveryPointIntervalMinutes;
+        model.RecoveryPointRetentionCount = registration.RecoveryPointRetentionCount;
         model.ModpackProviderId = registration.ModpackProviderId;
         model.ModpackSource = (ModpackSourceKind)registration.ModpackSource;
         model.ModpackProjectId = registration.ModpackProjectId;
@@ -1959,6 +2102,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         // same thread guarantees the service status cannot remain in the previous language even
         // in headless hosts where an Application dispatcher exists but is not being pumped.
         OnPropertyChanged(nameof(ProductServiceConnectionText));
+        OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+        OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
+        OnPropertyChanged(nameof(SelectedServerPropertiesStatusText));
+        OnPropertyChanged(nameof(HasSelectedServerPropertiesStatus));
         OnPropertyChanged(nameof(BackgroundJobActivity));
         OnPropertyChanged(nameof(ServerCountText));
         OnPropertyChanged(nameof(RunningSummary));
@@ -2030,10 +2177,44 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var recommendation = await _memoryRecommendationService.RecommendAsync(
-                    server.DirectoryPath,
-                    owner.Token)
-                .ConfigureAwait(false);
+            MemoryRecommendation recommendation;
+            if (server.IsServiceManaged)
+            {
+                var controller = _productServiceController
+                    ?? throw new InvalidOperationException(L("main.vm.service.notReady"));
+                EnsureProductServiceConnected();
+                var administration = await ExecuteProductServiceOperationAsync(
+                        token => controller.GetServerAdministrationAsync(server.Id, token),
+                        owner.Token)
+                    .ConfigureAwait(false);
+                if (!administration.AddonsAvailable)
+                {
+                    throw new InvalidOperationException(
+                        L("main.vm.error.serviceMemoryMetricsUnavailable"));
+                }
+
+                long addonBytes = 0;
+                foreach (var addon in administration.Addons)
+                {
+                    var sizeBytes = Math.Max(0, addon.SizeBytes);
+                    addonBytes = addonBytes > long.MaxValue - sizeBytes
+                        ? long.MaxValue
+                        : addonBytes + sizeBytes;
+                }
+
+                recommendation = _memoryRecommendationService.Recommend(
+                    administration.Addons.Count,
+                    addonBytes,
+                    administration.AddonsTruncated,
+                    owner.Token);
+            }
+            else
+            {
+                recommendation = await _memoryRecommendationService.RecommendAsync(
+                        server.DirectoryPath,
+                        owner.Token)
+                    .ConfigureAwait(false);
+            }
             await DispatchMemoryRecommendationAsync(() =>
             {
                 if (IsCurrentAutomaticMemoryRequest(server, owner))
@@ -3389,6 +3570,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         bool WasStopped,
         Exception? Error);
 
+    private readonly record struct ServiceMemorySettings(
+        ProductServerMemoryAllocationMode Mode,
+        int MinimumMemoryMb,
+        int MaximumMemoryMb);
+
     private bool CanOpenSelectedFolder()
         => SelectedServer is { } server &&
            (server.CanAccessLocalFiles ||
@@ -3423,6 +3609,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             NotifySelectedLifecycleCommandsCanExecuteChanged();
             UpdateSelectedModpackCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+            OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
+            SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
             OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
             SavePropertiesCommand.NotifyCanExecuteChanged();
         }
@@ -3435,6 +3625,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             or nameof(ServerInstanceViewModel.CanAccessLocalFiles))
         {
             OnPropertyChanged(nameof(CanEditSelectedLocalConfiguration));
+            OnPropertyChanged(nameof(CanEditSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(CanSaveSelectedInstanceConfiguration));
+            OnPropertyChanged(nameof(SelectedInstanceConfigurationStatusText));
+            OnPropertyChanged(nameof(HasSelectedInstanceConfigurationStatus));
             OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
             OnPropertyChanged(nameof(CanEditSelectedServerProperties));
             OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
@@ -3445,6 +3639,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             OpenRecoveryPointsFolderCommand.NotifyCanExecuteChanged();
             RestoreRecoveryPointCommand.NotifyCanExecuteChanged();
+            SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
             ReloadPropertiesCommand.NotifyCanExecuteChanged();
             SavePropertiesCommand.NotifyCanExecuteChanged();
         }
@@ -3456,7 +3651,17 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 nameof(ServerInstanceViewModel.Port) or
                 nameof(ServerInstanceViewModel.MinimumMemoryMb) or
                 nameof(ServerInstanceViewModel.MaximumMemoryMb) or
-                nameof(ServerInstanceViewModel.AutoRestart))
+                nameof(ServerInstanceViewModel.MemoryAllocationMode) or
+                nameof(ServerInstanceViewModel.AutoRestart) or
+                nameof(ServerInstanceViewModel.SeparateDiagnosticOutput) or
+                nameof(ServerInstanceViewModel.EnableHangWatchdog) or
+                nameof(ServerInstanceViewModel.WatchdogCheckIntervalSeconds) or
+                nameof(ServerInstanceViewModel.WatchdogProbeTimeoutSeconds) or
+                nameof(ServerInstanceViewModel.WatchdogFailureThreshold) or
+                nameof(ServerInstanceViewModel.WatchdogStartupGraceSeconds) or
+                nameof(ServerInstanceViewModel.EnableAutomaticRecoveryPoints) or
+                nameof(ServerInstanceViewModel.RecoveryPointIntervalMinutes) or
+                nameof(ServerInstanceViewModel.RecoveryPointRetentionCount))
         {
             _dirtyProductServiceRegistrations.Add(server.Id);
         }
@@ -4325,6 +4530,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         OnPropertyChanged(nameof(IsSplitDiagnosticOutputVisible));
         if (!Servers.Contains(server)) return;
+        if (server.IsServiceManaged)
+        {
+            // Service-owned preferences are persisted together through the guarded API 1.8
+            // settings save. Writing GUI metadata here would falsely report a durable save while
+            // leaving the authoritative registration unchanged.
+            return;
+        }
         _lastDiagnosticOutputPreferenceSave = GuardAsync(
             async () =>
             {
@@ -5600,39 +5812,63 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (_productServiceController is not null && server.IsServiceManaged)
         {
             EnsureProductServiceConnected();
+            if (!SupportsProductServiceInstanceSettings)
+            {
+                throw new InvalidOperationException(L("main.vm.settings.serviceUpdateRequired"));
+            }
             if (server.State != ServerState.Stopped)
             {
                 throw new InvalidOperationException(
                     L("main.vm.error.serviceSettingsRequireStopped"));
             }
 
-            var authoritative = await ExecuteProductServiceOperationAsync(
-                token => _productServiceController.GetRegistrationAsync(server.Id, token),
-                CancellationToken.None);
-            var updated = authoritative with
-            {
-                Name = server.Name.Trim(),
-                Port = server.Port,
-                MinimumMemoryMb = server.MinimumMemoryMb,
-                MaximumMemoryMb = server.MaximumMemoryMb,
-                AutoRestart = server.AutoRestart,
-            };
-            var result = await ExecuteProductServiceOperationAsync(
-                token => _productServiceController.UpdateRegistrationAsync(updated, token),
-                CancellationToken.None);
-            _dirtyProductServiceRegistrations.Remove(server.Id);
-            _applyingProductServiceProjection = true;
+            IsSelectedInstanceConfigurationSaveRunning = true;
             try
             {
-                UpdateServiceProjectionMetadata(server.Model, result.Registration);
-                server.NotifyServiceRegistrationChanged();
+                ValidateReliabilitySettings(server);
+                var memory = await ResolveServiceMemorySettingsForSaveAsync(server);
+                var authoritative = await ExecuteProductServiceOperationAsync(
+                    token => _productServiceController.GetRegistrationAsync(server.Id, token),
+                    CancellationToken.None);
+                var updated = authoritative with
+                {
+                    Name = server.Name.Trim(),
+                    Port = server.Port,
+                    MinimumMemoryMb = memory.MinimumMemoryMb,
+                    MaximumMemoryMb = memory.MaximumMemoryMb,
+                    MemoryAllocationMode = memory.Mode,
+                    AutoRestart = server.AutoRestart,
+                    SeparateDiagnosticOutput = server.SeparateDiagnosticOutput,
+                    EnableHangWatchdog = server.EnableHangWatchdog,
+                    WatchdogCheckIntervalSeconds = server.WatchdogCheckIntervalSeconds,
+                    WatchdogProbeTimeoutSeconds = server.WatchdogProbeTimeoutSeconds,
+                    WatchdogFailureThreshold = server.WatchdogFailureThreshold,
+                    WatchdogStartupGraceSeconds = server.WatchdogStartupGraceSeconds,
+                    EnableAutomaticRecoveryPoints = server.EnableAutomaticRecoveryPoints,
+                    RecoveryPointIntervalMinutes = server.RecoveryPointIntervalMinutes,
+                    RecoveryPointRetentionCount = server.RecoveryPointRetentionCount,
+                };
+                var result = await ExecuteProductServiceOperationAsync(
+                    token => _productServiceController.UpdateRegistrationAsync(updated, token),
+                    CancellationToken.None);
+                _dirtyProductServiceRegistrations.Remove(server.Id);
+                _applyingProductServiceProjection = true;
+                try
+                {
+                    UpdateServiceProjectionMetadata(server.Model, result.Registration);
+                    server.NotifyServiceRegistrationChanged();
+                }
+                finally
+                {
+                    _applyingProductServiceProjection = false;
+                }
+                ApplyProductServiceStatus(server, result.Status);
+                SetStatus("main.vm.status.serviceSettingsSaved", server.Name);
             }
             finally
             {
-                _applyingProductServiceProjection = false;
+                IsSelectedInstanceConfigurationSaveRunning = false;
             }
-            ApplyProductServiceStatus(server, result.Status);
-            SetStatus("main.vm.status.serviceSettingsSaved", server.Name);
             return;
         }
 
@@ -5653,6 +5889,72 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         else
         {
             SetStatus("main.vm.status.settingsSaved", server.Name);
+        }
+    }
+
+    private async Task<ServiceMemorySettings> ResolveServiceMemorySettingsForSaveAsync(
+        ServerInstanceViewModel server)
+    {
+        switch (server.MemoryAllocationMode)
+        {
+            case MemoryAllocationMode.UseManagerDefault:
+            {
+                var defaults = _settings.NewServerDefaults ?? new NewServerDefaultsSettings();
+                if (defaults.MinimumMemoryMb < 512 ||
+                    defaults.MaximumMemoryMb < defaults.MinimumMemoryMb)
+                {
+                    throw new InvalidOperationException(L("main.vm.error.effectiveMemoryInvalid"));
+                }
+
+                return new ServiceMemorySettings(
+                    ProductServerMemoryAllocationMode.UseManagerDefault,
+                    defaults.MinimumMemoryMb,
+                    defaults.MaximumMemoryMb);
+            }
+
+            case MemoryAllocationMode.Automatic:
+            {
+                if (!_automaticMemoryRecommendationTasks.TryGetValue(server.Id, out var recommendation))
+                {
+                    OnServerMemoryModeRequested(server, MemoryAllocationMode.Automatic);
+                    _automaticMemoryRecommendationTasks.TryGetValue(server.Id, out recommendation);
+                }
+
+                if (recommendation is not null)
+                {
+                    await recommendation;
+                }
+
+                if (server.MemoryAllocationMode != MemoryAllocationMode.Automatic ||
+                    !server.HasSuccessfulAutomaticMemoryRecommendation)
+                {
+                    throw new InvalidOperationException(
+                        L("main.vm.error.automaticMemoryRecommendationRequired"));
+                }
+
+                if (server.MinimumMemoryMb < 512 ||
+                    server.MaximumMemoryMb < server.MinimumMemoryMb)
+                {
+                    throw new InvalidOperationException(L("main.vm.error.effectiveMemoryInvalid"));
+                }
+
+                return new ServiceMemorySettings(
+                    ProductServerMemoryAllocationMode.Automatic,
+                    server.MinimumMemoryMb,
+                    server.MaximumMemoryMb);
+            }
+
+            default:
+                if (server.MinimumMemoryMb < 512 ||
+                    server.MaximumMemoryMb < server.MinimumMemoryMb)
+                {
+                    throw new InvalidOperationException(L("main.vm.error.effectiveMemoryInvalid"));
+                }
+
+                return new ServiceMemorySettings(
+                    ProductServerMemoryAllocationMode.Manual,
+                    server.MinimumMemoryMb,
+                    server.MaximumMemoryMb);
         }
     }
 
@@ -5892,7 +6194,13 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private async Task ReloadPropertiesAsync()
     {
         if (SelectedServer is null) return;
-        await ReloadPropertiesQuietlyAsync(SelectedServer);
+        var server = SelectedServer;
+        await ReloadPropertiesQuietlyAsync(server);
+        if (server.IsServiceManaged &&
+            !_serviceServerPropertiesRevisions.ContainsKey(server.Id))
+        {
+            return;
+        }
         SetStatus("main.vm.status.propertiesReloaded");
     }
 
@@ -5953,10 +6261,29 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             }
 
             _serviceServerPropertiesRevisions[server.Id] = serviceDocument.RevisionSha256;
+            _serviceServerPropertiesLoadErrors.TryRemove(server.Id, out _);
             server.ServerPropertiesText = serviceDocument.Exists
                 ? serviceDocument.Text
                 : L("main.vm.properties.notGenerated");
             NotifySelectedServerPropertiesStateChanged(server.Id);
+        }
+        catch (OperationCanceledException) when (_sessionServicesCancellation.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (IsCurrentServiceServerPropertiesReload(server.Id, generation))
+            {
+                var message = (error.Message ?? string.Empty)
+                    .Replace('\r', ' ')
+                    .Replace('\n', ' ')
+                    .Trim();
+                _serviceServerPropertiesLoadErrors[server.Id] =
+                    message[..Math.Min(message.Length, 240)];
+                NotifySelectedServerPropertiesStateChanged(server.Id);
+            }
+
         }
         finally
         {
@@ -5975,6 +6302,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
 
         _serviceServerPropertiesRevisions.TryRemove(serverId, out _);
+        _serviceServerPropertiesLoadErrors.TryRemove(serverId, out _);
         NotifySelectedServerPropertiesStateChanged(serverId);
         return generation;
     }
@@ -6046,6 +6374,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _serviceServerPropertiesReloadsInFlight.Remove(serverId);
             _serviceServerPropertiesSavesInFlight.Remove(serverId);
         }
+        _serviceServerPropertiesLoadErrors.TryRemove(serverId, out _);
     }
 
     private void NotifySelectedServerPropertiesStateChanged(Guid serverId)
@@ -6059,6 +6388,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
         OnPropertyChanged(nameof(CanEditSelectedServerProperties));
         OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+        OnPropertyChanged(nameof(SelectedServerPropertiesStatusText));
+        OnPropertyChanged(nameof(HasSelectedServerPropertiesStatus));
         ReloadPropertiesCommand.NotifyCanExecuteChanged();
         SavePropertiesCommand.NotifyCanExecuteChanged();
     }

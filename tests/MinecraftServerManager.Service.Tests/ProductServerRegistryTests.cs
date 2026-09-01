@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MinecraftServerManager.Contracts;
+using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Service;
 
 namespace MinecraftServerManager.Service.Tests;
@@ -12,7 +13,19 @@ public sealed class ProductServerRegistryTests
         var layout = CreateLayout();
         var registry = new ProductServerRegistry(layout);
         await registry.LoadAsync();
-        var registration = Registration();
+        var registration = Registration() with
+        {
+            MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+            SeparateDiagnosticOutput = true,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 45,
+            WatchdogProbeTimeoutSeconds = 9,
+            WatchdogFailureThreshold = 4,
+            WatchdogStartupGraceSeconds = 240,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 60,
+            RecoveryPointRetentionCount = 5,
+        };
 
         await registry.UpsertAsync(registration);
         ((string[])registration.JvmArguments)[0] = "-Dmutated=true";
@@ -21,6 +34,18 @@ public sealed class ProductServerRegistryTests
         await reloaded.LoadAsync();
         var stored = Assert.Single(reloaded.GetAll());
         Assert.Equal("-Dsafe=true", Assert.Single(stored.JvmArguments));
+        Assert.Equal(registration.MemoryAllocationMode, stored.MemoryAllocationMode);
+        Assert.Equal(registration.SeparateDiagnosticOutput, stored.SeparateDiagnosticOutput);
+        Assert.Equal(registration.EnableHangWatchdog, stored.EnableHangWatchdog);
+        Assert.Equal(registration.WatchdogCheckIntervalSeconds, stored.WatchdogCheckIntervalSeconds);
+        Assert.Equal(registration.WatchdogProbeTimeoutSeconds, stored.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(registration.WatchdogFailureThreshold, stored.WatchdogFailureThreshold);
+        Assert.Equal(registration.WatchdogStartupGraceSeconds, stored.WatchdogStartupGraceSeconds);
+        Assert.Equal(
+            registration.EnableAutomaticRecoveryPoints,
+            stored.EnableAutomaticRecoveryPoints);
+        Assert.Equal(registration.RecoveryPointIntervalMinutes, stored.RecoveryPointIntervalMinutes);
+        Assert.Equal(registration.RecoveryPointRetentionCount, stored.RecoveryPointRetentionCount);
         Assert.DoesNotContain(
             Directory.EnumerateFiles(layout.Data),
             path => Path.GetFileName(path).EndsWith(".tmp", StringComparison.OrdinalIgnoreCase));
@@ -108,6 +133,136 @@ public sealed class ProductServerRegistryTests
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => registry.UpsertAsync(Registration() with { CoreType = coreType }));
+    }
+
+    [Fact]
+    public async Task LegacyRegistryWithoutServiceInstanceSettings_LoadsSafeDefaultsAndMigrates()
+    {
+        var layout = CreateLayout();
+        var id = Guid.NewGuid();
+        File.WriteAllText(
+            Path.Combine(layout.Data, ProductServerRegistry.FileName),
+            $$"""
+            {
+              "schemaVersion": 1,
+              "servers": [
+                {
+                  "id": "{{id}}",
+                  "name": "Legacy Service Server",
+                  "serverDirectory": "legacy-server",
+                  "javaRuntimePath": "java/bin/java.exe",
+                  "launchKind": 0,
+                  "serverJarPath": "server.jar",
+                  "javaArgumentFilePaths": [],
+                  "coreType": "Paper",
+                  "minecraftVersion": "1.21.1",
+                  "minimumMemoryMb": 1536,
+                  "maximumMemoryMb": 3072,
+                  "jvmArguments": [],
+                  "serverArguments": ["nogui"],
+                  "port": 25565,
+                  "autoRestart": false,
+                  "modpackSource": 0,
+                  "isInstallerArtifact": false
+                }
+              ]
+            }
+            """);
+
+        var registry = new ProductServerRegistry(layout);
+        await registry.LoadAsync();
+        var stored = Assert.Single(registry.GetAll());
+
+        Assert.Equal(ProductServerMemoryAllocationMode.Manual, stored.MemoryAllocationMode);
+        Assert.True(stored.SeparateDiagnosticOutput);
+        Assert.False(stored.EnableHangWatchdog);
+        Assert.Equal(30, stored.WatchdogCheckIntervalSeconds);
+        Assert.Equal(8, stored.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(3, stored.WatchdogFailureThreshold);
+        Assert.Equal(180, stored.WatchdogStartupGraceSeconds);
+        Assert.False(stored.EnableAutomaticRecoveryPoints);
+        Assert.Equal(30, stored.RecoveryPointIntervalMinutes);
+        Assert.Equal(3, stored.RecoveryPointRetentionCount);
+
+        await registry.UpsertAsync(stored);
+        var reloaded = new ProductServerRegistry(layout);
+        await reloaded.LoadAsync();
+        var migrated = Assert.Single(reloaded.GetAll());
+        Assert.Equal(stored.Id, migrated.Id);
+        Assert.Equal(stored.MemoryAllocationMode, migrated.MemoryAllocationMode);
+        Assert.Equal(stored.SeparateDiagnosticOutput, migrated.SeparateDiagnosticOutput);
+        Assert.Equal(stored.WatchdogCheckIntervalSeconds, migrated.WatchdogCheckIntervalSeconds);
+        Assert.Equal(stored.RecoveryPointRetentionCount, migrated.RecoveryPointRetentionCount);
+    }
+
+    [Fact]
+    public async Task Registry_RejectsUnknownMemoryModeAndEveryInvalidReliabilityBoundary()
+    {
+        var layout = CreateLayout();
+        var registry = new ProductServerRegistry(layout);
+        await registry.LoadAsync();
+        var invalid = new[]
+        {
+            Registration() with { MemoryAllocationMode = (ProductServerMemoryAllocationMode)99 },
+            Registration() with { WatchdogCheckIntervalSeconds = 9 },
+            Registration() with { WatchdogCheckIntervalSeconds = 301 },
+            Registration() with { WatchdogProbeTimeoutSeconds = 1 },
+            Registration() with { WatchdogProbeTimeoutSeconds = 31 },
+            Registration() with { WatchdogProbeTimeoutSeconds = 30, WatchdogCheckIntervalSeconds = 30 },
+            Registration() with { WatchdogFailureThreshold = 1 },
+            Registration() with { WatchdogFailureThreshold = 11 },
+            Registration() with { WatchdogStartupGraceSeconds = 29 },
+            Registration() with { WatchdogStartupGraceSeconds = 3601 },
+            Registration() with { RecoveryPointIntervalMinutes = 9 },
+            Registration() with { RecoveryPointIntervalMinutes = 1441 },
+            Registration() with { RecoveryPointRetentionCount = 0 },
+            Registration() with { RecoveryPointRetentionCount = 21 },
+        };
+
+        foreach (var registration in invalid)
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => registry.UpsertAsync(registration));
+        }
+    }
+
+    [Theory]
+    [InlineData(ProductServerMemoryAllocationMode.Manual, MemoryAllocationMode.Manual)]
+    [InlineData(ProductServerMemoryAllocationMode.UseManagerDefault, MemoryAllocationMode.UseManagerDefault)]
+    [InlineData(ProductServerMemoryAllocationMode.Automatic, MemoryAllocationMode.Automatic)]
+    public void LaunchSnapshot_MapsAllServiceInstanceSettings(
+        ProductServerMemoryAllocationMode productMode,
+        MemoryAllocationMode coreMode)
+    {
+        var layout = CreateLayout();
+        var registration = Registration() with
+        {
+            MemoryAllocationMode = productMode,
+            SeparateDiagnosticOutput = true,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 45,
+            WatchdogProbeTimeoutSeconds = 9,
+            WatchdogFailureThreshold = 4,
+            WatchdogStartupGraceSeconds = 240,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 60,
+            RecoveryPointRetentionCount = 5,
+        };
+        var snapshot = new ServerInstance();
+
+        ProductServerRuntime.ApplyRegistrationLaunchSnapshot(snapshot, registration, layout);
+
+        Assert.Equal(registration.MinimumMemoryMb, snapshot.MinimumMemoryMb);
+        Assert.Equal(registration.MaximumMemoryMb, snapshot.MaximumMemoryMb);
+        Assert.Equal(coreMode, snapshot.MemoryAllocationMode);
+        Assert.True(snapshot.SeparateDiagnosticOutput);
+        Assert.True(snapshot.EnableHangWatchdog);
+        Assert.Equal(45, snapshot.WatchdogCheckIntervalSeconds);
+        Assert.Equal(9, snapshot.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(4, snapshot.WatchdogFailureThreshold);
+        Assert.Equal(240, snapshot.WatchdogStartupGraceSeconds);
+        Assert.True(snapshot.EnableAutomaticRecoveryPoints);
+        Assert.Equal(60, snapshot.RecoveryPointIntervalMinutes);
+        Assert.Equal(5, snapshot.RecoveryPointRetentionCount);
     }
 
     internal static ProductDataLayout CreateLayout()

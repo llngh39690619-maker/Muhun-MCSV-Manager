@@ -47,6 +47,79 @@ public enum ProductModpackSourceKind
 }
 
 /// <summary>
+/// How a Service-owned server obtains its effective Java heap limits. Manual remains zero so
+/// registrations written before API 1.8 safely retain their persisted minimum and maximum values.
+/// </summary>
+public enum ProductServerMemoryAllocationMode
+{
+    Manual = 0,
+    UseManagerDefault,
+    Automatic,
+}
+
+/// <summary>Shared bounds and backward-compatible defaults for Service-owned reliability settings.</summary>
+public static class ProductServerInstanceSettingsContract
+{
+    public const int DefaultWatchdogCheckIntervalSeconds = 30;
+    public const int MinimumWatchdogCheckIntervalSeconds = 10;
+    public const int MaximumWatchdogCheckIntervalSeconds = 300;
+
+    public const int DefaultWatchdogProbeTimeoutSeconds = 8;
+    public const int MinimumWatchdogProbeTimeoutSeconds = 2;
+    public const int MaximumWatchdogProbeTimeoutSeconds = 30;
+
+    public const int DefaultWatchdogFailureThreshold = 3;
+    public const int MinimumWatchdogFailureThreshold = 2;
+    public const int MaximumWatchdogFailureThreshold = 10;
+
+    public const int DefaultWatchdogStartupGraceSeconds = 180;
+    public const int MinimumWatchdogStartupGraceSeconds = 30;
+    public const int MaximumWatchdogStartupGraceSeconds = 3600;
+
+    public const int DefaultRecoveryPointIntervalMinutes = 30;
+    public const int MinimumRecoveryPointIntervalMinutes = 10;
+    public const int MaximumRecoveryPointIntervalMinutes = 1440;
+
+    public const int DefaultRecoveryPointRetentionCount = 3;
+    public const int MinimumRecoveryPointRetentionCount = 1;
+    public const int MaximumRecoveryPointRetentionCount = 20;
+
+    public static bool HasAnyServiceInstanceSetting(ProductServerSettingsUpdateRequest? settings)
+        => settings is not null &&
+           (settings.MemoryAllocationMode is not null ||
+            settings.SeparateDiagnosticOutput is not null ||
+            settings.EnableHangWatchdog is not null ||
+            settings.WatchdogCheckIntervalSeconds is not null ||
+            settings.WatchdogProbeTimeoutSeconds is not null ||
+            settings.WatchdogFailureThreshold is not null ||
+            settings.WatchdogStartupGraceSeconds is not null ||
+            settings.EnableAutomaticRecoveryPoints is not null ||
+            settings.RecoveryPointIntervalMinutes is not null ||
+            settings.RecoveryPointRetentionCount is not null);
+
+    public static bool AreReliabilityValuesValid(
+        int watchdogCheckIntervalSeconds,
+        int watchdogProbeTimeoutSeconds,
+        int watchdogFailureThreshold,
+        int watchdogStartupGraceSeconds,
+        int recoveryPointIntervalMinutes,
+        int recoveryPointRetentionCount)
+        => watchdogCheckIntervalSeconds is >= MinimumWatchdogCheckIntervalSeconds
+               and <= MaximumWatchdogCheckIntervalSeconds &&
+           watchdogProbeTimeoutSeconds is >= MinimumWatchdogProbeTimeoutSeconds
+               and <= MaximumWatchdogProbeTimeoutSeconds &&
+           watchdogProbeTimeoutSeconds < watchdogCheckIntervalSeconds &&
+           watchdogFailureThreshold is >= MinimumWatchdogFailureThreshold
+               and <= MaximumWatchdogFailureThreshold &&
+           watchdogStartupGraceSeconds is >= MinimumWatchdogStartupGraceSeconds
+               and <= MaximumWatchdogStartupGraceSeconds &&
+           recoveryPointIntervalMinutes is >= MinimumRecoveryPointIntervalMinutes
+               and <= MaximumRecoveryPointIntervalMinutes &&
+           recoveryPointRetentionCount is >= MinimumRecoveryPointRetentionCount
+               and <= MaximumRecoveryPointRetentionCount;
+}
+
+/// <summary>
 /// Durable Service-owned server definition. ServerDirectory is relative to ProductDataLayout's
 /// Servers directory and JavaRuntimePath is relative to its Runtimes directory.
 /// </summary>
@@ -73,6 +146,33 @@ public sealed record ProductServerRegistration
     public int MinimumMemoryMb { get; init; } = 1024;
 
     public int MaximumMemoryMb { get; init; } = 4096;
+
+    public ProductServerMemoryAllocationMode MemoryAllocationMode { get; init; } =
+        ProductServerMemoryAllocationMode.Manual;
+
+    public bool SeparateDiagnosticOutput { get; init; } = true;
+
+    public bool EnableHangWatchdog { get; init; }
+
+    public int WatchdogCheckIntervalSeconds { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultWatchdogCheckIntervalSeconds;
+
+    public int WatchdogProbeTimeoutSeconds { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultWatchdogProbeTimeoutSeconds;
+
+    public int WatchdogFailureThreshold { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultWatchdogFailureThreshold;
+
+    public int WatchdogStartupGraceSeconds { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultWatchdogStartupGraceSeconds;
+
+    public bool EnableAutomaticRecoveryPoints { get; init; }
+
+    public int RecoveryPointIntervalMinutes { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultRecoveryPointIntervalMinutes;
+
+    public int RecoveryPointRetentionCount { get; init; } =
+        ProductServerInstanceSettingsContract.DefaultRecoveryPointRetentionCount;
 
     public IReadOnlyList<string> JvmArguments { get; init; } = [];
 
@@ -312,7 +412,30 @@ public sealed record ProductServerSettingsUpdateRequest(
     int MinimumMemoryMb,
     int MaximumMemoryMb,
     int Port,
-    bool AutoRestart);
+    bool AutoRestart)
+{
+    // Nullable extension fields preserve API 1.3-1.7 update semantics: an older client that omits
+    // the API 1.8 settings leaves the authoritative Service values unchanged.
+    public ProductServerMemoryAllocationMode? MemoryAllocationMode { get; init; }
+
+    public bool? SeparateDiagnosticOutput { get; init; }
+
+    public bool? EnableHangWatchdog { get; init; }
+
+    public int? WatchdogCheckIntervalSeconds { get; init; }
+
+    public int? WatchdogProbeTimeoutSeconds { get; init; }
+
+    public int? WatchdogFailureThreshold { get; init; }
+
+    public int? WatchdogStartupGraceSeconds { get; init; }
+
+    public bool? EnableAutomaticRecoveryPoints { get; init; }
+
+    public int? RecoveryPointIntervalMinutes { get; init; }
+
+    public int? RecoveryPointRetentionCount { get; init; }
+}
 
 public sealed record ProductServerSettingsUpdateResult(
     ProductServerRegistration Registration,

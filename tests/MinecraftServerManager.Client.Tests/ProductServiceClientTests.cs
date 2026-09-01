@@ -574,8 +574,11 @@ public sealed class ProductServiceClientTests
         {
             Assert.Equal(ProductIpcProtocol.ServerSettingsUpdateMethod, request.Method);
             Assert.Equal(serverId, request.ServerId);
+            Assert.Equal(ProductApiProtocol.MinimumSupportedVersion, request.ClientMinimumApiVersion);
+            Assert.Equal(ProductApiProtocol.CurrentVersion, request.ClientMaximumApiVersion);
             Assert.Null(request.Server);
             Assert.Equal("Edited", request.ServerSettings!.Name);
+            Assert.Null(request.ServerSettings.MemoryAllocationMode);
             return new ProductIpcResponse(1, request.RequestId, true, null, null)
             {
                 Registration = stored,
@@ -599,6 +602,76 @@ public sealed class ProductServiceClientTests
 
         Assert.Equal(stored.Name, result.Registration.Name);
         Assert.Equal(stored.ServerDirectory, result.Registration.ServerDirectory);
+        await server;
+    }
+
+    [Fact]
+    public async Task CompleteServiceInstanceSettings_RequireApi18AndRoundTripPayload()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var settings = CompleteServiceInstanceSettings();
+        var stored = Registration(serverId) with
+        {
+            Name = settings.Name,
+            Port = settings.Port,
+            MinimumMemoryMb = settings.MinimumMemoryMb,
+            MaximumMemoryMb = settings.MaximumMemoryMb,
+            AutoRestart = settings.AutoRestart,
+            MemoryAllocationMode = settings.MemoryAllocationMode!.Value,
+            SeparateDiagnosticOutput = settings.SeparateDiagnosticOutput!.Value,
+            EnableHangWatchdog = settings.EnableHangWatchdog!.Value,
+            WatchdogCheckIntervalSeconds = settings.WatchdogCheckIntervalSeconds!.Value,
+            WatchdogProbeTimeoutSeconds = settings.WatchdogProbeTimeoutSeconds!.Value,
+            WatchdogFailureThreshold = settings.WatchdogFailureThreshold!.Value,
+            WatchdogStartupGraceSeconds = settings.WatchdogStartupGraceSeconds!.Value,
+            EnableAutomaticRecoveryPoints = settings.EnableAutomaticRecoveryPoints!.Value,
+            RecoveryPointIntervalMinutes = settings.RecoveryPointIntervalMinutes!.Value,
+            RecoveryPointRetentionCount = settings.RecoveryPointRetentionCount!.Value,
+        };
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerSettingsUpdateMethod, request.Method);
+            Assert.Equal(ProductApiProtocol.ServiceInstanceSettingsVersion, request.ClientMinimumApiVersion);
+            Assert.Equal(ProductApiProtocol.CurrentVersion, request.ClientMaximumApiVersion);
+            Assert.Equal(settings, request.ServerSettings);
+            return SettingsUpdateResponse(request.RequestId, stored);
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var result = await client.UpdateServerSettingsAsync(serverId, settings);
+
+        Assert.Equal(ProductServerMemoryAllocationMode.Automatic, result.Registration.MemoryAllocationMode);
+        Assert.True(result.Registration.EnableHangWatchdog);
+        Assert.True(result.Registration.EnableAutomaticRecoveryPoints);
+        await server;
+    }
+
+    [Fact]
+    public async Task CompleteServiceInstanceSettings_AreRejectedByApi17InsteadOfSilentlyIgnored()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var api17 = new ProductApiVersion(1, 7);
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerSettingsUpdateMethod, request.Method);
+            Assert.True(request.ClientMinimumApiVersion.CompareTo(api17) > 0);
+            return new ProductIpcResponse(
+                1,
+                request.RequestId,
+                false,
+                null,
+                new ProductIpcError(
+                    "protocol.api_version_incompatible",
+                    "The requested API capability is newer than this Service."));
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(
+            () => client.UpdateServerSettingsAsync(serverId, CompleteServiceInstanceSettings()));
+
+        Assert.Equal("protocol.api_version_incompatible", error.Code);
         await server;
     }
 
@@ -983,6 +1056,43 @@ public sealed class ProductServiceClientTests
             DateTimeOffset.UtcNow,
             0,
             null);
+
+    private static ProductServerSettingsUpdateRequest CompleteServiceInstanceSettings()
+        => new("Edited", 3072, 6144, 25570, true)
+        {
+            MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+            SeparateDiagnosticOutput = false,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 30,
+            WatchdogProbeTimeoutSeconds = 8,
+            WatchdogFailureThreshold = 3,
+            WatchdogStartupGraceSeconds = 180,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 30,
+            RecoveryPointRetentionCount = 3,
+        };
+
+    private static ProductIpcResponse SettingsUpdateResponse(
+        Guid requestId,
+        ProductServerRegistration registration)
+        => new(1, requestId, true, null, null)
+        {
+            Registration = registration,
+            Server = new ProductServerStatus(
+                new ProductServerSummary(
+                    registration.Id,
+                    registration.Name,
+                    ProductServerState.Stopped,
+                    registration.Port,
+                    registration.CoreType,
+                    registration.MinecraftVersion),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null),
+        };
 
     private static ProductServerRegistration Registration(Guid id) => new()
     {

@@ -32,6 +32,16 @@ public sealed class ProductServerAdministrationIpcTests
             MinimumMemoryMb = 1536,
             MaximumMemoryMb = 3072,
             AutoRestart = true,
+            MemoryAllocationMode = ProductServerMemoryAllocationMode.Automatic,
+            SeparateDiagnosticOutput = false,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 45,
+            WatchdogProbeTimeoutSeconds = 9,
+            WatchdogFailureThreshold = 4,
+            WatchdogStartupGraceSeconds = 240,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 60,
+            RecoveryPointRetentionCount = 5,
         };
         var update = await fixture.Processor.ProcessAsync(
             Request(ProductIpcProtocol.ServerSettingsUpdateMethod) with
@@ -42,7 +52,19 @@ public sealed class ProductServerAdministrationIpcTests
                     changed.MinimumMemoryMb,
                     changed.MaximumMemoryMb,
                     changed.Port,
-                    changed.AutoRestart),
+                    changed.AutoRestart)
+                {
+                    MemoryAllocationMode = changed.MemoryAllocationMode,
+                    SeparateDiagnosticOutput = changed.SeparateDiagnosticOutput,
+                    EnableHangWatchdog = changed.EnableHangWatchdog,
+                    WatchdogCheckIntervalSeconds = changed.WatchdogCheckIntervalSeconds,
+                    WatchdogProbeTimeoutSeconds = changed.WatchdogProbeTimeoutSeconds,
+                    WatchdogFailureThreshold = changed.WatchdogFailureThreshold,
+                    WatchdogStartupGraceSeconds = changed.WatchdogStartupGraceSeconds,
+                    EnableAutomaticRecoveryPoints = changed.EnableAutomaticRecoveryPoints,
+                    RecoveryPointIntervalMinutes = changed.RecoveryPointIntervalMinutes,
+                    RecoveryPointRetentionCount = changed.RecoveryPointRetentionCount,
+                },
             },
             default);
 
@@ -54,11 +76,174 @@ public sealed class ProductServerAdministrationIpcTests
         Assert.Equal(changed.MinimumMemoryMb, stored.MinimumMemoryMb);
         Assert.Equal(changed.MaximumMemoryMb, stored.MaximumMemoryMb);
         Assert.Equal(changed.AutoRestart, stored.AutoRestart);
+        Assert.Equal(changed.MemoryAllocationMode, stored.MemoryAllocationMode);
+        Assert.Equal(changed.SeparateDiagnosticOutput, stored.SeparateDiagnosticOutput);
+        Assert.Equal(changed.EnableHangWatchdog, stored.EnableHangWatchdog);
+        Assert.Equal(changed.WatchdogCheckIntervalSeconds, stored.WatchdogCheckIntervalSeconds);
+        Assert.Equal(changed.WatchdogProbeTimeoutSeconds, stored.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(changed.WatchdogFailureThreshold, stored.WatchdogFailureThreshold);
+        Assert.Equal(changed.WatchdogStartupGraceSeconds, stored.WatchdogStartupGraceSeconds);
+        Assert.Equal(
+            changed.EnableAutomaticRecoveryPoints,
+            stored.EnableAutomaticRecoveryPoints);
+        Assert.Equal(changed.RecoveryPointIntervalMinutes, stored.RecoveryPointIntervalMinutes);
+        Assert.Equal(changed.RecoveryPointRetentionCount, stored.RecoveryPointRetentionCount);
         Assert.Equal(fixture.Registration.ServerDirectory, stored.ServerDirectory);
         Assert.Equal(fixture.Registration.JavaRuntimePath, stored.JavaRuntimePath);
         Assert.Equal(fixture.Registration.ServerJarPath, stored.ServerJarPath);
         Assert.Equal(fixture.Registration.JvmArguments, stored.JvmArguments);
         Assert.Equal(fixture.Registration.ModpackVersionId, stored.ModpackVersionId);
+    }
+
+    [Fact]
+    public async Task Api17LegacyUpdate_PreservesNewSettings_AndCannotSubmitApi18Snapshot()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var authoritative = fixture.Registration with
+        {
+            MemoryAllocationMode = ProductServerMemoryAllocationMode.UseManagerDefault,
+            SeparateDiagnosticOutput = false,
+            EnableHangWatchdog = true,
+            WatchdogCheckIntervalSeconds = 45,
+            WatchdogProbeTimeoutSeconds = 9,
+            WatchdogFailureThreshold = 4,
+            WatchdogStartupGraceSeconds = 240,
+            EnableAutomaticRecoveryPoints = true,
+            RecoveryPointIntervalMinutes = 60,
+            RecoveryPointRetentionCount = 5,
+        };
+        await fixture.Runtime.UpsertAsync(authoritative);
+        var legacyRequest = Request(ProductIpcProtocol.ServerSettingsUpdateMethod) with
+        {
+            ServerId = authoritative.Id,
+            ClientMaximumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+            ServerSettings = new ProductServerSettingsUpdateRequest(
+                "Legacy desktop rename",
+                authoritative.MinimumMemoryMb,
+                authoritative.MaximumMemoryMb,
+                authoritative.Port,
+                authoritative.AutoRestart),
+        };
+
+        var legacyResult = await fixture.Processor.ProcessAsync(legacyRequest, default);
+        var rejected = await fixture.Processor.ProcessAsync(
+            legacyRequest with
+            {
+                ServerSettings = legacyRequest.ServerSettings! with
+                {
+                    MemoryAllocationMode = ProductServerMemoryAllocationMode.Manual,
+                    SeparateDiagnosticOutput = true,
+                    EnableHangWatchdog = false,
+                    WatchdogCheckIntervalSeconds = 30,
+                    WatchdogProbeTimeoutSeconds = 8,
+                    WatchdogFailureThreshold = 3,
+                    WatchdogStartupGraceSeconds = 180,
+                    EnableAutomaticRecoveryPoints = false,
+                    RecoveryPointIntervalMinutes = 30,
+                    RecoveryPointRetentionCount = 3,
+                },
+            },
+            default);
+
+        Assert.True(legacyResult.Success);
+        Assert.Equal("protocol.field_version_unsupported", rejected.Error!.Code);
+        var stored = fixture.Runtime.GetRegistration(authoritative.Id);
+        Assert.Equal("Legacy desktop rename", stored.Name);
+        Assert.Equal(authoritative.MemoryAllocationMode, stored.MemoryAllocationMode);
+        Assert.Equal(authoritative.SeparateDiagnosticOutput, stored.SeparateDiagnosticOutput);
+        Assert.Equal(authoritative.EnableHangWatchdog, stored.EnableHangWatchdog);
+        Assert.Equal(authoritative.WatchdogCheckIntervalSeconds, stored.WatchdogCheckIntervalSeconds);
+        Assert.Equal(authoritative.WatchdogProbeTimeoutSeconds, stored.WatchdogProbeTimeoutSeconds);
+        Assert.Equal(authoritative.WatchdogFailureThreshold, stored.WatchdogFailureThreshold);
+        Assert.Equal(authoritative.WatchdogStartupGraceSeconds, stored.WatchdogStartupGraceSeconds);
+        Assert.Equal(
+            authoritative.EnableAutomaticRecoveryPoints,
+            stored.EnableAutomaticRecoveryPoints);
+        Assert.Equal(authoritative.RecoveryPointIntervalMinutes, stored.RecoveryPointIntervalMinutes);
+        Assert.Equal(authoritative.RecoveryPointRetentionCount, stored.RecoveryPointRetentionCount);
+    }
+
+    [Theory]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.MemoryAllocationMode))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.SeparateDiagnosticOutput))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.EnableHangWatchdog))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.WatchdogCheckIntervalSeconds))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.WatchdogProbeTimeoutSeconds))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.WatchdogFailureThreshold))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.WatchdogStartupGraceSeconds))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.EnableAutomaticRecoveryPoints))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.RecoveryPointIntervalMinutes))]
+    [InlineData(nameof(ProductServerSettingsUpdateRequest.RecoveryPointRetentionCount))]
+    public async Task Api17_EachIndividualApi18Field_IsRejectedByFieldVersionGate(string field)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var response = await fixture.Processor.ProcessAsync(
+            Request(ProductIpcProtocol.ServerSettingsUpdateMethod) with
+            {
+                ServerId = fixture.Registration.Id,
+                ClientMaximumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+                ServerSettings = WithSingleServiceInstanceSetting(field),
+            },
+            default);
+
+        Assert.False(response.Success);
+        Assert.Equal("protocol.field_version_unsupported", response.Error!.Code);
+    }
+
+    [Theory]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Stopped, true)]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Starting, false)]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Running, false)]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Stopping, false)]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Crashed, false)]
+    [InlineData(MinecraftServerManager.Core.Models.ServerState.Faulted, false)]
+    public void SettingsUpdateStatePolicy_AllowsOnlyExactStopped(
+        MinecraftServerManager.Core.Models.ServerState state,
+        bool allowed)
+    {
+        if (allowed)
+        {
+            ProductServerRuntime.EnsureSettingsUpdateState(state);
+            return;
+        }
+
+        Assert.Throws<InvalidOperationException>(
+            () => ProductServerRuntime.EnsureSettingsUpdateState(state));
+    }
+
+    [Fact]
+    public async Task DirectUpdate_RejectsCrashedAndFaultedSlotsWithoutPersisting()
+    {
+        await using var crashed = await Fixture.CreateAsync();
+        await crashed.Runtime.StartAsync(crashed.Registration.Id);
+        Assert.Single(crashed.ProcessFactory.Processes).Complete(17);
+        await WaitUntilAsync(
+            () => crashed.Runtime.GetStatus(crashed.Registration.Id).Server.State ==
+                  ProductServerState.Crashed);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => crashed.Runtime.UpdateSettingsAsync(
+                crashed.Registration.Id,
+                CompleteServiceSettings("must-not-save-crashed", crashed.Registration)));
+        Assert.Equal(
+            crashed.Registration.Name,
+            crashed.Runtime.GetRegistration(crashed.Registration.Id).Name);
+
+        await using var faulted = await Fixture.CreateAsync();
+        faulted.ProcessFactory.StartResults.Enqueue(false);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => faulted.Runtime.StartAsync(faulted.Registration.Id));
+        Assert.Equal(
+            ProductServerState.Faulted,
+            faulted.Runtime.GetStatus(faulted.Registration.Id).Server.State);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => faulted.Runtime.UpdateSettingsAsync(
+                faulted.Registration.Id,
+                CompleteServiceSettings("must-not-save-faulted", faulted.Registration)));
+        Assert.Equal(
+            faulted.Registration.Name,
+            faulted.Runtime.GetRegistration(faulted.Registration.Id).Name);
     }
 
     [Fact]
@@ -312,18 +497,110 @@ public sealed class ProductServerAdministrationIpcTests
         ProductApiProtocol.MinimumSupportedVersion,
         ProductApiProtocol.CurrentVersion);
 
+    private static ProductServerSettingsUpdateRequest WithSingleServiceInstanceSetting(string field)
+    {
+        var settings = new ProductServerSettingsUpdateRequest("valid", 1024, 2048, 25565, false);
+        return field switch
+        {
+            nameof(ProductServerSettingsUpdateRequest.MemoryAllocationMode) => settings with
+            {
+                MemoryAllocationMode = ProductServerMemoryAllocationMode.Manual,
+            },
+            nameof(ProductServerSettingsUpdateRequest.SeparateDiagnosticOutput) => settings with
+            {
+                SeparateDiagnosticOutput = true,
+            },
+            nameof(ProductServerSettingsUpdateRequest.EnableHangWatchdog) => settings with
+            {
+                EnableHangWatchdog = true,
+            },
+            nameof(ProductServerSettingsUpdateRequest.WatchdogCheckIntervalSeconds) => settings with
+            {
+                WatchdogCheckIntervalSeconds = 30,
+            },
+            nameof(ProductServerSettingsUpdateRequest.WatchdogProbeTimeoutSeconds) => settings with
+            {
+                WatchdogProbeTimeoutSeconds = 8,
+            },
+            nameof(ProductServerSettingsUpdateRequest.WatchdogFailureThreshold) => settings with
+            {
+                WatchdogFailureThreshold = 3,
+            },
+            nameof(ProductServerSettingsUpdateRequest.WatchdogStartupGraceSeconds) => settings with
+            {
+                WatchdogStartupGraceSeconds = 180,
+            },
+            nameof(ProductServerSettingsUpdateRequest.EnableAutomaticRecoveryPoints) => settings with
+            {
+                EnableAutomaticRecoveryPoints = true,
+            },
+            nameof(ProductServerSettingsUpdateRequest.RecoveryPointIntervalMinutes) => settings with
+            {
+                RecoveryPointIntervalMinutes = 30,
+            },
+            nameof(ProductServerSettingsUpdateRequest.RecoveryPointRetentionCount) => settings with
+            {
+                RecoveryPointRetentionCount = 3,
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(field)),
+        };
+    }
+
+    private static ProductServerSettingsUpdateRequest LegacySettings(
+        string name,
+        ProductServerRegistration registration)
+        => new(
+            name,
+            registration.MinimumMemoryMb,
+            registration.MaximumMemoryMb,
+            registration.Port,
+            registration.AutoRestart);
+
+    private static ProductServerSettingsUpdateRequest CompleteServiceSettings(
+        string name,
+        ProductServerRegistration registration)
+        => LegacySettings(name, registration) with
+        {
+            MemoryAllocationMode = registration.MemoryAllocationMode,
+            SeparateDiagnosticOutput = registration.SeparateDiagnosticOutput,
+            EnableHangWatchdog = registration.EnableHangWatchdog,
+            WatchdogCheckIntervalSeconds = registration.WatchdogCheckIntervalSeconds,
+            WatchdogProbeTimeoutSeconds = registration.WatchdogProbeTimeoutSeconds,
+            WatchdogFailureThreshold = registration.WatchdogFailureThreshold,
+            WatchdogStartupGraceSeconds = registration.WatchdogStartupGraceSeconds,
+            EnableAutomaticRecoveryPoints = registration.EnableAutomaticRecoveryPoints,
+            RecoveryPointIntervalMinutes = registration.RecoveryPointIntervalMinutes,
+            RecoveryPointRetentionCount = registration.RecoveryPointRetentionCount,
+        };
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var timeout = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= timeout)
+            {
+                throw new TimeoutException("Condition was not reached before the test timeout.");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private Fixture(
             ProductDataLayout layout,
             ProductServerRegistration registration,
             ProductServerRuntime runtime,
-            ProductIpcMessageProcessor processor)
+            ProductIpcMessageProcessor processor,
+            ProductServerTestProcessFactory processFactory)
         {
             Layout = layout;
             Registration = registration;
             Runtime = runtime;
             Processor = processor;
+            ProcessFactory = processFactory;
             ServerDirectory = Path.Combine(layout.Servers, registration.ServerDirectory);
         }
 
@@ -331,6 +608,7 @@ public sealed class ProductServerAdministrationIpcTests
         public ProductServerRegistration Registration { get; }
         public ProductServerRuntime Runtime { get; }
         public ProductIpcMessageProcessor Processor { get; }
+        public ProductServerTestProcessFactory ProcessFactory { get; }
         public string ServerDirectory { get; }
 
         public static async Task<Fixture> CreateAsync()
@@ -348,6 +626,7 @@ public sealed class ProductServerAdministrationIpcTests
             var registry = new ProductServerRegistry(layout);
             await registry.LoadAsync();
             await registry.UpsertAsync(registration);
+            var processFactory = new ProductServerTestProcessFactory();
             var processes = new ServerProcessManager(
                 new ServerProcessManagerOptions
                 {
@@ -356,7 +635,7 @@ public sealed class ProductServerAdministrationIpcTests
                     ForcedKillWaitTimeout = TimeSpan.FromMilliseconds(250),
                     MonitorDrainTimeout = TimeSpan.FromMilliseconds(250),
                 },
-                new ProductServerTestProcessFactory());
+                processFactory);
             var runtime = new ProductServerRuntime(
                 registry,
                 layout,
@@ -385,7 +664,7 @@ public sealed class ProductServerAdministrationIpcTests
                 backups,
                 administration: administration,
                 properties: properties);
-            return new Fixture(layout, registration, runtime, processor);
+            return new Fixture(layout, registration, runtime, processor, processFactory);
         }
 
         public ValueTask DisposeAsync() => Runtime.DisposeAsync();

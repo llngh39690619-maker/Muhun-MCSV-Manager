@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.4**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.5**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.4 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
+> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.5 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
 
 ## English summary
 
@@ -93,7 +93,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用既有正式發行包（不適用於 1.2.9-beta.4 原始碼快照）
+### 使用既有正式發行包（不適用於 1.2.9-beta.5 原始碼快照）
 
 - 安裝／升級 Windows Service 時需要系統管理員權限。
 - 正式 Windows 執行檔為 self-contained，不需另行安裝 .NET Runtime。
@@ -128,7 +128,7 @@ dotnet test .\MinecraftServerManager.sln `
 2. 為每個帳號設定全域及逐 Server 權限。
 3. 設定 Tailscale Funnel，或使用 Cloudflare Named／Quick Tunnel 相容模式。
 4. 從 HTTPS 網址登入 Web 面板。
-5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.4 的 GitHub 發布不提供 APK）。
+5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.5 的 GitHub 發布不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 

@@ -25,6 +25,14 @@ public sealed class ServerPropertiesEditorContractTests
             "{Binding CanEditSelectedServerProperties}",
             (string?)editor.Attribute("IsEnabled"));
         Assert.Null(editorPanel.Attribute("IsEnabled"));
+        Assert.Contains(editorPanel.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" &&
+            (string?)element.Attribute("Text") == "{Binding SelectedServerPropertiesStatusText}");
+        Assert.Contains(editorPanel.Descendants(), element =>
+            element.Name.LocalName == "Button" &&
+            (string?)element.Attribute("Command") == "{Binding UpdateProductServiceCommand}" &&
+            (string?)element.Attribute("Visibility") ==
+            "{Binding ShowProductServiceUpdateAction, Converter={StaticResource BoolToVisibility}}");
         Assert.Equal(
             "{Binding SavePropertiesCommand}",
             (string?)Assert.Single(editorPanel.Descendants(), element =>
@@ -34,6 +42,38 @@ public sealed class ServerPropertiesEditorContractTests
         Assert.Contains(document.Descendants(), element =>
             (string?)element.Attribute("IsEnabled") ==
             "{Binding CanEditSelectedLocalConfiguration}");
+    }
+
+    [Fact]
+    public void ServiceInstanceSettings_UseCapabilityBoundaryAndExistingUpdateAction()
+    {
+        var document = XDocument.Load(TestRepositoryPaths.AppSource("MainWindow.xaml"));
+        var memoryMode = Assert.Single(document.Descendants(), element =>
+            element.Name.LocalName == "WrapPanel" &&
+            element.Descendants().Any(child =>
+                (string?)child.Attribute("IsChecked") == "{Binding SelectedServer.IsMemoryAutomatic}"));
+        var watchdog = Assert.Single(document.Descendants(), element =>
+            (string?)element.Attribute("IsChecked") == "{Binding SelectedServer.EnableHangWatchdog}");
+        var recovery = Assert.Single(document.Descendants(), element =>
+            (string?)element.Attribute("IsChecked") == "{Binding SelectedServer.EnableAutomaticRecoveryPoints}");
+
+        Assert.Equal(
+            "{Binding CanEditSelectedInstanceConfiguration}",
+            (string?)memoryMode.Attribute("IsEnabled"));
+        Assert.Equal(
+            "{Binding CanEditSelectedInstanceConfiguration}",
+            (string?)watchdog.Attribute("IsEnabled"));
+        Assert.Equal(
+            "{Binding CanEditSelectedInstanceConfiguration}",
+            (string?)recovery.Attribute("IsEnabled"));
+        Assert.Contains(document.Descendants(), element =>
+            (string?)element.Attribute("Text") == "{Binding SelectedInstanceConfigurationStatusText}");
+        Assert.Contains(document.Descendants(), element =>
+            element.Name.LocalName == "Button" &&
+            (string?)element.Attribute("Command") == "{Binding UpdateProductServiceCommand}" &&
+            element.Ancestors().Any(ancestor =>
+                (string?)ancestor.Attribute("Visibility") ==
+                "{Binding HasSelectedInstanceConfigurationStatus, Converter={StaticResource BoolToVisibility}}"));
     }
 
     [Fact]

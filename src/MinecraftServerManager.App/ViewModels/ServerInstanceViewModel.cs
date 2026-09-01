@@ -41,6 +41,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
     private long _totalSystemMemoryBytes;
     private bool _hasSystemMemorySnapshot;
     private bool _isAutomaticMemoryRecommendationRunning;
+    private bool _hasSuccessfulAutomaticMemoryRecommendation;
     private bool _isBulkSelected;
     private bool _isControlChannelAvailable = true;
     private string? _automaticMemoryRecommendationStatusKey;
@@ -237,6 +238,11 @@ public sealed class ServerInstanceViewModel : ObservableObject
             if (!SetProperty(ref _isAutomaticMemoryRecommendationRunning, value)) return;
             RecalculateAutomaticMemoryCommand.NotifyCanExecuteChanged();
         }
+    }
+    public bool HasSuccessfulAutomaticMemoryRecommendation
+    {
+        get => _hasSuccessfulAutomaticMemoryRecommendation;
+        private set => SetProperty(ref _hasSuccessfulAutomaticMemoryRecommendation, value);
     }
 
     public MemoryAllocationMode MemoryAllocationMode
@@ -660,6 +666,15 @@ public sealed class ServerInstanceViewModel : ObservableObject
         OnPropertyChanged(nameof(MaximumMemorySliderMb));
         OnPropertyChanged(nameof(MemoryRangeDisplay));
         OnPropertyChanged(nameof(AutoRestart));
+        OnPropertyChanged(nameof(SeparateDiagnosticOutput));
+        OnPropertyChanged(nameof(EnableHangWatchdog));
+        OnPropertyChanged(nameof(WatchdogCheckIntervalSeconds));
+        OnPropertyChanged(nameof(WatchdogProbeTimeoutSeconds));
+        OnPropertyChanged(nameof(WatchdogFailureThreshold));
+        OnPropertyChanged(nameof(WatchdogStartupGraceSeconds));
+        OnPropertyChanged(nameof(EnableAutomaticRecoveryPoints));
+        OnPropertyChanged(nameof(RecoveryPointIntervalMinutes));
+        OnPropertyChanged(nameof(RecoveryPointRetentionCount));
         RaiseMemoryModeProperties();
         NotifyModpackConfigurationChanged();
     }
@@ -1052,6 +1067,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
     internal void BeginAutomaticMemoryRecommendation()
     {
         if (MemoryAllocationMode != MemoryAllocationMode.Automatic) return;
+        HasSuccessfulAutomaticMemoryRecommendation = false;
         SetAutomaticMemoryRecommendationStatus("server.memory.autoEstimating");
         IsAutomaticMemoryRecommendationRunning = true;
     }
@@ -1074,6 +1090,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
             recommendation.MinimumMemoryMb,
             recommendation.MaximumMemoryMb,
             recommendation.ReservedSystemMemoryMb);
+        HasSuccessfulAutomaticMemoryRecommendation = true;
         IsAutomaticMemoryRecommendationRunning = false;
         OnPropertyChanged(nameof(MinimumMemoryMb));
         OnPropertyChanged(nameof(MaximumMemoryMb));
@@ -1090,11 +1107,13 @@ public sealed class ServerInstanceViewModel : ObservableObject
             ? L("common.unknown")
             : normalized[..Math.Min(240, normalized.Length)];
         SetAutomaticMemoryRecommendationStatus("server.memory.autoFailed", detail);
+        HasSuccessfulAutomaticMemoryRecommendation = false;
         IsAutomaticMemoryRecommendationRunning = false;
     }
 
     internal void CancelAutomaticMemoryRecommendation()
     {
+        HasSuccessfulAutomaticMemoryRecommendation = false;
         if (!IsAutomaticMemoryRecommendationRunning) return;
         IsAutomaticMemoryRecommendationRunning = false;
         SetAutomaticMemoryRecommendationStatus(null);
