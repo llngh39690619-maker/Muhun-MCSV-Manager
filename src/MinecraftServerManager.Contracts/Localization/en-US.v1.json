@@ -157,7 +157,7 @@
     "main.memory.minimum": "Minimum",
     "main.memory.maximum": "Maximum",
     "main.settings.port": "Server port",
-    "main.settings.portHint": "A server port is assigned in order from 25565 only when the server actually starts. If Query or RCON is enabled, also make sure query.port and rcon.port do not conflict with other processes.",
+    "main.settings.portHint": "Port conflicts are checked when the server actually starts, and the next available server-port is used when necessary. If Query or RCON is enabled, also make sure query.port and rcon.port do not conflict with other processes.",
     "main.settings.autoRestart": "Restart the server automatically after a crash",
     "main.settings.autoRestartHint": "Only abnormal Java exits are handled. At most 3 automatic restarts occur within 10 minutes, with delays of 5, 15, and 45 seconds.",
     "main.settings.separateDiagnostics": "Separate errors and warnings from the console",

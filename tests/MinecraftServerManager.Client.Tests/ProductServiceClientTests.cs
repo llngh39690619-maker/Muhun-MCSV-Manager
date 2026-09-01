@@ -426,6 +426,113 @@ public sealed class ProductServiceClientTests
     }
 
     [Fact]
+    public async Task ServerPropertiesRead_RequiresApi17AndValidatesBoundedDocument()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var text = "server-port=25565\n";
+        var revision = ProductServerPropertiesContract.CalculateRevision(text);
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerPropertiesReadMethod, request.Method);
+            Assert.Equal(serverId, request.ServerId);
+            Assert.Equal(ProductApiProtocol.ServerPropertiesEditorVersion, request.ClientMinimumApiVersion);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                ServerProperties = new ProductServerPropertiesDocument(
+                    serverId,
+                    true,
+                    text,
+                    revision),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var result = await client.ReadServerPropertiesAsync(serverId);
+
+        Assert.Equal("server-port=25565\n", result.Text);
+        Assert.Equal(revision, result.RevisionSha256);
+        await server;
+    }
+
+    [Fact]
+    public async Task ServerPropertiesUpdate_SendsRevisionAndRejectsCrossServerResponse()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var update = new ProductServerPropertiesUpdateRequest(
+            "server-port=25570\n",
+            new string('b', 64));
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerPropertiesUpdateMethod, request.Method);
+            Assert.Equal(ProductApiProtocol.ServerPropertiesEditorVersion, request.ClientMinimumApiVersion);
+            Assert.Equal(update, request.ServerPropertiesUpdate);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                ServerProperties = new ProductServerPropertiesDocument(
+                    Guid.NewGuid(),
+                    true,
+                    update.Text,
+                    new string('c', 64)),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(() =>
+            client.UpdateServerPropertiesAsync(serverId, update));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
+    public async Task ServerPropertiesRead_NullTextIsRejectedAsInvalidPayload()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request =>
+            new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                ServerProperties = new ProductServerPropertiesDocument(
+                    serverId,
+                    true,
+                    null!,
+                    new string('a', 64)),
+            });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(() =>
+            client.ReadServerPropertiesAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
+    public async Task ServerPropertiesRead_DigestMismatchIsRejectedAsInvalidPayload()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request =>
+            new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                ServerProperties = new ProductServerPropertiesDocument(
+                    serverId,
+                    true,
+                    "server-port=25565\n",
+                    new string('a', 64)),
+            });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(() =>
+            client.ReadServerPropertiesAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
     public async Task PermanentDelete_UsesServerIdentityAndValidatesCommittedResult()
     {
         var pipeName = $"muhun-test-{Guid.NewGuid():N}";
@@ -766,6 +873,12 @@ public sealed class ProductServiceClientTests
         => Assert.Equal(
             TimeSpan.FromSeconds(10),
             ProductServiceClient.GetRequestTimeout(ProductIpcProtocol.ServerStatusMethod));
+
+    [Fact]
+    public void ServerPropertiesUpdate_UsesMutationClientDeadline()
+        => Assert.Equal(
+            TimeSpan.FromMinutes(2),
+            ProductServiceClient.GetRequestTimeout(ProductIpcProtocol.ServerPropertiesUpdateMethod));
 
     private static Task RunServerOnceAsync(
         string pipeName,

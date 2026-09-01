@@ -64,6 +64,19 @@ public interface IProductServiceClient : IAsyncDisposable
         => Task.FromException<ProductServerAdministrationSnapshot>(
             new NotSupportedException("This client does not support bounded Service-owned server administration snapshots."));
 
+    Task<ProductServerPropertiesDocument> ReadServerPropertiesAsync(
+        Guid serverId,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductServerPropertiesDocument>(
+            new NotSupportedException("This client does not support Service-owned server.properties reads."));
+
+    Task<ProductServerPropertiesDocument> UpdateServerPropertiesAsync(
+        Guid serverId,
+        ProductServerPropertiesUpdateRequest update,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductServerPropertiesDocument>(
+            new NotSupportedException("This client does not support Service-owned server.properties updates."));
+
     Task<ProductServerDeletionResult> DeleteServerPermanentlyAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)

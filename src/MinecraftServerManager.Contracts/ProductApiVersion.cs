@@ -61,7 +61,14 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion MinecraftEulaConsentVersion { get; } = new(1, 6);
 
-    public static ProductApiVersion CurrentVersion { get; } = MinecraftEulaConsentVersion;
+    /// <summary>
+    /// First API version that reads and atomically updates a bounded server.properties document
+    /// through the Service. Older desktop clients and Services must keep this editor disabled
+    /// rather than falling back to a projection path on the desktop account.
+    /// </summary>
+    public static ProductApiVersion ServerPropertiesEditorVersion { get; } = new(1, 7);
+
+    public static ProductApiVersion CurrentVersion { get; } = ServerPropertiesEditorVersion;
 
     public const string RestBasePath = "/api/v1";
 

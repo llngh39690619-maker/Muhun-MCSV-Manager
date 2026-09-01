@@ -689,6 +689,86 @@ public sealed class ServerProcessManagerTests
     }
 
     [Fact]
+    public async Task ExecuteSerialized_SerializesAgainstStartAndAllowsCommittedActiveSession()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var factory = new FakeServerProcessFactory();
+        var preparationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePreparation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var manager = new ServerProcessManager(
+            new ServerProcessManagerOptions
+            {
+                ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                GracefulStopTimeout = TimeSpan.FromSeconds(1),
+                ForcedKillWaitTimeout = TimeSpan.FromSeconds(1),
+                PrepareStartAsync = async (_, cancellationToken) =>
+                {
+                    preparationEntered.TrySetResult();
+                    await releasePreparation.Task.WaitAsync(cancellationToken);
+                },
+            },
+            factory);
+        var instance = CreateInstance("serialized-read-gate", temporaryDirectory.Path);
+        var start = manager.StartAsync(instance);
+        await preparationEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var readCalls = 0;
+        using var cancellation = new CancellationTokenSource();
+        var read = manager.ExecuteSerializedAsync(
+            instance.Id,
+            token =>
+            {
+                Assert.Equal(cancellation.Token, token);
+                Interlocked.Increment(ref readCalls);
+                Assert.True(manager.TryGetSnapshot(instance.Id, out var snapshot));
+                Assert.Equal(ServerState.Running, snapshot.State);
+                return Task.FromResult("loaded");
+            },
+            cancellation.Token);
+
+        await Task.Delay(30);
+        Assert.False(read.IsCompleted);
+        Assert.Equal(0, Volatile.Read(ref readCalls));
+        releasePreparation.TrySetResult();
+        await start;
+
+        Assert.Equal("loaded", await read);
+        Assert.Equal(1, Volatile.Read(ref readCalls));
+        await manager.StopAsync(instance.Id);
+    }
+
+    [Fact]
+    public async Task ExecuteSerialized_ValidatesIdentityCancellationOperationAndDisposal()
+    {
+        var factory = new FakeServerProcessFactory();
+        var manager = CreateManager(factory, maximumLines: 10);
+        var instanceId = Guid.NewGuid();
+        var operationCalls = 0;
+        Func<CancellationToken, Task<int>> operation = _ =>
+        {
+            Interlocked.Increment(ref operationCalls);
+            return Task.FromResult(1);
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            manager.ExecuteSerializedAsync(Guid.Empty, operation));
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            manager.ExecuteSerializedAsync<int>(instanceId, null!));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            manager.ExecuteSerializedAsync(instanceId, operation, cancellation.Token));
+        Assert.Equal(0, Volatile.Read(ref operationCalls));
+
+        await manager.DisposeAsync();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            manager.ExecuteSerializedAsync(instanceId, operation));
+        Assert.Equal(0, Volatile.Read(ref operationCalls));
+    }
+
+    [Fact]
     public async Task PrepareStart_RunsBeforeLaunchResolutionAndUsesPrivateSnapshotChanges()
     {
         using var temporaryDirectory = new TemporaryDirectory();

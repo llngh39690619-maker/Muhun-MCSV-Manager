@@ -26,6 +26,10 @@ internal static class ProductOperationErrorPolicy
 
     public static ProductPublicOperationError ToPublic(Exception error) => error switch
     {
+        ProductServerPropertiesConflictException => new(
+            StatusCodes.Status409Conflict,
+            "server.properties_changed",
+            "server.properties changed after it was loaded; reload before saving."),
         MinecraftEulaAcceptanceRequiredException => new(
             StatusCodes.Status409Conflict,
             "server.eula_acceptance_required",

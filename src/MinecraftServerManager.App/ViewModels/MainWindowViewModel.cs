@@ -103,6 +103,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, int> _pendingLaunchPorts = new();
     private readonly ConcurrentDictionary<Guid, Guid> _pendingLaunchPortSessions = new();
     private readonly ConcurrentDictionary<Guid, ServerPropertiesDocumentFormatToken> _serverPropertiesFormats = new();
+    private readonly ConcurrentDictionary<Guid, string> _serviceServerPropertiesRevisions = new();
+    private readonly object _serviceServerPropertiesStateSync = new();
+    private readonly Dictionary<Guid, long> _serviceServerPropertiesReloadGenerations = [];
+    private readonly Dictionary<Guid, long> _serviceServerPropertiesReloadsInFlight = [];
+    private readonly HashSet<Guid> _serviceServerPropertiesSavesInFlight = [];
     private readonly ConcurrentDictionary<Guid, CoreType> _playerPresenceCoreTypes = new();
     private readonly ConcurrentDictionary<Guid, ServerInstance> _instanceModels = new();
     private readonly ConcurrentDictionary<(Guid InstanceId, Guid SessionId), DateTimeOffset> _sessionStartedAt = new();
@@ -197,6 +202,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly object _playerRegistryReloadSync = new();
     private CancellationTokenSource? _playerRegistryReloadCancellation;
     private long _playerRegistryReloadVersion;
+    private long _serverPropertiesReloadVersion;
     private CancellationTokenSource? _addonScanCancellation;
     private long _addonScanVersion;
     private bool _isClientWorkspace;
@@ -462,8 +468,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                          && (server.CanAccessLocalFiles || server.IsServiceManaged));
         ChooseBackgroundCommand = new AsyncRelayCommand(() => GuardAsync(ChooseBackgroundAsync, "main.vm.operation.chooseBackground"));
         ChooseIconCommand = new AsyncRelayCommand(() => GuardAsync(ChooseIconAsync, "main.vm.operation.chooseIcon"));
-        ReloadPropertiesCommand = new AsyncRelayCommand(() => GuardAsync(ReloadPropertiesAsync, "main.vm.operation.reloadProperties"));
-        SavePropertiesCommand = new AsyncRelayCommand(() => GuardAsync(SavePropertiesAsync, "main.vm.operation.saveProperties"));
+        ReloadPropertiesCommand = new AsyncRelayCommand(
+            () => GuardAsync(ReloadPropertiesAsync, "main.vm.operation.reloadProperties"),
+            () => CanReloadSelectedServerProperties);
+        SavePropertiesCommand = new AsyncRelayCommand(
+            () => GuardAsync(SavePropertiesAsync, "main.vm.operation.saveProperties"),
+            () => CanSaveSelectedServerProperties);
         DownloadJavaCommand = new AsyncRelayCommand(
             () => GuardAsync(DownloadSelectedJavaAsync, "main.vm.operation.downloadJava"),
             () => !IsProductServiceRuntime);
@@ -625,6 +635,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CancelAddonScan();
             OnPropertyChanged(nameof(HasSelectedServer));
             OnPropertyChanged(nameof(CanEditSelectedLocalConfiguration));
+            OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
+            OnPropertyChanged(nameof(CanEditSelectedServerProperties));
+            OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+            OnPropertyChanged(nameof(IsSelectedServerPropertiesOperationRunning));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(CanManageLocalRecoveryPoints));
             OnPropertyChanged(nameof(CanRefreshSelectedPlayers));
@@ -635,6 +649,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OpenSelectedFolderCommand.NotifyCanExecuteChanged();
             RestartSelectedCommand.NotifyCanExecuteChanged();
             SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
+            ReloadPropertiesCommand.NotifyCanExecuteChanged();
+            SavePropertiesCommand.NotifyCanExecuteChanged();
             OpenRecoveryPointsFolderCommand.NotifyCanExecuteChanged();
             RestoreRecoveryPointCommand.NotifyCanExecuteChanged();
             UpdateSelectedModpackCommand.NotifyCanExecuteChanged();
@@ -660,6 +676,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
                 else if (value.IsServiceManaged && IsProductServiceConnected)
                 {
+                    if (SupportsProductServicePropertiesEditor)
+                    {
+                        _ = GuardAsync(
+                            () => ReloadPropertiesQuietlyAsync(value),
+                            "main.vm.operation.reloadProperties");
+                    }
                     _ = GuardAsync(RefreshSelectedBackupsAsync, "main.vm.operation.refreshBackups");
                     if (SelectedWorkspaceTabKey == PlayersWorkspaceTabKey)
                     {
@@ -696,6 +718,23 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedServer => SelectedServer is not null;
     public bool CanEditSelectedLocalConfiguration =>
         SelectedServer?.CanAccessLocalFiles == true;
+    public bool IsSelectedServerPropertiesOperationRunning =>
+        SelectedServer is { IsServiceManaged: true } server &&
+        IsServiceServerPropertiesOperationRunning(server.Id);
+    public bool CanReloadSelectedServerProperties => SelectedServer is { } server &&
+        !IsSelectedServerPropertiesOperationRunning &&
+        (server.CanAccessLocalFiles ||
+         (server.IsServiceManaged && SupportsProductServicePropertiesEditor));
+    public bool CanEditSelectedServerProperties => SelectedServer is { } server &&
+        !IsSelectedServerPropertiesOperationRunning &&
+        (server.CanAccessLocalFiles ||
+         (server.IsServiceManaged &&
+          SupportsProductServicePropertiesEditor &&
+          _serviceServerPropertiesRevisions.ContainsKey(server.Id)));
+    public bool CanSaveSelectedServerProperties =>
+        CanEditSelectedServerProperties &&
+        (SelectedServer is not { IsServiceManaged: true } serviceServer ||
+         serviceServer.State is ServerState.Stopped or ServerState.Crashed or ServerState.Faulted);
     public bool CanBrowseSelectedServerFiles => SelectedServer is { } server
         && (server.CanAccessLocalFiles
             || (server.IsServiceManaged && SupportsProductServiceFileAdministration));
@@ -725,6 +764,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IsProductServiceConnected &&
         _productServiceNegotiatedApiVersion is { } version &&
         version.CompareTo(new ProductApiVersion(1, 5)) >= 0;
+    public bool SupportsProductServicePropertiesEditor =>
+        IsProductServiceConnected &&
+        _productServiceNegotiatedApiVersion is { } version &&
+        version.CompareTo(ProductApiProtocol.ServerPropertiesEditorVersion) >= 0;
     public bool KeepsRunningServersOnGuiExit => IsProductServiceRuntime;
     public string ProductServiceConnectionText => FormatProductServiceConnection(
         _productServiceConnectionState,
@@ -1243,15 +1286,29 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _productServiceConnectionState = snapshot.Connection.State;
         _productServiceConnectionCode = snapshot.Connection.Code;
         _productServiceNegotiatedApiVersion = NegotiateProductServiceApiVersion(snapshot.Connection);
+        if (previousState != _productServiceConnectionState ||
+            previousNegotiatedApiVersion != _productServiceNegotiatedApiVersion)
+        {
+            foreach (var serverId in _serviceServerPropertiesRevisions.Keys)
+            {
+                _serviceServerPropertiesRevisions.TryRemove(serverId, out _);
+            }
+        }
         if (previousNegotiatedApiVersion != _productServiceNegotiatedApiVersion)
         {
             OnPropertyChanged(nameof(ProductServiceNegotiatedApiVersion));
             OnPropertyChanged(nameof(SupportsProductServiceFileAdministration));
+            OnPropertyChanged(nameof(SupportsProductServicePropertiesEditor));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
+            OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
+            OnPropertyChanged(nameof(CanEditSelectedServerProperties));
+            OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
             OpenSelectedFolderCommand.NotifyCanExecuteChanged();
             CheckAddonUpdatesCommand.NotifyCanExecuteChanged();
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             DeleteServerCommand.NotifyCanExecuteChanged();
+            ReloadPropertiesCommand.NotifyCanExecuteChanged();
+            SavePropertiesCommand.NotifyCanExecuteChanged();
         }
         if (previousState != _productServiceConnectionState ||
             !string.Equals(previousCode, _productServiceConnectionCode, StringComparison.Ordinal))
@@ -1263,7 +1320,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(IsProductServiceConnected));
             OnPropertyChanged(nameof(ShowProductServiceUpdateAction));
             OnPropertyChanged(nameof(SupportsProductServiceFileAdministration));
+            OnPropertyChanged(nameof(SupportsProductServicePropertiesEditor));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
+            OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
+            OnPropertyChanged(nameof(CanEditSelectedServerProperties));
+            OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
             OnPropertyChanged(nameof(ProductServiceConnectionText));
             OnPropertyChanged(nameof(CanRefreshSelectedPlayers));
             NotifySelectedLifecycleCommandsCanExecuteChanged();
@@ -1279,6 +1340,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             CheckAddonUpdatesCommand.NotifyCanExecuteChanged();
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             SaveSelectedSettingsCommand.NotifyCanExecuteChanged();
+            ReloadPropertiesCommand.NotifyCanExecuteChanged();
+            SavePropertiesCommand.NotifyCanExecuteChanged();
             RefreshPlayersCommand.NotifyCanExecuteChanged();
             NotifySelectedServiceDependentCommandsCanExecuteChanged();
             UpdateProductServiceCommand.NotifyCanExecuteChanged();
@@ -1317,6 +1380,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         foreach (var stale in Servers.Where(server => !serviceIds.Contains(server.Id)).ToArray())
         {
             Servers.Remove(stale);
+            _serviceServerPropertiesRevisions.TryRemove(stale.Id, out _);
+            RemoveServiceServerPropertiesState(stale.Id);
             _dirtyProductServiceRegistrations.Remove(stale.Id);
             _instanceModels.TryRemove(stale.Id, out _);
             _playerPresenceCoreTypes.TryRemove(stale.Id, out _);
@@ -1601,6 +1666,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 L("main.vm.service.incompatible"),
             "server.not_found" =>
                 L("main.vm.service.serverNotFound"),
+            "server.properties_changed" =>
+                L("main.vm.service.propertiesChanged"),
             _ =>
                 L("main.vm.service.rejected"),
         };
@@ -3356,6 +3423,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             NotifySelectedLifecycleCommandsCanExecuteChanged();
             UpdateSelectedModpackCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+            SavePropertiesCommand.NotifyCanExecuteChanged();
         }
         else if (eventArgs.PropertyName == nameof(ServerInstanceViewModel.CanIterativelyUpdateModpack))
         {
@@ -3366,6 +3435,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             or nameof(ServerInstanceViewModel.CanAccessLocalFiles))
         {
             OnPropertyChanged(nameof(CanEditSelectedLocalConfiguration));
+            OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
+            OnPropertyChanged(nameof(CanEditSelectedServerProperties));
+            OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
             OnPropertyChanged(nameof(CanBrowseSelectedServerFiles));
             OnPropertyChanged(nameof(CanManageLocalRecoveryPoints));
             OpenSelectedFolderCommand.NotifyCanExecuteChanged();
@@ -3373,6 +3445,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             OpenAddonFolderCommand.NotifyCanExecuteChanged();
             OpenRecoveryPointsFolderCommand.NotifyCanExecuteChanged();
             RestoreRecoveryPointCommand.NotifyCanExecuteChanged();
+            ReloadPropertiesCommand.NotifyCanExecuteChanged();
+            SavePropertiesCommand.NotifyCanExecuteChanged();
         }
 
         if (!_applyingProductServiceProjection &&
@@ -5824,8 +5898,26 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ReloadPropertiesQuietlyAsync(ServerInstanceViewModel server)
     {
+        if (server.IsServiceManaged)
+        {
+            await ReloadServiceServerPropertiesQuietlyAsync(server);
+            return;
+        }
+
+        var requestVersion = Interlocked.Increment(ref _serverPropertiesReloadVersion);
+        if (!server.CanAccessLocalFiles)
+        {
+            return;
+        }
+
         var path = Path.Combine(server.DirectoryPath, "server.properties");
         var document = await _serverPropertiesPortService.ReadDocumentAsync(path);
+        if (requestVersion != Volatile.Read(ref _serverPropertiesReloadVersion) ||
+            !ReferenceEquals(server, SelectedServer) ||
+            !Servers.Contains(server))
+        {
+            return;
+        }
         if (document is null)
         {
             _serverPropertiesFormats.TryRemove(server.Id, out _);
@@ -5835,6 +5927,140 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         _serverPropertiesFormats[server.Id] = document.FormatToken;
         server.ServerPropertiesText = document.Text;
+    }
+
+    private async Task ReloadServiceServerPropertiesQuietlyAsync(ServerInstanceViewModel server)
+    {
+        var generation = BeginServiceServerPropertiesReload(server.Id);
+        try
+        {
+            var controller = _productServiceController
+                ?? throw new InvalidOperationException(L("main.vm.service.notReady"));
+            EnsureProductServiceConnected();
+            if (!SupportsProductServicePropertiesEditor)
+            {
+                throw new InvalidOperationException(L("main.vm.service.incompatible"));
+            }
+
+            var serviceDocument = await ExecuteProductServiceOperationAsync(
+                token => controller.ReadServerPropertiesAsync(server.Id, token),
+                _sessionServicesCancellation.Token);
+            if (!IsCurrentServiceServerPropertiesReload(server.Id, generation) ||
+                !ReferenceEquals(server, SelectedServer) ||
+                !Servers.Contains(server))
+            {
+                return;
+            }
+
+            _serviceServerPropertiesRevisions[server.Id] = serviceDocument.RevisionSha256;
+            server.ServerPropertiesText = serviceDocument.Exists
+                ? serviceDocument.Text
+                : L("main.vm.properties.notGenerated");
+            NotifySelectedServerPropertiesStateChanged(server.Id);
+        }
+        finally
+        {
+            EndServiceServerPropertiesReload(server.Id, generation);
+        }
+    }
+
+    private long BeginServiceServerPropertiesReload(Guid serverId)
+    {
+        long generation;
+        lock (_serviceServerPropertiesStateSync)
+        {
+            generation = _serviceServerPropertiesReloadGenerations.GetValueOrDefault(serverId) + 1;
+            _serviceServerPropertiesReloadGenerations[serverId] = generation;
+            _serviceServerPropertiesReloadsInFlight[serverId] = generation;
+        }
+
+        _serviceServerPropertiesRevisions.TryRemove(serverId, out _);
+        NotifySelectedServerPropertiesStateChanged(serverId);
+        return generation;
+    }
+
+    private bool IsCurrentServiceServerPropertiesReload(Guid serverId, long generation)
+    {
+        lock (_serviceServerPropertiesStateSync)
+        {
+            return _serviceServerPropertiesReloadGenerations.GetValueOrDefault(serverId) == generation;
+        }
+    }
+
+    private void EndServiceServerPropertiesReload(Guid serverId, long generation)
+    {
+        var changed = false;
+        lock (_serviceServerPropertiesStateSync)
+        {
+            if (_serviceServerPropertiesReloadsInFlight.GetValueOrDefault(serverId) == generation)
+            {
+                _serviceServerPropertiesReloadsInFlight.Remove(serverId);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            NotifySelectedServerPropertiesStateChanged(serverId);
+        }
+    }
+
+    private void BeginServiceServerPropertiesSave(Guid serverId)
+    {
+        lock (_serviceServerPropertiesStateSync)
+        {
+            if (_serviceServerPropertiesReloadsInFlight.ContainsKey(serverId) ||
+                !_serviceServerPropertiesSavesInFlight.Add(serverId))
+            {
+                throw new InvalidOperationException(L("main.vm.error.propertiesOperationRunning"));
+            }
+        }
+
+        NotifySelectedServerPropertiesStateChanged(serverId);
+    }
+
+    private void EndServiceServerPropertiesSave(Guid serverId)
+    {
+        lock (_serviceServerPropertiesStateSync)
+        {
+            _serviceServerPropertiesSavesInFlight.Remove(serverId);
+        }
+
+        NotifySelectedServerPropertiesStateChanged(serverId);
+    }
+
+    private bool IsServiceServerPropertiesOperationRunning(Guid serverId)
+    {
+        lock (_serviceServerPropertiesStateSync)
+        {
+            return _serviceServerPropertiesReloadsInFlight.ContainsKey(serverId) ||
+                   _serviceServerPropertiesSavesInFlight.Contains(serverId);
+        }
+    }
+
+    private void RemoveServiceServerPropertiesState(Guid serverId)
+    {
+        lock (_serviceServerPropertiesStateSync)
+        {
+            _serviceServerPropertiesReloadGenerations.Remove(serverId);
+            _serviceServerPropertiesReloadsInFlight.Remove(serverId);
+            _serviceServerPropertiesSavesInFlight.Remove(serverId);
+        }
+    }
+
+    private void NotifySelectedServerPropertiesStateChanged(Guid serverId)
+    {
+        if (SelectedServer?.Id != serverId)
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(IsSelectedServerPropertiesOperationRunning));
+        OnPropertyChanged(nameof(CanReloadSelectedServerProperties));
+        OnPropertyChanged(nameof(CanEditSelectedServerProperties));
+        OnPropertyChanged(nameof(CanSaveSelectedServerProperties));
+        ReloadPropertiesCommand.NotifyCanExecuteChanged();
+        SavePropertiesCommand.NotifyCanExecuteChanged();
     }
 
     private void QueuePlayerRegistryLoadIfNeeded(ServerInstanceViewModel server)
@@ -5950,6 +6176,77 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         if (server.State == ServerState.Starting)
         {
             throw new InvalidOperationException(L("main.vm.error.savePropertiesWhileStarting"));
+        }
+        if (server.IsServiceManaged)
+        {
+            if (server.State is not (ServerState.Stopped or ServerState.Crashed or ServerState.Faulted))
+            {
+                throw new InvalidOperationException(L("main.vm.error.savePropertiesWhileActive"));
+            }
+
+            var controller = _productServiceController
+                ?? throw new InvalidOperationException(L("main.vm.service.notReady"));
+            EnsureProductServiceConnected();
+            if (!SupportsProductServicePropertiesEditor)
+            {
+                throw new InvalidOperationException(L("main.vm.service.incompatible"));
+            }
+
+            if (!_serviceServerPropertiesRevisions.TryGetValue(server.Id, out var revision))
+            {
+                throw new InvalidOperationException(L("main.vm.error.propertiesNotLoaded"));
+            }
+
+            BeginServiceServerPropertiesSave(server.Id);
+            try
+            {
+                var document = await ExecuteProductServiceOperationAsync(
+                    token => controller.UpdateServerPropertiesAsync(
+                        server.Id,
+                        new ProductServerPropertiesUpdateRequest(
+                            server.ServerPropertiesText,
+                            revision),
+                        token),
+                    CancellationToken.None);
+                _serviceServerPropertiesRevisions[server.Id] = document.RevisionSha256;
+                if (ReferenceEquals(server, SelectedServer) && Servers.Contains(server))
+                {
+                    server.ServerPropertiesText = document.Text;
+                    var registration = await ExecuteProductServiceOperationAsync(
+                        token => controller.GetRegistrationAsync(server.Id, token),
+                        CancellationToken.None);
+                    _dirtyProductServiceRegistrations.Remove(server.Id);
+                    _applyingProductServiceProjection = true;
+                    try
+                    {
+                        UpdateServiceProjectionMetadata(server.Model, registration);
+                        server.NotifyServiceRegistrationChanged();
+                    }
+                    finally
+                    {
+                        _applyingProductServiceProjection = false;
+                    }
+                }
+
+                if (server.ActivePort is { } serviceActivePort && serviceActivePort != server.Port)
+                {
+                    SetStatus("main.vm.status.propertiesSavedActivePort", serviceActivePort);
+                }
+                else
+                {
+                    SetStatus("main.vm.status.propertiesSaved");
+                }
+            }
+            finally
+            {
+                EndServiceServerPropertiesSave(server.Id);
+            }
+            return;
+        }
+
+        if (!server.CanAccessLocalFiles)
+        {
+            throw new InvalidOperationException(L("main.vm.service.incompatible"));
         }
         var path = Path.Combine(server.DirectoryPath, "server.properties");
         _serverPropertiesFormats.TryGetValue(server.Id, out var formatToken);

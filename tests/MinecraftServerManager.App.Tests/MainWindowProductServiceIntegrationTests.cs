@@ -1,6 +1,7 @@
 using System.IO;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
@@ -13,6 +14,194 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class MainWindowProductServiceIntegrationTests
 {
+    [Fact]
+    public async Task ServiceOwnedProperties_AutoLoadReloadAndSaveThroughApi17WithoutProjectionPathAccess()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var serviceId = Guid.NewGuid();
+        var client = new StubServiceClient(serviceId)
+        {
+            ServerPropertiesText = "motd=service owned\nserver-port=25565\n",
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        await client.PropertiesRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var projected = Assert.Single(viewModel.Servers);
+        await WaitUntilAsync(() => projected.ServerPropertiesText == client.ServerPropertiesText);
+        Assert.Same(projected, viewModel.SelectedServer);
+        Assert.Equal(client.ServerPropertiesText, projected.ServerPropertiesText);
+        Assert.False(projected.CanAccessLocalFiles);
+        Assert.False(File.Exists(Path.Combine(projected.DirectoryPath, "server.properties")));
+        Assert.True(viewModel.SupportsProductServicePropertiesEditor);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.True(viewModel.SavePropertiesCommand.CanExecute(null));
+
+        client.ReplaceServerPropertiesExternally("motd=reloaded\nserver-port=25566\n");
+        viewModel.ReloadPropertiesCommand.Execute(null);
+        await client.PropertiesReloaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => projected.ServerPropertiesText == client.ServerPropertiesText);
+        Assert.Equal("motd=reloaded\nserver-port=25566\n", projected.ServerPropertiesText);
+        Assert.Equal(2, client.ServerPropertiesReadCount);
+
+        projected.ServerPropertiesText = "motd=updated\nserver-port=25570\n";
+        var releaseUpdate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.PropertiesUpdateRelease = releaseUpdate;
+        viewModel.SavePropertiesCommand.Execute(null);
+        await client.PropertiesUpdated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(viewModel.IsSelectedServerPropertiesOperationRunning);
+        Assert.False(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.CanSaveSelectedServerProperties);
+        Assert.False(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+
+        releaseUpdate.SetResult();
+        await WaitUntilAsync(() => projected.Port == 25570);
+        await WaitUntilAsync(() => !viewModel.IsSelectedServerPropertiesOperationRunning);
+
+        Assert.Equal(projected.ServerPropertiesText, client.ServerPropertiesText);
+        Assert.Equal(25570, client.StoredRegistration.Port);
+        Assert.Equal(2, client.ServerPropertiesReadCount);
+
+        viewModel.StartSelectedCommand.Execute(null);
+        await WaitUntilAsync(() => projected.State == ServerState.Running);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.CanReloadSelectedServerProperties);
+        Assert.False(viewModel.CanSaveSelectedServerProperties);
+        Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task ServiceOwnedProperties_OverlappingReloadKeepsNewestReselectionResponse()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var serviceId = Guid.NewGuid();
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new StubServiceClient(serviceId);
+        client.ServerPropertiesReadHandler = async (call, cancellationToken) =>
+        {
+            if (call == 1)
+            {
+                firstStarted.TrySetResult();
+                await releaseFirst.Task.WaitAsync(cancellationToken);
+                firstReturned.TrySetResult();
+                return client.CreatePropertiesDocument("motd=obsolete\nserver-port=25565\n");
+            }
+
+            secondReturned.TrySetResult();
+            return client.CreatePropertiesDocument("motd=current\nserver-port=25566\n");
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var projected = Assert.Single(viewModel.Servers);
+        Assert.True(viewModel.IsSelectedServerPropertiesOperationRunning);
+        Assert.False(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.CanSaveSelectedServerProperties);
+        Assert.False(viewModel.ReloadPropertiesCommand.CanExecute(null));
+
+        viewModel.SelectedServer = null;
+        viewModel.SelectedServer = projected;
+        await secondReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => projected.ServerPropertiesText.Contains("motd=current", StringComparison.Ordinal));
+
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.CanReloadSelectedServerProperties);
+        Assert.True(viewModel.CanSaveSelectedServerProperties);
+
+        releaseFirst.SetResult();
+        await firstReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(50);
+
+        Assert.Contains("motd=current", projected.ServerPropertiesText, StringComparison.Ordinal);
+        Assert.DoesNotContain("motd=obsolete", projected.ServerPropertiesText, StringComparison.Ordinal);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.CanSaveSelectedServerProperties);
+    }
+
+    [Fact]
+    public async Task ServiceOwnedProperties_ReloadClearsReadyStateUntilFreshRevisionArrives()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var serviceId = Guid.NewGuid();
+        var reloadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new StubServiceClient(serviceId)
+        {
+            ServerPropertiesText = "motd=initial\nserver-port=25565\n",
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        await client.PropertiesRead.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var projected = Assert.Single(viewModel.Servers);
+        await WaitUntilAsync(() => viewModel.CanSaveSelectedServerProperties);
+
+        client.ServerPropertiesReadHandler = async (call, cancellationToken) =>
+        {
+            Assert.Equal(2, call);
+            reloadStarted.TrySetResult();
+            await releaseReload.Task.WaitAsync(cancellationToken);
+            return client.CreatePropertiesDocument("motd=fresh\nserver-port=25566\n");
+        };
+
+        viewModel.ReloadPropertiesCommand.Execute(null);
+        await reloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(viewModel.IsSelectedServerPropertiesOperationRunning);
+        Assert.False(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.CanSaveSelectedServerProperties);
+        Assert.False(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+
+        releaseReload.SetResult();
+        await WaitUntilAsync(() => projected.ServerPropertiesText.Contains("motd=fresh", StringComparison.Ordinal));
+        await WaitUntilAsync(() => !viewModel.IsSelectedServerPropertiesOperationRunning);
+
+        Assert.True(viewModel.CanReloadSelectedServerProperties);
+        Assert.True(viewModel.CanEditSelectedServerProperties);
+        Assert.True(viewModel.CanSaveSelectedServerProperties);
+        Assert.True(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.True(viewModel.SavePropertiesCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Api16Service_RemainsConnectedButPropertiesEditorFailsClosed()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            MaximumApiVersion = ProductApiProtocol.MinecraftEulaConsentVersion,
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+
+        Assert.True(viewModel.IsProductServiceConnected);
+        Assert.Equal(ProductApiProtocol.MinecraftEulaConsentVersion, viewModel.ProductServiceNegotiatedApiVersion);
+        Assert.False(viewModel.SupportsProductServicePropertiesEditor);
+        Assert.False(viewModel.CanEditSelectedServerProperties);
+        Assert.False(viewModel.ReloadPropertiesCommand.CanExecute(null));
+        Assert.False(viewModel.SavePropertiesCommand.CanExecute(null));
+        Assert.False(client.PropertiesRead.Task.IsCompleted);
+    }
+
     [Fact]
     public async Task Initialize_UsesOnlyServiceCatalogAndKeepsLegacySettingsReadOnly()
     {
@@ -528,6 +717,9 @@ public sealed class MainWindowProductServiceIntegrationTests
         private bool _deleted;
         private readonly Guid _modpackUpdateId = Guid.NewGuid();
         private ProductServerModpackUpdateBeginRequest? _modpackUpdateRequest;
+        private string _serverPropertiesText = "server-port=25565\n";
+        private string _serverPropertiesRevision = CalculatePropertiesRevision("server-port=25565\n");
+        private int _serverPropertiesReadCount;
         private ProductServerRegistration _registration = new()
         {
             Id = serverId,
@@ -552,6 +744,25 @@ public sealed class MainWindowProductServiceIntegrationTests
 
         public ProductServiceClientException? HandshakeError { get; init; }
 
+        public ProductApiVersion MaximumApiVersion { get; init; } = ProductApiProtocol.CurrentVersion;
+
+        public string ServerPropertiesText
+        {
+            get => _serverPropertiesText;
+            init
+            {
+                _serverPropertiesText = value;
+                _serverPropertiesRevision = CalculatePropertiesRevision(value);
+            }
+        }
+
+        public int ServerPropertiesReadCount => Volatile.Read(ref _serverPropertiesReadCount);
+
+        public Func<int, CancellationToken, Task<ProductServerPropertiesDocument>>?
+            ServerPropertiesReadHandler { get; set; }
+
+        public TaskCompletionSource? PropertiesUpdateRelease { get; set; }
+
         public List<string> Mutations { get; } = [];
 
         public IReadOnlyList<string> PlayerNames { get; init; } = [];
@@ -566,6 +777,15 @@ public sealed class MainWindowProductServiceIntegrationTests
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource AdministrationRequested { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource PropertiesRead { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource PropertiesReloaded { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource PropertiesUpdated { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ProductServerAdministrationSnapshot? AdministrationSnapshot { get; init; }
@@ -592,7 +812,7 @@ public sealed class MainWindowProductServiceIntegrationTests
                     new ProductHandshakeResponse(
                         "Muhun MCSV Manager",
                         "1.0.0",
-                        ProductApiProtocol.CurrentVersion,
+                        MaximumApiVersion,
                         ProductApiProtocol.MinimumSupportedVersion,
                         Ready: true),
                     Guid.NewGuid(),
@@ -736,6 +956,64 @@ public sealed class MainWindowProductServiceIntegrationTests
                 false,
                 new ProductServerJavaRuntimeSummary(false, false, null, null, string.Empty, string.Empty, string.Empty)))
                 with { ServerId = serverId });
+        }
+
+        public async Task<ProductServerPropertiesDocument> ReadServerPropertiesAsync(
+            Guid requestedServerId,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(serverId, requestedServerId);
+            var readCount = Interlocked.Increment(ref _serverPropertiesReadCount);
+            if (readCount == 1)
+            {
+                PropertiesRead.TrySetResult();
+            }
+            else
+            {
+                PropertiesReloaded.TrySetResult();
+            }
+
+            return ServerPropertiesReadHandler is null
+                ? CreatePropertiesDocument(_serverPropertiesText)
+                : await ServerPropertiesReadHandler(readCount, cancellationToken);
+        }
+
+        public ProductServerPropertiesDocument CreatePropertiesDocument(string text)
+            => new(
+                serverId,
+                true,
+                text,
+                CalculatePropertiesRevision(text));
+
+        public void ReplaceServerPropertiesExternally(string text)
+        {
+            _serverPropertiesText = text;
+            _serverPropertiesRevision = CalculatePropertiesRevision(text);
+        }
+
+        public async Task<ProductServerPropertiesDocument> UpdateServerPropertiesAsync(
+            Guid requestedServerId,
+            ProductServerPropertiesUpdateRequest update,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(serverId, requestedServerId);
+            Assert.Equal(_serverPropertiesRevision, update.ExpectedRevisionSha256);
+            _serverPropertiesText = update.Text;
+            _serverPropertiesRevision = CalculatePropertiesRevision(update.Text);
+            if (ServerPropertiesPortEditor.TryReadServerPort(update.Text, out var port))
+            {
+                _registration = _registration with { Port = port };
+            }
+            PropertiesUpdated.TrySetResult();
+            if (PropertiesUpdateRelease is { } release)
+            {
+                await release.Task.WaitAsync(cancellationToken);
+            }
+            return new ProductServerPropertiesDocument(
+                serverId,
+                true,
+                _serverPropertiesText,
+                _serverPropertiesRevision);
         }
 
         public Task<ProductServerDeletionResult> DeleteServerPermanentlyAsync(
@@ -887,6 +1165,9 @@ public sealed class MainWindowProductServiceIntegrationTests
                 ErrorMessage: null,
                 UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
+
+        private static string CalculatePropertiesRevision(string text)
+            => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
 
     private sealed class CandidateWorkflow(ServerInstance candidate) : IOnlineModpackWorkflow

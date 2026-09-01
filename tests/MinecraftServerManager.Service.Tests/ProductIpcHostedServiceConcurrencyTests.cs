@@ -241,6 +241,17 @@ public sealed class ProductIpcHostedServiceConcurrencyTests
             ProductIpcExecutionClass.LongMutation,
             ProductIpcExecutionPolicy.Classify(method));
 
+    [Fact]
+    public void ServerPropertiesMethods_ClassifyReadAndMutationSeparately()
+    {
+        Assert.Equal(
+            ProductIpcExecutionClass.ReadOnly,
+            ProductIpcExecutionPolicy.Classify(ProductIpcProtocol.ServerPropertiesReadMethod));
+        Assert.Equal(
+            ProductIpcExecutionClass.Mutation,
+            ProductIpcExecutionPolicy.Classify(ProductIpcProtocol.ServerPropertiesUpdateMethod));
+    }
+
     private static ProductIpcHostOptions TestOptions() => new()
     {
         MaximumConcurrentClients = 8,

@@ -31,9 +31,9 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
             security,
             () => "0123456789abcdef0123456789abcdef");
 
-        var result = await stager.StageAsync(source, "1.2.9-beta.3", CancellationToken.None);
+        var result = await stager.StageAsync(source, "1.2.9-beta.4", CancellationToken.None);
 
-        var expectedName = ".repair-staging-1.2.9-beta.3-0123456789abcdef0123456789abcdef";
+        var expectedName = ".repair-staging-1.2.9-beta.4-0123456789abcdef0123456789abcdef";
         var expectedRoot = Path.Combine(launcher, expectedName);
         Assert.Equal(expectedRoot, result.ReleaseRoot);
         Assert.Equal((source, launcher, expectedName), Assert.Single(copy.Invocations));
@@ -62,7 +62,7 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
             () => nonce);
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
-            stager.StageAsync(source, "1.2.9-beta.3", CancellationToken.None));
+            stager.StageAsync(source, "1.2.9-beta.4", CancellationToken.None));
 
         Assert.Empty(copy.Invocations);
     }
@@ -79,7 +79,7 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
             () => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
         var error = await Assert.ThrowsAsync<Win32Exception>(() =>
-            stager.StageAsync(source, "1.2.9-beta.3", CancellationToken.None));
+            stager.StageAsync(source, "1.2.9-beta.4", CancellationToken.None));
 
         Assert.Equal(1223, error.NativeErrorCode);
     }
@@ -98,11 +98,11 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
             () => "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
-            stager.StageAsync(source, "1.2.9-beta.3", CancellationToken.None));
+            stager.StageAsync(source, "1.2.9-beta.4", CancellationToken.None));
 
         var deleted = Assert.Single(copy.DeleteInvocations);
         Assert.Equal(
-            Path.Combine(launcher, ".repair-staging-1.2.9-beta.3-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Path.Combine(launcher, ".repair-staging-1.2.9-beta.4-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             deleted);
     }
 
@@ -113,7 +113,7 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
         var malformed = Directory.CreateDirectory(Path.Combine(launcher, "repair-staging-not-owned")).FullName;
         var outside = Directory.CreateDirectory(Path.Combine(
             _root,
-            ".repair-staging-1.2.9-beta.3-cccccccccccccccccccccccccccccccc")).FullName;
+            ".repair-staging-1.2.9-beta.4-cccccccccccccccccccccccccccccccc")).FullName;
         var copy = new RecordingCopyBroker(createDestination: false);
         var stager = new WindowsShellProtectedFormalReleaseStager(
             new FixedLauncherResolver(launcher),
@@ -135,7 +135,7 @@ public sealed class ProtectedFormalReleaseStagingTests : IDisposable
         var launcher = Directory.CreateDirectory(Path.Combine(_root, "owned-cleanup", "launcher")).FullName;
         var stage = Directory.CreateDirectory(Path.Combine(
             launcher,
-            ".repair-staging-1.2.9-beta.3-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")).FullName;
+            ".repair-staging-1.2.9-beta.4-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")).FullName;
         var copy = new RecordingCopyBroker(createDestination: false);
         var security = new RecordingSecurityValidator();
         var stager = new WindowsShellProtectedFormalReleaseStager(

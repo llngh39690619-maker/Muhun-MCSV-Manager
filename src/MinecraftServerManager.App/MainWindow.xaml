@@ -644,11 +644,12 @@
                                         </StackPanel>
                                     </StackPanel>
 
-                                    <StackPanel Grid.Column="2" IsEnabled="{Binding CanEditSelectedLocalConfiguration}">
+                                    <StackPanel Grid.Column="2">
                                         <TextBlock Text="{DynamicResource L10n.main.properties.heading}" Style="{StaticResource SectionTitle}" />
                                         <TextBlock Text="{DynamicResource L10n.main.properties.hint}"
                                                    Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
                                         <TextBox Text="{Binding SelectedServer.ServerPropertiesText, UpdateSourceTrigger=PropertyChanged}"
+                                                 IsEnabled="{Binding CanEditSelectedServerProperties}"
                                                  AcceptsReturn="True" AcceptsTab="True" FontFamily="Cascadia Mono, Consolas"
                                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Height="430" />
                                         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">

@@ -16,6 +16,8 @@ public static class ProductIpcProtocol
     public const string ServerRemoveMethod = "server.remove";
     public const string ServerDirectoryMethod = "server.directory";
     public const string ServerAdministrationMethod = "server.administration";
+    public const string ServerPropertiesReadMethod = "server.properties.read";
+    public const string ServerPropertiesUpdateMethod = "server.properties.update";
     public const string ServerDeleteMethod = "server.delete";
     public const string ServerStartMethod = "server.start";
     public const string ServerStopMethod = "server.stop";
@@ -84,6 +86,8 @@ public sealed record ProductIpcRequest(
     public ProductServerRegistration? Server { get; init; }
 
     public ProductServerSettingsUpdateRequest? ServerSettings { get; init; }
+
+    public ProductServerPropertiesUpdateRequest? ServerPropertiesUpdate { get; init; }
 
     /// <summary>
     /// One-shot, local interactive confirmation. It is valid only for start/restart and is never
@@ -161,6 +165,8 @@ public sealed record ProductIpcResponse(
     public ProductServerDirectoryInfo? ServerDirectory { get; init; }
 
     public ProductServerAdministrationSnapshot? ServerAdministration { get; init; }
+
+    public ProductServerPropertiesDocument? ServerProperties { get; init; }
 
     public ProductServerDeletionResult? ServerDeletion { get; init; }
 
@@ -249,6 +255,8 @@ public static class ProductIpcRequestValidator
             ProductIpcProtocol.ServerRemoveMethod or
             ProductIpcProtocol.ServerDirectoryMethod or
             ProductIpcProtocol.ServerAdministrationMethod or
+            ProductIpcProtocol.ServerPropertiesReadMethod or
+            ProductIpcProtocol.ServerPropertiesUpdateMethod or
             ProductIpcProtocol.ServerDeleteMethod or
             ProductIpcProtocol.ServerStartMethod or
             ProductIpcProtocol.ServerStopMethod or
@@ -298,6 +306,31 @@ public static class ProductIpcRequestValidator
             return new ProductIpcError(
                 "protocol.server_settings_invalid",
                 "The server settings update is invalid.");
+        }
+
+        if (request.Method == ProductIpcProtocol.ServerPropertiesUpdateMethod &&
+            request.ServerPropertiesUpdate is null)
+        {
+            return new ProductIpcError(
+                "protocol.server_properties_required",
+                "A server.properties update is required.");
+        }
+
+        if (request.Method != ProductIpcProtocol.ServerPropertiesUpdateMethod &&
+            request.ServerPropertiesUpdate is not null)
+        {
+            return new ProductIpcError(
+                "protocol.server_properties_unexpected",
+                "A server.properties update is not valid for this method.");
+        }
+
+        if (request.ServerPropertiesUpdate is { } properties &&
+            (!ProductServerPropertiesContract.IsValidText(properties.Text) ||
+             !ProductServerPropertiesContract.IsValidRevision(properties.ExpectedRevisionSha256)))
+        {
+            return new ProductIpcError(
+                "protocol.server_properties_invalid",
+                "The server.properties update is invalid or exceeds its bounded size.");
         }
 
         if (request.Method == ProductIpcProtocol.ServerImportBeginMethod && request.ImportBegin is null)
@@ -641,6 +674,8 @@ public static class ProductIpcRequestValidator
         ProductIpcProtocol.ServerRemoveMethod,
         ProductIpcProtocol.ServerDirectoryMethod,
         ProductIpcProtocol.ServerAdministrationMethod,
+        ProductIpcProtocol.ServerPropertiesReadMethod,
+        ProductIpcProtocol.ServerPropertiesUpdateMethod,
         ProductIpcProtocol.ServerDeleteMethod,
         ProductIpcProtocol.ServerStartMethod,
         ProductIpcProtocol.ServerStopMethod,
@@ -690,4 +725,5 @@ public static class ProductIpcRequestValidator
         ProductIpcProtocol.ProviderPublisherPinMethod,
         ProductIpcProtocol.ProviderPublisherRemoveMethod,
     };
+
 }

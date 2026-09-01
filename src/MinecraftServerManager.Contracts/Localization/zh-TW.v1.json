@@ -157,7 +157,7 @@
     "main.memory.minimum": "最小",
     "main.memory.maximum": "最大",
     "main.settings.port": "Server 連接埠",
-    "main.settings.portHint": "每次真正啟動時，才會從 25565 依序自動配置 server-port；若已開啟 Query 或 RCON，請另外確認 query.port／rcon.port 未與其他程序衝突。",
+    "main.settings.portHint": "真正啟動時會檢查連接埠衝突，必要時自動改用下一個可用的 server-port；若已開啟 Query 或 RCON，請另外確認 query.port／rcon.port 未與其他程序衝突。",
     "main.settings.autoRestart": "伺服器崩潰時自動重新啟動",
     "main.settings.autoRestartHint": "只處理 Java 非正常結束；10 分鐘內最多自動重啟 3 次，延遲依序為 5、15、45 秒。",
     "main.settings.separateDiagnostics": "將錯誤／警告與控制台分開顯示",

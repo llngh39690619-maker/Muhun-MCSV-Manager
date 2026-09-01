@@ -20,7 +20,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
     public async Task Update_UsesOnlyBundledUpdaterFromCompleteFormalRelease()
     {
         var guiPath = CreateFormalReleaseLayout(_directory);
-        var protectedRoot = Path.Combine(_directory, "protected", ".repair-staging-1.2.9-beta.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        var protectedRoot = Path.Combine(_directory, "protected", ".repair-staging-1.2.9-beta.4-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         var protectedUpdater = Path.Combine(protectedRoot, "updater-win-x64", "Muhun MCSV Updater.exe");
         var stager = new RecordingStager(protectedRoot);
         var verifier = new RecordingVerifier(protectedUpdater);
@@ -30,15 +30,15 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             stager,
             verifier,
             runner,
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var result = await launcher.UpdateAsync();
 
         Assert.True(result.Succeeded);
         Assert.Equal(BundledProductServiceUpdateOutcome.Completed, result.Outcome);
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal((Path.GetFullPath(_directory), "1.2.9-beta.3"), Assert.Single(stager.Invocations));
-        Assert.Equal((protectedRoot, "1.2.9-beta.3"), Assert.Single(verifier.Invocations));
+        Assert.Equal((Path.GetFullPath(_directory), "1.2.9-beta.4"), Assert.Single(stager.Invocations));
+        Assert.Equal((protectedRoot, "1.2.9-beta.4"), Assert.Single(verifier.Invocations));
         var invocation = Assert.Single(runner.Invocations);
         Assert.Equal(protectedUpdater, invocation.UpdaterPath);
         Assert.Equal(protectedRoot, invocation.ReleaseRoot);
@@ -60,7 +60,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             stager,
             verifier,
             runner,
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var result = await launcher.UpdateAsync();
 
@@ -83,7 +83,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             stager,
             new RecordingVerifier(new InvalidDataException("publisher mismatch")),
             runner,
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var result = await launcher.UpdateAsync();
 
@@ -105,7 +105,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             stager,
             new RecordingVerifier(protectedUpdater),
             new RecordingRunner(new Win32Exception(1223)),
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var result = await launcher.UpdateAsync();
 
@@ -124,13 +124,13 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             new RecordingStager(new Win32Exception(1223)),
             new RecordingVerifier(protectedUpdater),
             new RecordingRunner(exitCode: 0),
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
         var failed = new BundledProductServiceUpdateLauncher(
             () => guiPath,
             new RecordingStager(protectedRoot),
             new RecordingVerifier(protectedUpdater),
             new RecordingRunner(exitCode: 17),
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var cancelledResult = await cancelled.UpdateAsync();
         var failedResult = await failed.UpdateAsync();
@@ -146,7 +146,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
     [Fact]
     public async Task Update_ManagedVersionSlot_IsNotReinterpretedAsLooseRelease()
     {
-        var releaseRoot = Path.Combine(_directory, "versions", "1.2.9-beta.3");
+        var releaseRoot = Path.Combine(_directory, "versions", "1.2.9-beta.4");
         var guiPath = CreateFormalReleaseLayout(releaseRoot);
         var stager = new RecordingStager(Path.Combine(_directory, "protected"));
         var runner = new RecordingRunner(exitCode: 0);
@@ -155,7 +155,7 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             stager,
             new RecordingVerifier(Path.Combine(_directory, "protected", "updater.exe")),
             runner,
-            "1.2.9-beta.3");
+            "1.2.9-beta.4");
 
         var result = await launcher.UpdateAsync();
 

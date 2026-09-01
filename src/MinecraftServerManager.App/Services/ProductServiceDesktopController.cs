@@ -337,6 +337,17 @@ internal sealed class ProductServiceDesktopController :
         CancellationToken cancellationToken = default)
         => _client.GetServerAdministrationAsync(serverId, cancellationToken);
 
+    public Task<ProductServerPropertiesDocument> ReadServerPropertiesAsync(
+        Guid serverId,
+        CancellationToken cancellationToken = default)
+        => _client.ReadServerPropertiesAsync(serverId, cancellationToken);
+
+    public Task<ProductServerPropertiesDocument> UpdateServerPropertiesAsync(
+        Guid serverId,
+        ProductServerPropertiesUpdateRequest update,
+        CancellationToken cancellationToken = default)
+        => _client.UpdateServerPropertiesAsync(serverId, update, cancellationToken);
+
     public async Task<ProductServerDeletionResult> DeleteServerPermanentlyAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)

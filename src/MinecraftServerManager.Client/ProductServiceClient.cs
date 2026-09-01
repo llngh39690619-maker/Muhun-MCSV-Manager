@@ -261,6 +261,72 @@ public sealed class ProductServiceClient : IProductServiceClient
         return snapshot;
     }
 
+    public async Task<ProductServerPropertiesDocument> ReadServerPropertiesAsync(
+        Guid serverId,
+        CancellationToken cancellationToken = default)
+    {
+        var request = CreateServerRequest(ProductIpcProtocol.ServerPropertiesReadMethod, serverId) with
+        {
+            ClientMinimumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+        };
+        var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return RequireServerProperties(response.ServerProperties, serverId);
+    }
+
+    public async Task<ProductServerPropertiesDocument> UpdateServerPropertiesAsync(
+        Guid serverId,
+        ProductServerPropertiesUpdateRequest update,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        if (!ProductServerPropertiesContract.IsValidText(update.Text) ||
+            !ProductServerPropertiesContract.IsValidRevision(update.ExpectedRevisionSha256))
+        {
+            throw new ArgumentException("The bounded server.properties update is invalid.", nameof(update));
+        }
+
+        var request = CreateServerRequest(ProductIpcProtocol.ServerPropertiesUpdateMethod, serverId) with
+        {
+            ClientMinimumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+            ServerPropertiesUpdate = update,
+        };
+        var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return RequireServerProperties(response.ServerProperties, serverId);
+    }
+
+    private static ProductServerPropertiesDocument RequireServerProperties(
+        ProductServerPropertiesDocument? document,
+        Guid serverId)
+    {
+        if (document is null)
+        {
+            throw MissingPayload("server.properties document");
+        }
+
+        var validMissing = !document.Exists &&
+                           string.IsNullOrEmpty(document.Text) &&
+                           string.Equals(
+                               document.RevisionSha256,
+                               ProductServerPropertiesContract.MissingRevision,
+                               StringComparison.Ordinal);
+        var validExisting = document.Exists &&
+                            ProductServerPropertiesContract.IsValidText(document.Text) &&
+                            document.RevisionSha256 is { Length: 64 } &&
+                            ProductServerPropertiesContract.IsValidRevision(document.RevisionSha256) &&
+                            string.Equals(
+                                document.RevisionSha256,
+                                ProductServerPropertiesContract.CalculateRevision(document.Text),
+                                StringComparison.Ordinal);
+        if (document.ServerId != serverId || (!validMissing && !validExisting))
+        {
+            throw new ProductServiceClientException(
+                "protocol.payload_invalid",
+                "Service returned an invalid server.properties document.");
+        }
+
+        return document;
+    }
+
     private static bool IsSafeJavaSummary(ProductServerJavaRuntimeSummary? java)
         => java is not null &&
            new[] { java.Version, java.RuntimeKind, java.Vendor, java.Architecture }
@@ -1298,6 +1364,7 @@ public sealed class ProductServiceClient : IProductServiceClient
 
         if (method is
             ProductIpcProtocol.ServerSettingsUpdateMethod or
+            ProductIpcProtocol.ServerPropertiesUpdateMethod or
             ProductIpcProtocol.ServerRegisterMethod or
             ProductIpcProtocol.ServerRemoveMethod or
             ProductIpcProtocol.ServerStartMethod or

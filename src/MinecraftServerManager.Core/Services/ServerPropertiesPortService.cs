@@ -282,6 +282,33 @@ public sealed class ServerPropertiesPortService
     }
 
     /// <summary>
+    /// Reads a document while enforcing the byte bound on the opened handle. Unlike a separate
+    /// FileInfo length check, a file that grows during the read cannot cause an unbounded
+    /// allocation. The handle also denies concurrent writers for the duration of decoding.
+    /// </summary>
+    public async Task<ServerPropertiesDocument?> ReadBoundedDocumentAsync(
+        string serverPropertiesPath,
+        int maximumBytes,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateMaximumBytes(maximumBytes);
+
+        var filePath = GetExplicitFullPath(serverPropertiesPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!File.Exists(filePath))
+        {
+            return null;
+        }
+
+        var decoded = await ReadTextAsync(filePath, maximumBytes, cancellationToken)
+            .ConfigureAwait(false);
+        return new ServerPropertiesDocument(
+            filePath,
+            decoded.Text,
+            CreateFormatToken(decoded));
+    }
+
+    /// <summary>
     /// Atomically saves complete editor text. When supplied, <paramref name="formatToken"/>
     /// preserves the encoding and exact BOM returned by <see cref="ReadDocumentAsync"/>.
     /// Without a token, an existing file is detected before writing; a new file uses UTF-8
@@ -292,6 +319,42 @@ public sealed class ServerPropertiesPortService
         string contents,
         ServerPropertiesDocumentFormatToken? formatToken = null,
         CancellationToken cancellationToken = default)
+        => await SaveDocumentCoreAsync(
+                serverPropertiesPath,
+                contents,
+                formatToken,
+                maximumBytes: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Atomically saves complete editor text while bounding the encoded file size. The bound is
+    /// evaluated using the retained encoding and exact BOM before any temporary file or backup is
+    /// created, so a rejected update cannot modify files beside the target.
+    /// </summary>
+    public async Task<ServerPropertiesDocumentUpdateResult> SaveBoundedDocumentAsync(
+        string serverPropertiesPath,
+        string contents,
+        int maximumBytes,
+        ServerPropertiesDocumentFormatToken? formatToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateMaximumBytes(maximumBytes);
+        return await SaveDocumentCoreAsync(
+                serverPropertiesPath,
+                contents,
+                formatToken,
+                maximumBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<ServerPropertiesDocumentUpdateResult> SaveDocumentCoreAsync(
+        string serverPropertiesPath,
+        string contents,
+        ServerPropertiesDocumentFormatToken? formatToken,
+        int? maximumBytes,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(contents);
         var filePath = GetExplicitFullPath(serverPropertiesPath);
@@ -308,11 +371,18 @@ public sealed class ServerPropertiesPortService
         }
         else if (originalExists)
         {
-            format = await ReadTextAsync(filePath, cancellationToken).ConfigureAwait(false);
+            format = maximumBytes is { } sourceByteLimit
+                ? await ReadTextAsync(filePath, sourceByteLimit, cancellationToken).ConfigureAwait(false)
+                : await ReadTextAsync(filePath, cancellationToken).ConfigureAwait(false);
         }
         else
         {
             format = CreateDefaultDecodedText();
+        }
+
+        if (maximumBytes is { } byteLimit)
+        {
+            ValidateEncodedDocumentSize(contents, format.Encoding, format.Preamble, byteLimit);
         }
 
         var backupPath = await WriteDocumentAtomicallyAsync(
@@ -386,11 +456,71 @@ public sealed class ServerPropertiesPortService
         return Path.GetFullPath(serverPropertiesPath);
     }
 
+    private static void ValidateMaximumBytes(int maximumBytes)
+    {
+        if (maximumBytes is < 1 or > 1024 * 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        }
+    }
+
+    private static void ValidateEncodedDocumentSize(
+        string contents,
+        Encoding encoding,
+        byte[] preamble,
+        int maximumBytes)
+    {
+        var encodedByteCount = (long)preamble.Length + encoding.GetByteCount(contents);
+        if (encodedByteCount > maximumBytes)
+        {
+            throw new InvalidDataException("server.properties exceeds its bounded size.");
+        }
+    }
+
     private static async Task<DecodedText> ReadTextAsync(
         string path,
         CancellationToken cancellationToken)
+        => Decode(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+
+    private static async Task<DecodedText> ReadTextAsync(
+        string path,
+        int maximumBytes,
+        CancellationToken cancellationToken)
     {
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.Length > maximumBytes)
+        {
+            throw new InvalidDataException("server.properties exceeds its bounded size.");
+        }
+
+        using var buffer = new MemoryStream(Math.Min(maximumBytes, (int)stream.Length));
+        var chunk = new byte[Math.Min(4096, maximumBytes + 1)];
+        while (true)
+        {
+            var read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+            if (buffer.Length + read > maximumBytes)
+            {
+                throw new InvalidDataException("server.properties exceeds its bounded size.");
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return Decode(buffer.ToArray());
+    }
+
+    private static DecodedText Decode(byte[] bytes)
+    {
         var (encoding, preambleLength, isUtf8) = DetectEncoding(bytes);
         var contentBytes = bytes.AsSpan(preambleLength);
         string text;

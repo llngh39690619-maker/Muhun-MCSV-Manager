@@ -1,5 +1,6 @@
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Core.Runtime;
+using MinecraftServerManager.Core.Services;
 using MinecraftServerManager.Service;
 
 namespace MinecraftServerManager.Service.Tests;
@@ -198,6 +199,62 @@ public sealed class ProductServerAdministrationIpcTests
             () => fixture.Runtime.GetRegistration(fixture.Registration.Id));
     }
 
+    [Fact]
+    public async Task ServerProperties_Api17ReadsAndUpdatesServiceOwnedDocument()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var path = Path.Combine(fixture.ServerDirectory, "server.properties");
+        await File.WriteAllTextAsync(path, "server-port=25565\n");
+
+        var read = await fixture.Processor.ProcessAsync(
+            Request(ProductIpcProtocol.ServerPropertiesReadMethod) with
+            {
+                ServerId = fixture.Registration.Id,
+                ClientMinimumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+            },
+            default);
+        var update = await fixture.Processor.ProcessAsync(
+            Request(ProductIpcProtocol.ServerPropertiesUpdateMethod) with
+            {
+                ServerId = fixture.Registration.Id,
+                ClientMinimumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+                ServerPropertiesUpdate = new ProductServerPropertiesUpdateRequest(
+                    "server-port=25570\n",
+                    read.ServerProperties!.RevisionSha256),
+            },
+            default);
+
+        Assert.True(read.Success);
+        Assert.Equal("server-port=25565\n", read.ServerProperties!.Text);
+        Assert.True(update.Success);
+        Assert.Equal("server-port=25570\n", update.ServerProperties!.Text);
+        Assert.Equal("server-port=25570\n", await File.ReadAllTextAsync(path));
+        Assert.Equal(25570, fixture.Runtime.GetRegistration(fixture.Registration.Id).Port);
+    }
+
+    [Theory]
+    [InlineData(ProductIpcProtocol.ServerPropertiesReadMethod)]
+    [InlineData(ProductIpcProtocol.ServerPropertiesUpdateMethod)]
+    public async Task ServerProperties_RequiresNegotiatedApiVersionOneSeven(string method)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var response = await fixture.Processor.ProcessAsync(
+            Request(method) with
+            {
+                ServerId = fixture.Registration.Id,
+                ClientMaximumApiVersion = ProductApiProtocol.MinecraftEulaConsentVersion,
+                ServerPropertiesUpdate = method == ProductIpcProtocol.ServerPropertiesUpdateMethod
+                    ? new ProductServerPropertiesUpdateRequest(
+                        string.Empty,
+                        ProductServerPropertiesContract.MissingRevision)
+                    : null,
+            },
+            default);
+
+        Assert.False(response.Success);
+        Assert.Equal("protocol.method_version_unsupported", response.Error!.Code);
+    }
+
     [Theory]
     [InlineData(ProductIpcProtocol.ServerDirectoryMethod)]
     [InlineData(ProductIpcProtocol.ServerAdministrationMethod)]
@@ -291,21 +348,27 @@ public sealed class ProductServerAdministrationIpcTests
             var registry = new ProductServerRegistry(layout);
             await registry.LoadAsync();
             await registry.UpsertAsync(registration);
+            var processes = new ServerProcessManager(
+                new ServerProcessManagerOptions
+                {
+                    ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                    GracefulStopTimeout = TimeSpan.FromMilliseconds(250),
+                    ForcedKillWaitTimeout = TimeSpan.FromMilliseconds(250),
+                    MonitorDrainTimeout = TimeSpan.FromMilliseconds(250),
+                },
+                new ProductServerTestProcessFactory());
             var runtime = new ProductServerRuntime(
                 registry,
                 layout,
-                new ServerProcessManager(
-                    new ServerProcessManagerOptions
-                    {
-                        ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
-                        GracefulStopTimeout = TimeSpan.FromMilliseconds(250),
-                        ForcedKillWaitTimeout = TimeSpan.FromMilliseconds(250),
-                        MonitorDrainTimeout = TimeSpan.FromMilliseconds(250),
-                    },
-                    new ProductServerTestProcessFactory()),
+                processes,
                 new ProductDesiredRunIntentStore(layout));
             var backups = new ProductServerBackupManager(layout, runtime, new BackupService());
             var administration = new ProductServerAdministrationReader(layout, registry, TimeProvider.System);
+            var properties = new ProductServerPropertiesManager(
+                layout,
+                registry,
+                new ServerPropertiesPortService(),
+                processes);
             var state = new ProductServiceState(TimeProvider.System);
             state.Initialize(Guid.NewGuid());
             state.MarkReady();
@@ -320,7 +383,8 @@ public sealed class ProductServerAdministrationIpcTests
                 discordWebhook: null,
                 notificationOutbox: null,
                 backups,
-                administration: administration);
+                administration: administration,
+                properties: properties);
             return new Fixture(layout, registration, runtime, processor);
         }
 

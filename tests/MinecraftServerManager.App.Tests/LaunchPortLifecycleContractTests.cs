@@ -36,6 +36,7 @@ public sealed class LaunchPortLifecycleContractTests
         Assert.DoesNotContain("AssignAvailablePortAsync(", saveProperties, StringComparison.Ordinal);
         Assert.Contains("SaveSettingsAsync", saveSettings, StringComparison.Ordinal);
         Assert.Contains("SaveDocumentAsync", saveProperties, StringComparison.Ordinal);
+        Assert.Contains("UpdateServerPropertiesAsync", saveProperties, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -51,6 +52,7 @@ public sealed class LaunchPortLifecycleContractTests
 
         AssertStartingGuardPrecedesWrite(saveSettings, "PersistConfiguredPortAsync(");
         AssertStartingGuardPrecedesWrite(saveProperties, "SaveDocumentAsync(");
+        AssertStartingGuardPrecedesWrite(saveProperties, "UpdateServerPropertiesAsync(");
     }
 
     [Fact]

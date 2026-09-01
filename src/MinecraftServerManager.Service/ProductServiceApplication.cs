@@ -199,6 +199,7 @@ public static class ProductServiceApplication
         builder.Services.AddSingleton<ProductServerBackupManager>();
         builder.Services.AddSingleton<ProductPlayerPresenceTracker>();
         builder.Services.AddSingleton<ProductServerAdministrationReader>();
+        builder.Services.AddSingleton<ProductServerPropertiesManager>();
         builder.Services.AddSingleton<ProductRemoteControlBackend>();
         builder.Services.AddSingleton<IProductServerNotificationSink>(provider =>
             new ProductDurableServerNotificationSink(

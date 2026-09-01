@@ -77,7 +77,9 @@ public sealed class ProductLocalIpcAuditPolicy(
             ProductIpcProtocol.ServerRemoveMethod or
             ProductIpcProtocol.ServerDeleteMethod => ProductPermissionCodes.ServerSettingsWrite,
             ProductIpcProtocol.ServerDirectoryMethod or
-            ProductIpcProtocol.ServerAdministrationMethod => ProductPermissionCodes.FileRead,
+            ProductIpcProtocol.ServerAdministrationMethod or
+            ProductIpcProtocol.ServerPropertiesReadMethod => ProductPermissionCodes.FileRead,
+            ProductIpcProtocol.ServerPropertiesUpdateMethod => ProductPermissionCodes.FileWrite,
             ProductIpcProtocol.ServerStartMethod => ProductPermissionCodes.ServerStart,
             ProductIpcProtocol.ServerStopMethod => ProductPermissionCodes.ServerStop,
             ProductIpcProtocol.ServerRestartMethod => ProductPermissionCodes.ServerRestart,

@@ -103,7 +103,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
                 install,
                 Path.Combine(install, "launcher"),
                 release,
-                "1.2.9-beta.3",
+                "1.2.9-beta.4",
                 new string('a', 32)),
             stagingContentValidator: _ => { },
             stagingCleanupScheduler: _ =>
@@ -186,7 +186,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
         }
 
         public string Root { get; }
-        public string Version { get; } = "1.2.9-beta.3";
+        public string Version { get; } = "1.2.9-beta.4";
         public ProductLocalRepairTrustPolicy TrustPolicy { get; }
 
         public static async Task<SignedReleaseFixture> CreateAsync(string root)

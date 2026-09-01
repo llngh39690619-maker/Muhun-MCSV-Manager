@@ -9,7 +9,7 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProtectedFormalReleaseVerifierTests : IDisposable
 {
-    private const string Version = "1.2.9-beta.3";
+    private const string Version = "1.2.9-beta.4";
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "mcsv-protected-release-verifier-tests",

@@ -9,6 +9,7 @@ public sealed class ProductOperationErrorPolicyTests
         { new FileNotFoundException("missing C:\\Users\\private\\secret.jar"), "server.launch_path_not_found", 409 },
         { new DirectoryNotFoundException("missing D:\\private-world"), "server.launch_path_not_found", 409 },
         { new UnauthorizedAccessException("account DOMAIN\\private-user denied C:\\secret"), "server.path_rejected", 403 },
+        { new ProductServerPropertiesConflictException(), "server.properties_changed", 409 },
         { new InvalidOperationException("process C:\\secret\\java.exe rejected"), "server.operation_rejected", 409 },
         { new InvalidDataException("invalid token=hunter2"), "server.data_invalid", 422 },
         { new ArgumentException("request contained C:\\secret"), "request.invalid", 400 },

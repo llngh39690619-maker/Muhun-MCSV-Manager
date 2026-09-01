@@ -6,10 +6,10 @@ using MinecraftServerManager.Core.Services;
 namespace MinecraftServerManager.Service;
 
 /// <summary>
-/// Selects and durably applies the lowest available Minecraft TCP port immediately before each
-/// Service-owned launch. In-memory reservations close the gap between selection and the operating
-/// system listener becoming visible, while session binding prevents a late exit from releasing a
-/// newer launch's reservation.
+/// Preserves the configured Minecraft TCP port when it is available and otherwise durably applies
+/// the first free port above it immediately before each Service-owned launch. In-memory
+/// reservations close the gap between selection and the operating system listener becoming
+/// visible, while session binding prevents a late exit from releasing a newer launch's reservation.
 /// </summary>
 public sealed class ProductServerPortCoordinator
 {
@@ -99,7 +99,10 @@ public sealed class ProductServerPortCoordinator
 
             occupancy = _captureOccupancy();
             var assignedPort = ServerPortAllocator.FindFirstAvailablePort(
-                preferredPort: ServerPortAllocator.DefaultPreferredPort,
+                // The registry is the authoritative value saved by the Service settings UI.
+                // Starting every search at 25565 silently discarded an explicit value such as
+                // 25566 and then rewrote both the registry and server.properties back to 25565.
+                preferredPort: registration.Port,
                 occupiedTcpPorts: occupancy.TcpPorts,
                 // Minecraft's primary server-port is TCP. Query and RCON are independent
                 // settings, so a UDP-only listener must not force the primary port upward.

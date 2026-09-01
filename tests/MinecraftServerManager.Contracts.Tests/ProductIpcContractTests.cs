@@ -80,8 +80,83 @@ public sealed class ProductIpcContractTests
     {
         Assert.Equal(new ProductApiVersion(1, 0), ProductApiProtocol.MinimumSupportedVersion);
         Assert.Equal(new ProductApiVersion(1, 6), ProductApiProtocol.MinecraftEulaConsentVersion);
-        Assert.Equal(ProductApiProtocol.MinecraftEulaConsentVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 7), ProductApiProtocol.ServerPropertiesEditorVersion);
+        Assert.Equal(ProductApiProtocol.ServerPropertiesEditorVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void ServerPropertiesMethods_RequireIdentityAndBoundedUpdate()
+    {
+        var missingIdentity = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerPropertiesReadMethod,
+        };
+        var missingUpdate = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerPropertiesUpdateMethod,
+            ServerId = Guid.NewGuid(),
+        };
+        var valid = missingUpdate with
+        {
+            ServerPropertiesUpdate = new ProductServerPropertiesUpdateRequest(
+                "server-port=25570\n",
+                ProductServerPropertiesContract.MissingRevision),
+        };
+        var invalid = valid with
+        {
+            ServerPropertiesUpdate = new ProductServerPropertiesUpdateRequest(
+                new string('x', ProductServerPropertiesContract.MaximumTextCharacters + 1),
+                ProductServerPropertiesContract.MissingRevision),
+        };
+
+        Assert.Equal("protocol.server_id_required", ProductIpcRequestValidator.Validate(missingIdentity)?.Code);
+        Assert.Equal("protocol.server_properties_required", ProductIpcRequestValidator.Validate(missingUpdate)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+        Assert.Equal("protocol.server_properties_invalid", ProductIpcRequestValidator.Validate(invalid)?.Code);
+    }
+
+    [Theory]
+    [InlineData("測", ProductServerPropertiesContract.MaximumTextCharacters)]
+    [InlineData("\\", ProductServerPropertiesContract.MaximumTextCharacters)]
+    [InlineData("😀", ProductServerPropertiesContract.MaximumTextCharacters / 2)]
+    public void MaximumServerPropertiesPayload_FitsAuthenticatedPipeFrame(
+        string unit,
+        int repeatCount)
+    {
+        var serverId = Guid.NewGuid();
+        var text = string.Concat(Enumerable.Repeat(unit, repeatCount));
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var request = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerPropertiesUpdateMethod,
+            ServerId = serverId,
+            ClientMinimumApiVersion = ProductApiProtocol.ServerPropertiesEditorVersion,
+            ServerPropertiesUpdate = new ProductServerPropertiesUpdateRequest(
+                text,
+                ProductServerPropertiesContract.MissingRevision),
+        };
+        var response = new ProductIpcResponse(
+            ProductIpcProtocol.CurrentSchemaVersion,
+            request.RequestId,
+            true,
+            null,
+            null)
+        {
+            ServerProperties = new ProductServerPropertiesDocument(
+                serverId,
+                true,
+                text,
+                new string('a', 64)),
+        };
+
+        Assert.Null(ProductIpcRequestValidator.Validate(request));
+        Assert.True(
+            JsonSerializer.SerializeToUtf8Bytes(request, options).Length <=
+            ProductIpcProtocol.MaximumFrameBytes);
+        Assert.True(
+            JsonSerializer.SerializeToUtf8Bytes(response, options).Length <=
+            ProductIpcProtocol.MaximumFrameBytes);
     }
 
     [Fact]

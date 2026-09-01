@@ -21,6 +21,7 @@ public sealed class ProductIpcMessageProcessor
     private readonly ProductPlayerPresenceTracker? _players;
     private readonly ProductNotificationPreferenceStore? _notificationPreferences;
     private readonly ProductServerAdministrationReader? _administration;
+    private readonly ProductServerPropertiesManager? _properties;
 
     public ProductIpcMessageProcessor(ProductServiceState state)
         : this(state, runtime: null, updates: null, imports: null, remoteWeb: null, remoteAccounts: null, remoteDevices: null, discordWebhook: null, notificationOutbox: null, backups: null)
@@ -110,7 +111,8 @@ public sealed class ProductIpcMessageProcessor
         ProductProviderCoordinator? providers = null,
         ProductPlayerPresenceTracker? players = null,
         ProductNotificationPreferenceStore? notificationPreferences = null,
-        ProductServerAdministrationReader? administration = null)
+        ProductServerAdministrationReader? administration = null,
+        ProductServerPropertiesManager? properties = null)
     {
         _state = state;
         _runtime = runtime;
@@ -127,6 +129,7 @@ public sealed class ProductIpcMessageProcessor
         _players = players;
         _notificationPreferences = notificationPreferences;
         _administration = administration;
+        _properties = properties;
     }
 
     /// <summary>Compatibility helper for the non-I/O handshake foundation tests.</summary>
@@ -386,6 +389,20 @@ public sealed class ProductIpcMessageProcessor
                     "Local server file administration requires API version 1.5 or newer."));
         }
 
+        var isServerPropertiesMethod = request.Method is
+            ProductIpcProtocol.ServerPropertiesReadMethod or
+            ProductIpcProtocol.ServerPropertiesUpdateMethod;
+        if (isServerPropertiesMethod &&
+            negotiation.SelectedVersion.Value.CompareTo(
+                ProductApiProtocol.ServerPropertiesEditorVersion) < 0)
+        {
+            return Failure(
+                request.RequestId,
+                new ProductIpcError(
+                    "protocol.method_version_unsupported",
+                    "Service-owned server.properties editing requires API version 1.7 or newer."));
+        }
+
         if (_runtime is null)
         {
             return Failure(
@@ -400,6 +417,15 @@ public sealed class ProductIpcMessageProcessor
                 new ProductIpcError(
                     "service.administration_unavailable",
                     "Bounded server administration inspection is unavailable."));
+        }
+
+        if (isServerPropertiesMethod && _properties is null)
+        {
+            return Failure(
+                request.RequestId,
+                new ProductIpcError(
+                    "service.properties_unavailable",
+                    "Service-owned server.properties editing is unavailable."));
         }
 
         if (request.Method == ProductIpcProtocol.ServerPlayersMethod && _players is null)
@@ -465,6 +491,21 @@ public sealed class ProductIpcMessageProcessor
                 ProductIpcProtocol.ServerAdministrationMethod => Success(request.RequestId) with
                 {
                     ServerAdministration = _administration!.Capture(request.ServerId!.Value),
+                },
+                ProductIpcProtocol.ServerPropertiesReadMethod => Success(request.RequestId) with
+                {
+                    ServerProperties = await _properties!.ReadAsync(
+                            request.ServerId!.Value,
+                            cancellationToken)
+                        .ConfigureAwait(false),
+                },
+                ProductIpcProtocol.ServerPropertiesUpdateMethod => Success(request.RequestId) with
+                {
+                    ServerProperties = await _properties!.SaveAsync(
+                            request.ServerId!.Value,
+                            request.ServerPropertiesUpdate!,
+                            cancellationToken)
+                        .ConfigureAwait(false),
                 },
                 ProductIpcProtocol.ServerDeleteMethod => Success(request.RequestId) with
                 {

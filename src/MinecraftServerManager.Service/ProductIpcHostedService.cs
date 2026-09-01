@@ -96,6 +96,7 @@ internal static class ProductIpcExecutionPolicy
 
         return method is
             ProductIpcProtocol.ServerSettingsUpdateMethod or
+            ProductIpcProtocol.ServerPropertiesUpdateMethod or
             ProductIpcProtocol.ServerRegisterMethod or
             ProductIpcProtocol.ServerRemoveMethod or
             ProductIpcProtocol.ServerStartMethod or

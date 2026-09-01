@@ -233,6 +233,74 @@ public sealed class ServerPropertiesPortServiceTests
     }
 
     [Fact]
+    public async Task SaveBoundedDocumentAsync_Utf32OutputIncludingBomExceedsBound_LeavesFilesUnchanged()
+    {
+        using var directory = new TemporaryDirectory();
+        var filePath = Path.Combine(directory.Path, "server.properties");
+        var original = Encoding.UTF32.GetPreamble()
+            .Concat(Encoding.UTF32.GetBytes("x"))
+            .ToArray();
+        var existingBackupPath = filePath + ".bak";
+        var existingBackup = Encoding.UTF8.GetBytes("existing backup");
+        await File.WriteAllBytesAsync(filePath, original);
+        await File.WriteAllBytesAsync(existingBackupPath, existingBackup);
+        var service = new ServerPropertiesPortService();
+        var document = Assert.IsType<ServerPropertiesDocument>(
+            await service.ReadDocumentAsync(filePath));
+        Assert.Equal("utf-32", document.FormatToken.EncodingName);
+
+        // Three UTF-32 characters require 12 body bytes. The retained four-byte BOM makes the
+        // exact output 16 bytes, so a 15-byte bound must reject the update.
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            service.SaveBoundedDocumentAsync(
+                filePath,
+                "abc",
+                maximumBytes: 15,
+                formatToken: document.FormatToken));
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(filePath));
+        Assert.Equal(existingBackup, await File.ReadAllBytesAsync(existingBackupPath));
+        Assert.Equal(
+            [existingBackupPath],
+            Directory.EnumerateFiles(directory.Path, "server.properties.bak*")
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.Empty(Directory.EnumerateFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task SaveBoundedDocumentAsync_EncodingFailure_LeavesFilesUnchanged()
+    {
+        using var directory = new TemporaryDirectory();
+        var filePath = Path.Combine(directory.Path, "server.properties");
+        var original = Encoding.Latin1.GetBytes("motd=Caf\u00e9\n");
+        var existingBackupPath = filePath + ".bak";
+        var existingBackup = Encoding.UTF8.GetBytes("existing backup");
+        await File.WriteAllBytesAsync(filePath, original);
+        await File.WriteAllBytesAsync(existingBackupPath, existingBackup);
+        var service = new ServerPropertiesPortService();
+        var document = Assert.IsType<ServerPropertiesDocument>(
+            await service.ReadDocumentAsync(filePath));
+        Assert.Equal("iso-8859-1", document.FormatToken.EncodingName);
+
+        await Assert.ThrowsAsync<EncoderFallbackException>(() =>
+            service.SaveBoundedDocumentAsync(
+                filePath,
+                "motd=\u6e2c\u8a66\n",
+                maximumBytes: 1024,
+                formatToken: document.FormatToken));
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(filePath));
+        Assert.Equal(existingBackup, await File.ReadAllBytesAsync(existingBackupPath));
+        Assert.Equal(
+            [existingBackupPath],
+            Directory.EnumerateFiles(directory.Path, "server.properties.bak*")
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.Empty(Directory.EnumerateFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
     public async Task SetServerPortAsync_DoesNotOverwriteExistingBackup()
     {
         using var directory = new TemporaryDirectory();

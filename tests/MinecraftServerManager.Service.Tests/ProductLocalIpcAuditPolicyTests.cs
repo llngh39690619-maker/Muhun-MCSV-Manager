@@ -1,4 +1,5 @@
 using MinecraftServerManager.Contracts;
+using MinecraftServerManager.Contracts.Security;
 using MinecraftServerManager.Data;
 using MinecraftServerManager.Service;
 
@@ -73,6 +74,8 @@ public sealed class ProductLocalIpcAuditPolicyTests : IDisposable
     [InlineData(ProductIpcProtocol.ServerBackupRestoreMethod)]
     [InlineData(ProductIpcProtocol.ServerSettingsUpdateMethod)]
     [InlineData(ProductIpcProtocol.ServerAdministrationMethod)]
+    [InlineData(ProductIpcProtocol.ServerPropertiesReadMethod)]
+    [InlineData(ProductIpcProtocol.ServerPropertiesUpdateMethod)]
     [InlineData(ProductIpcProtocol.ServerModpackUpdateBeginMethod)]
     [InlineData(ProductIpcProtocol.ServerModpackUpdateCommitMethod)]
     [InlineData(ProductIpcProtocol.ServerModpackUpdateCancelMethod)]
@@ -88,6 +91,19 @@ public sealed class ProductLocalIpcAuditPolicyTests : IDisposable
         Assert.NotNull(descriptor);
         Assert.StartsWith("ipc.", descriptor.ActionCode, StringComparison.Ordinal);
         Assert.NotEmpty(descriptor.PermissionCode);
+    }
+
+    [Fact]
+    public void ServerPropertiesAudit_DistinguishesReadFromWritePermission()
+    {
+        Assert.Equal(
+            ProductPermissionCodes.FileRead,
+            ProductLocalIpcAuditPolicy.Describe(
+                Request(ProductIpcProtocol.ServerPropertiesReadMethod))!.PermissionCode);
+        Assert.Equal(
+            ProductPermissionCodes.FileWrite,
+            ProductLocalIpcAuditPolicy.Describe(
+                Request(ProductIpcProtocol.ServerPropertiesUpdateMethod))!.PermissionCode);
     }
 
     [Theory]

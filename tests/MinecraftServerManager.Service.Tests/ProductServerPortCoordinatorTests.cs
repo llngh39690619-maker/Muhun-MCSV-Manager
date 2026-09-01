@@ -10,6 +10,74 @@ namespace MinecraftServerManager.Service.Tests;
 public sealed class ProductServerPortCoordinatorTests
 {
     [Fact]
+    public async Task SavedServicePort_IsPreferredAndSynchronizedToActualWorkingDirectoryBeforeLaunch()
+    {
+        var layout = ProductServerRegistryTests.CreateLayout();
+        var registration = ProductServerRegistryTests.Registration();
+        var registry = new ProductServerRegistry(layout);
+        await registry.LoadAsync();
+        await registry.UpsertAsync(registration);
+        var launch = CreateLaunch(layout, registration);
+        await EnsureProcessLaunchFilesAsync(layout, registration, launch);
+        var propertiesPath = Path.Combine(launch.DirectoryPath, "server.properties");
+        await File.WriteAllTextAsync(propertiesPath, "motd=keep-me\nserver-port=25565\n");
+        var coordinator = new ProductServerPortCoordinator(
+            registry,
+            layout,
+            new ServerPropertiesPortService(),
+            EmptyOccupancy);
+        var factory = new ProductServerTestProcessFactory();
+        var manager = new ServerProcessManager(
+            new ServerProcessManagerOptions
+            {
+                ResourceSamplingInterval = Timeout.InfiniteTimeSpan,
+                GracefulStopTimeout = TimeSpan.FromMilliseconds(100),
+                ForcedKillWaitTimeout = TimeSpan.FromMilliseconds(100),
+                MonitorDrainTimeout = TimeSpan.FromMilliseconds(100),
+                PrepareStartAsync = coordinator.PrepareStartAsync,
+                PreparedStartAborted = coordinator.PreparedStartAborted,
+            },
+            factory);
+        manager.StateChanged += coordinator.ObserveStateChanged;
+        var intent = new ProductDesiredRunIntentStore(layout);
+        await using var runtime = new ProductServerRuntime(registry, layout, manager, intent);
+
+        var saved = await runtime.UpdateSettingsAsync(
+            registration.Id,
+            new ProductServerSettingsUpdateRequest(
+                registration.Name,
+                registration.MinimumMemoryMb,
+                registration.MaximumMemoryMb,
+                Port: 25566,
+                AutoRestart: registration.AutoRestart));
+        var started = await runtime.StartAsync(registration.Id);
+
+        Assert.Equal(25566, saved.Registration.Port);
+        Assert.Equal(25566, started.Status.Server.Port);
+        Assert.Equal(25566, registry.GetAll().Single().Port);
+        Assert.Equal(25566, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
+        Assert.Contains("motd=keep-me", await File.ReadAllTextAsync(propertiesPath));
+        Assert.Equal(launch.DirectoryPath, Assert.Single(factory.Processes).StartInfo!.WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task SavedServicePortConflict_SearchesUpwardWithoutFallingBackTo25565()
+    {
+        var registration = ProductServerRegistryTests.Registration() with { Port = 25566 };
+        var fixture = await CreateFixtureAsync(
+            registration,
+            () => new PortOccupancySnapshot(new HashSet<int> { 25566 }, new HashSet<int>()));
+        var propertiesPath = Path.Combine(fixture.Launch.DirectoryPath, "server.properties");
+        await File.WriteAllTextAsync(propertiesPath, "server-port=25565\n");
+
+        await fixture.Coordinator.PrepareStartAsync(fixture.Launch, CancellationToken.None);
+
+        Assert.Equal(25567, fixture.Launch.Port);
+        Assert.Equal(25567, fixture.Registry.GetAll().Single().Port);
+        Assert.Equal(25567, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
+    }
+
+    [Fact]
     public async Task PrepareStart_UsesLowestFreeTcpPort_IgnoresUdp_AndPersistsConfiguration()
     {
         var fixture = await CreateFixtureAsync(
@@ -436,7 +504,7 @@ public sealed class ProductServerPortCoordinatorTests
     }
 
     [Fact]
-    public async Task ProcessManagerHooks_ReallocateOnRestart_AndReturnFreshStatusPort()
+    public async Task ProcessManagerHooks_PreserveLastAssignedPreferredPortOnRestart()
     {
         var layout = ProductServerRegistryTests.CreateLayout();
         var registration = ProductServerRegistryTests.Registration();
@@ -478,13 +546,13 @@ public sealed class ProductServerPortCoordinatorTests
 
         var restarted = await runtime.RestartAsync(registration.Id);
 
-        Assert.Equal(25565, restarted.Status.Server.Port);
+        Assert.Equal(25566, restarted.Status.Server.Port);
         Assert.Equal(2, factory.Processes.Count);
-        Assert.Equal(25565, registry.GetAll().Single().Port);
+        Assert.Equal(25566, registry.GetAll().Single().Port);
     }
 
     [Fact]
-    public async Task ProcessManagerAutoRestart_RecomputesAndPersistsPortBeforeSecondLaunch()
+    public async Task ProcessManagerAutoRestart_PreservesLastAssignedPreferredPort()
     {
         var layout = ProductServerRegistryTests.CreateLayout();
         var registration = ProductServerRegistryTests.Registration() with { AutoRestart = true };
@@ -527,9 +595,9 @@ public sealed class ProductServerPortCoordinatorTests
         factory.Processes[0].Complete(17);
 
         await WaitUntilAsync(() => factory.Processes.Count == 2);
-        Assert.Equal(25565, registry.GetAll().Single().Port);
+        Assert.Equal(25566, registry.GetAll().Single().Port);
         Assert.Equal(
-            25565,
+            25566,
             await new ServerPropertiesPortService().ReadServerPortAsync(
                 Path.Combine(launch.DirectoryPath, "server.properties")));
     }

@@ -164,6 +164,69 @@ public static class ProductServerAdministrationContract
     public const int MaximumJavaReleaseFileBytes = 64 * 1024;
 }
 
+/// <summary>
+/// Bounded raw server.properties content owned by the Windows Service. RevisionSha256 is either a
+/// lowercase SHA-256 digest of the decoded document text or the canonical missing-file marker.
+/// No filesystem path or encoding implementation detail crosses the IPC boundary.
+/// </summary>
+public sealed record ProductServerPropertiesDocument(
+    Guid ServerId,
+    bool Exists,
+    string Text,
+    string RevisionSha256);
+
+public sealed record ProductServerPropertiesUpdateRequest(
+    string Text,
+    string ExpectedRevisionSha256);
+
+public static class ProductServerPropertiesContract
+{
+    // System.Text.Json can escape one UTF-16 code unit as six ASCII bytes. Eight KiB therefore
+    // leaves room for the request/response envelope inside the authenticated 64 KiB pipe frame,
+    // including worst-case non-ASCII text rather than only its raw UTF-8 representation.
+    public const int MaximumTextCharacters = 8 * 1024;
+    public const int MaximumTextUtf8Bytes = 24 * 1024;
+    public const int MaximumSourceFileBytes = 24 * 1024;
+    public const string MissingRevision = "missing";
+
+    public static bool IsValidRevision(string? value)
+        => string.Equals(value, MissingRevision, StringComparison.Ordinal) ||
+           value is { Length: 64 } && value.All(character =>
+               character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    public static bool IsValidText(string? value)
+    {
+        if (value is null || value.Length > MaximumTextCharacters ||
+            value.Any(character => character == '\0' ||
+                                   char.IsControl(character) && character is not ('\r' or '\n' or '\t')))
+        {
+            return false;
+        }
+
+        try
+        {
+            return new System.Text.UTF8Encoding(false, true).GetByteCount(value) <=
+                   MaximumTextUtf8Bytes;
+        }
+        catch (System.Text.EncoderFallbackException)
+        {
+            return false;
+        }
+    }
+
+    public static string CalculateRevision(string value)
+    {
+        if (!IsValidText(value))
+        {
+            throw new ArgumentException("The bounded server.properties text is invalid.", nameof(value));
+        }
+
+        var bytes = new System.Text.UTF8Encoding(false, true).GetBytes(value);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+            .ToLowerInvariant();
+    }
+}
+
 public sealed record ProductServerDeletionResult(
     Guid ServerId,
     bool Deleted,

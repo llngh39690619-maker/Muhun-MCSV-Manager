@@ -297,6 +297,42 @@ public sealed class ServerProcessManager : IAsyncDisposable
             .ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Executes an operation under the same per-instance lifecycle gate used by start, stop, and
+    /// automatic restart. Unlike <see cref="ExecuteWhileInactiveAsync{TResult}"/>, an active
+    /// process session is allowed, making this suitable for reads that must not race start
+    /// preparation or a concurrent lifecycle transition.
+    /// </summary>
+    public async Task<TResult> ExecuteSerializedAsync<TResult>(
+        Guid instanceId,
+        Func<CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotAcceptingOperations();
+        if (instanceId == Guid.Empty)
+        {
+            throw new ArgumentException("Server instance id must not be empty.", nameof(instanceId));
+        }
+
+        ArgumentNullException.ThrowIfNull(operation);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var slot = _slots.GetOrAdd(
+            instanceId,
+            id => new InstanceSlot(id, _options.MaximumRetainedConsoleLines));
+        await slot.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfNotAcceptingOperations();
+            cancellationToken.ThrowIfCancellationRequested();
+            return await operation(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            slot.Gate.Release();
+        }
+    }
+
     private void NotifyPreparedStartAborted(Guid instanceId)
     {
         try
