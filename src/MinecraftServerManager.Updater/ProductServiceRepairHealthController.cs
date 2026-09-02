@@ -117,7 +117,8 @@ internal sealed class ProductServiceRepairHealthController : IProductUpdateHealt
                     {
                         // A rollback only needs to prove that the previous Service is alive under
                         // the same installation identity. The new target must additionally prove
-                        // API 1.6 EULA support before the A/B pointer may be committed.
+                        // the complete API expected by this formal GUI before the A/B pointer may
+                        // be committed.
                         if (!string.Equals(version, _requiredTargetVersion, StringComparison.Ordinal))
                         {
                             return true;
@@ -228,7 +229,7 @@ internal sealed class ProductServiceRepairHealthController : IProductUpdateHealt
         using var bounded = new MemoryStream(MaximumHealthResponseBytes);
         await CopyBoundedAsync(stream, bounded, cancellationToken).ConfigureAwait(false);
         var handshake = JsonSerializer.Deserialize<ProductHandshakeResponse>(bounded.ToArray(), StrictJson);
-        var required = ProductApiProtocol.MinecraftEulaConsentVersion;
+        var required = ProductApiProtocol.CurrentVersion;
         if (handshake is null ||
             !handshake.Ready ||
             !string.Equals(handshake.Product, "Muhun MCSV Manager", StringComparison.Ordinal) ||

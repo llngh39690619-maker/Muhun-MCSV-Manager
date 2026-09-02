@@ -20,7 +20,8 @@ public sealed class ProductServerPortCoordinatorTests
         var launch = CreateLaunch(layout, registration);
         await EnsureProcessLaunchFilesAsync(layout, registration, launch);
         var propertiesPath = Path.Combine(launch.DirectoryPath, "server.properties");
-        await File.WriteAllTextAsync(propertiesPath, "motd=keep-me\nserver-port=25565\n");
+        const string originalProperties = "# preserve-comment\nmotd=keep-me\nserver-port=25565\nunknown-option=keep-too\n";
+        await File.WriteAllTextAsync(propertiesPath, originalProperties);
         var coordinator = new ProductServerPortCoordinator(
             registry,
             layout,
@@ -56,8 +57,39 @@ public sealed class ProductServerPortCoordinatorTests
         Assert.Equal(25566, started.Status.Server.Port);
         Assert.Equal(25566, registry.GetAll().Single().Port);
         Assert.Equal(25566, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
-        Assert.Contains("motd=keep-me", await File.ReadAllTextAsync(propertiesPath));
+        var updatedProperties = await File.ReadAllTextAsync(propertiesPath);
+        Assert.Contains("# preserve-comment", updatedProperties);
+        Assert.Contains("motd=keep-me", updatedProperties);
+        Assert.Contains("unknown-option=keep-too", updatedProperties);
+        Assert.Equal(originalProperties, await File.ReadAllTextAsync(propertiesPath + ".bak"));
         Assert.Equal(launch.DirectoryPath, Assert.Single(factory.Processes).StartInfo!.WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task MissingServerProperties_IsCreatedInActualWorkingDirectoryBeforeProcessStarts()
+    {
+        var registration = ProductServerRegistryTests.Registration() with { Port = 25566 };
+        var fixture = await CreateFixtureAsync(
+            registration,
+            () => new PortOccupancySnapshot(
+                new HashSet<int> { 25566 },
+                new HashSet<int> { 25567 }));
+        var propertiesPath = Path.Combine(fixture.Launch.DirectoryPath, "server.properties");
+        Assert.False(File.Exists(propertiesPath));
+
+        await fixture.Coordinator.PrepareStartAsync(fixture.Launch, CancellationToken.None);
+
+        Assert.Equal(25567, fixture.Launch.Port);
+        Assert.Equal(25567, fixture.Registry.GetAll().Single().Port);
+        Assert.Equal(25567, await new ServerPropertiesPortService().ReadServerPortAsync(propertiesPath));
+        Assert.Equal("server-port=25567", await File.ReadAllTextAsync(propertiesPath));
+        Assert.False(File.Exists(propertiesPath + ".bak"));
+        Assert.True(fixture.Coordinator.TryGetReservation(
+            fixture.Launch.Id,
+            out var reservedPort,
+            out var sessionId));
+        Assert.Equal(25567, reservedPort);
+        Assert.Null(sessionId);
     }
 
     [Fact]

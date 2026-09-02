@@ -273,7 +273,7 @@ public sealed class ServerInstanceViewModelTests
 
             viewModel.UpdateServiceRuntimeStatus(java, portListening: true);
 
-            Assert.Equal("Java 21", viewModel.JavaDisplay);
+            Assert.Equal("Java 21.0.8+9", viewModel.JavaDisplay);
             Assert.Equal(21, viewModel.Model.JavaMajorVersion);
             Assert.Contains("25566", viewModel.ConnectionDisplay, StringComparison.Ordinal);
             Assert.Contains("listening", viewModel.ConnectionDisplay, StringComparison.OrdinalIgnoreCase);

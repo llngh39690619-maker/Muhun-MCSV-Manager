@@ -27,7 +27,9 @@ public sealed class BuildPipelineResourceContractTests
             formal);
         Assert.Contains("foreach ($publishRestoreProject", formal, StringComparison.Ordinal);
         Assert.Contains("'restore', $publishRestoreProject", formal, StringComparison.Ordinal);
-        Assert.Equal(1, Regex.Matches(formal, @"'restore', \$solution", RegexOptions.CultureInvariant).Count);
+        Assert.Single(
+            Regex.Matches(formal, @"'restore', \$solution", RegexOptions.CultureInvariant)
+                .Cast<Match>());
         Assert.Contains("& $dotnet build $solution", developer, StringComparison.Ordinal);
         Assert.Contains("& $dotnet restore $appProject --runtime win-x64", developer, StringComparison.Ordinal);
         Assert.DoesNotContain("& $dotnet restore $solution --runtime win-x64", developer, StringComparison.Ordinal);

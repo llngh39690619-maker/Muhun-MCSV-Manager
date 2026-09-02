@@ -19,6 +19,48 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
         Directory.CreateDirectory(_directory);
     }
 
+    [Fact]
+    public void ProductionTrustPolicy_AllowsSignedGithubAndPrivateFormalReleaseUris()
+    {
+        var githubPackage = new Uri(
+            "https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases/download/" +
+            "v1.2.9-beta.6/Muhun-MCSV-1.2.9-beta.6-win-x64.zip");
+        var privatePackage = new Uri(
+            "https://muhun.tailafea21.ts.net/mcsv-updates/Muhun-MCSV-1.2.9-beta.5-win-x64.zip");
+
+        Assert.Contains(
+            githubPackage.DnsSafeHost,
+            ProductLocalRepairTrustPolicy.Production.AllowedPackageHosts);
+        Assert.Contains(
+            privatePackage.DnsSafeHost,
+            ProductLocalRepairTrustPolicy.Production.AllowedPackageHosts);
+        Assert.DoesNotContain(
+            "github.example.com",
+            ProductLocalRepairTrustPolicy.Production.AllowedPackageHosts);
+    }
+
+    [Fact]
+    public void PinnedPackageUri_AcceptsActualBeta6GithubReleasePath()
+    {
+        var manifest = CreatePackageBindingManifest(
+            "https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases/download/" +
+            "v1.2.9-beta.6/Muhun-MCSV-1.2.9-beta.6-win-x64.zip");
+
+        ProductLocalFormalReleaseVerifier.ValidatePinnedPackageUri(manifest);
+    }
+
+    [Theory]
+    [InlineData("https://github.com/other/Muhun-MCSV-Manager/releases/download/v1.2.9-beta.6/Muhun-MCSV-1.2.9-beta.6-win-x64.zip")]
+    [InlineData("https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases/latest/Muhun-MCSV-1.2.9-beta.6-win-x64.zip")]
+    [InlineData("https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases/download/v1.2.9-beta.6/Muhun-MCSV-latest-win-x64.zip")]
+    public void PinnedPackageUri_RejectsOtherGithubRepositoryPathOrFileName(string packageUrl)
+    {
+        var manifest = CreatePackageBindingManifest(packageUrl);
+
+        Assert.Throws<InvalidDataException>(() =>
+            ProductLocalFormalReleaseVerifier.ValidatePinnedPackageUri(manifest));
+    }
+
     [Theory]
     [InlineData()]
     [InlineData("--repair-product-service")]
@@ -167,6 +209,20 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
 
     private static string[] RepairArguments(string releaseRoot) =>
         ["--repair-product-service", "--release-root", releaseRoot];
+
+    private static ProductUpdateManifest CreatePackageBindingManifest(string packageUrl)
+        => new(
+            1,
+            "muhun.mcsv.manager",
+            "1.2.9-beta.6",
+            "beta",
+            "win-x64",
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            "muhun.release.test",
+            "rsa-pss-sha256",
+            new ProductUpdatePackage(packageUrl, 1, new string('a', 64)),
+            ProductFormalUpdateManifestValidator.GuiEntryPoint,
+            []);
 
     private sealed class SignedReleaseFixture : IDisposable
     {

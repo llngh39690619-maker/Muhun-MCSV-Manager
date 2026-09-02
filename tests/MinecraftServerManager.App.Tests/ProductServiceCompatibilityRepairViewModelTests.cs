@@ -83,6 +83,36 @@ public sealed class ProductServiceCompatibilityRepairViewModelTests
         AssertCreateAndImportCommands(viewModel, expected: false);
     }
 
+    [Fact]
+    public async Task RolledBackRepair_ReprobesRestoredServiceBeforePublishingFailureState()
+    {
+        using var temporary = new TemporaryDirectory();
+        var client = new TransitioningServiceClient(new ProductApiVersion(1, 5));
+        var launcher = new FakeLauncher(() =>
+        {
+            client.MaximumVersion = ProductApiProtocol.CurrentVersion;
+            return new BundledProductServiceUpdateResult(
+                BundledProductServiceUpdateOutcome.RolledBack,
+                10);
+        });
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(
+            new ApplicationPaths(temporary.Path),
+            client,
+            productServiceUpdateLauncher: launcher);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+
+        Assert.False(viewModel.IsProductServiceConnected);
+
+        await viewModel.UpdateProductServiceAsync();
+
+        Assert.Equal(1, launcher.InvocationCount);
+        Assert.True(viewModel.IsProductServiceConnected);
+        Assert.Equal(ProductApiProtocol.CurrentVersion, viewModel.ProductServiceNegotiatedApiVersion);
+        Assert.False(viewModel.ShowProductServiceUpdateAction);
+        Assert.False(viewModel.IsProductServiceUpdateRunning);
+        AssertCreateAndImportCommands(viewModel, expected: true);
+    }
+
     private static void AssertCreateAndImportCommands(
         MainWindowViewModel viewModel,
         bool expected)

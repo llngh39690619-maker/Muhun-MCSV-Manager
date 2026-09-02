@@ -4,6 +4,14 @@ namespace MinecraftServerManager.Updater;
 
 internal static class ProductLocalServiceRepairApplication
 {
+    internal const int SuccessExitCode = 0;
+    internal const int MalformedCommandExitCode = 2;
+    internal const int RolledBackExitCode = 10;
+    internal const int CancelledExitCode = 11;
+    internal const int ValidationRejectedExitCode = 12;
+    internal const int ProvisioningFailedExitCode = 13;
+    internal const int ActivationRecoveryFailedExitCode = 14;
+
     private const string Command = "--repair-product-service";
     private const string ReleaseRootArgument = "--release-root";
     private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(90);
@@ -34,11 +42,12 @@ internal static class ProductLocalServiceRepairApplication
         if (!TryParseArguments(args, out var releaseRoot))
         {
             Console.Error.WriteLine("Muhun MCSV Service repair requires one formal release root.");
-            return 2;
+            return MalformedCommandExitCode;
         }
 
         ProductRepairStagingIdentity? stagingIdentity = null;
-        var exitCode = 12;
+        var exitCode = ValidationRejectedExitCode;
+        var failureExitCode = ValidationRejectedExitCode;
         try
         {
             if (!(administratorProbe ?? ProductManagedInstallationResolver.IsAdministrator)())
@@ -83,10 +92,12 @@ internal static class ProductLocalServiceRepairApplication
             var journal = activator.ReadActivationJournal();
             if (journal is not null && !IsTerminal(journal.State))
             {
+                failureExitCode = ActivationRecoveryFailedExitCode;
                 _ = await activator.RecoverInterruptedActivationAsync(HealthTimeout, cancellationToken)
                     .ConfigureAwait(false);
             }
 
+            failureExitCode = ValidationRejectedExitCode;
             var revalidatedInstallation = (installationResolver ??
                 ProductManagedInstallationResolver.Resolve)(trust.PublisherCertificateSha256);
             ValidateRecoveredInstallation(installation, revalidatedInstallation, activator);
@@ -105,21 +116,23 @@ internal static class ProductLocalServiceRepairApplication
                 throw new InvalidOperationException("Local Service repair refuses a product downgrade.");
             }
 
+            failureExitCode = ProvisioningFailedExitCode;
             await ProvisionVerifiedReleaseAsync(
                     verifiedRelease,
                     installation.InstallRoot,
                     cancellationToken)
                 .ConfigureAwait(false);
+            failureExitCode = ActivationRecoveryFailedExitCode;
             var result = await activator.ActivateAsync(
                     verifiedRelease.UpdateManifest,
                     HealthTimeout,
                     cancellationToken)
                 .ConfigureAwait(false);
-            exitCode = result.RolledBack ? 10 : 0;
+            exitCode = result.RolledBack ? RolledBackExitCode : SuccessExitCode;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            exitCode = 11;
+            exitCode = CancelledExitCode;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
         {
@@ -127,7 +140,7 @@ internal static class ProductLocalServiceRepairApplication
             // Keep user-controlled source paths, install paths and trust metadata out of a shell
             // transcript. The GUI converts this stable exit code into a localized repair message.
             Console.Error.WriteLine("Muhun MCSV Service repair was rejected or safely rolled back.");
-            exitCode = 12;
+            exitCode = failureExitCode;
         }
 
         if (stagingIdentity is not null)

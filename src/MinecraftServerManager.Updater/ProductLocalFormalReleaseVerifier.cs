@@ -16,6 +16,7 @@ internal sealed record ProductLocalRepairTrustPolicy(
         "1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71",
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
+            "github.com",
             "muhun.tailafea21.ts.net",
         });
 }
@@ -165,6 +166,7 @@ internal static class ProductLocalFormalReleaseVerifier
             trustPolicy.AllowedPackageHosts,
             timeProvider);
         var updateManifest = updateVerifier.Verify(updateManifestBytes, updateSignature);
+        ValidatePinnedPackageUri(updateManifest);
         ProductFormalUpdateManifestValidator.Validate(updateManifest);
         ValidateManifestBinding(release, updateManifest, publicKeyDocument);
 
@@ -211,6 +213,34 @@ internal static class ProductLocalFormalReleaseVerifier
         }
 
         return new VerifiedProductLocalRelease(root, updateManifest, layout);
+    }
+
+    internal static void ValidatePinnedPackageUri(ProductUpdateManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        if (!Uri.TryCreate(manifest.Package.Url, UriKind.Absolute, out var packageUri))
+        {
+            throw new InvalidDataException("The signed local repair package URI is invalid.");
+        }
+
+        if (!string.Equals(packageUri.DnsSafeHost, "github.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var expectedPath =
+            $"/llngh39690619-maker/Muhun-MCSV-Manager/releases/download/v{manifest.Version}/" +
+            $"Muhun-MCSV-{manifest.Version}-win-x64.zip";
+        if (!string.Equals(packageUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !packageUri.IsDefaultPort ||
+            packageUri.UserInfo.Length != 0 ||
+            packageUri.Query.Length != 0 ||
+            packageUri.Fragment.Length != 0 ||
+            !string.Equals(packageUri.AbsolutePath, expectedPath, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The signed GitHub repair package URI is not bound to the official release path and version.");
+        }
     }
 
     internal static void ValidateExecutableSigner(string path, string expectedCertificateSha256)

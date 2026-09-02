@@ -1321,6 +1321,25 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 .UpdateAsync(_applicationShutdownCancellation.Token);
             if (!result.Succeeded)
             {
+                // Activation may have safely restored the previous Service. Reprobe before
+                // publishing the stable failure reason so command availability reflects the
+                // actual post-update Service rather than the stale pre-UAC snapshot.
+                try
+                {
+                    var snapshot = await _productServiceController.RefreshFocusedAsync(
+                        SelectedServer?.Id,
+                        _applicationShutdownCancellation.Token);
+                    ApplyProductServiceSnapshot(snapshot);
+                }
+                catch (Exception error) when (
+                    error is not OutOfMemoryException &&
+                    !_applicationShutdownCancellation.IsCancellationRequested)
+                {
+                    // The stable updater outcome below remains authoritative. A later monitor
+                    // pass can reconnect; never replace a rollback/provisioning diagnosis with a
+                    // transient local API exception or expose its machine-specific details.
+                }
+
                 SetStatus(result.Outcome switch
                 {
                     BundledProductServiceUpdateOutcome.Cancelled =>
@@ -1329,6 +1348,14 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                         "main.vm.service.updateReleaseUnavailable",
                     BundledProductServiceUpdateOutcome.PublisherVerificationFailed =>
                         "main.vm.service.updatePublisherRejected",
+                    BundledProductServiceUpdateOutcome.ValidationRejected =>
+                        "main.vm.service.updateValidationRejected",
+                    BundledProductServiceUpdateOutcome.RolledBack =>
+                        "main.vm.service.updateRolledBack",
+                    BundledProductServiceUpdateOutcome.ProvisioningFailed =>
+                        "main.vm.service.updateProvisioningFailed",
+                    BundledProductServiceUpdateOutcome.RecoveryFailed =>
+                        "main.vm.service.updateRecoveryFailed",
                     _ => "main.vm.service.updateFailed",
                 });
                 return;
@@ -1639,7 +1666,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         model.Id = registration.Id;
         model.Name = registration.Name;
         model.JavaExecutablePath = registration.JavaRuntimePath;
-        model.JavaMajorVersion = TryInferJavaMajorVersion(registration.JavaRuntimePath);
+        // Service-owned runtimes are stored below a server-id directory, so their relative
+        // executable path normally contains no Java version.  Keep the last verified/imported
+        // major until API 1.9 supplies the exact release metadata instead of erasing it during
+        // an older-Service compatibility projection.
+        model.JavaMajorVersion = TryInferJavaMajorVersion(registration.JavaRuntimePath)
+                                 ?? model.JavaMajorVersion;
         model.LaunchKind = (ServerLaunchKind)registration.LaunchKind;
         model.ServerJarPath = registration.ServerJarPath;
         model.JavaArgumentFilePaths = registration.JavaArgumentFilePaths.ToList();

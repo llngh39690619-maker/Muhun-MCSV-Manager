@@ -2,6 +2,14 @@
 
 ## 未發布
 
+## 1.2.9-beta.7 — 背景服務更新與啟動狀態修正版（研發中）
+
+- 修正本機完整發行資料夾的「更新背景服務」會拒絕 GitHub 發行網址、導致 Service 一直停留在舊版的問題；正式修復信任清單現在精確接受已簽署 manifest 使用的 `github.com` 與既有 tailnet 主機，仍會拒絕其他來源。
+- Service 版本切換會依序確認停止、重新註冊、實際 `ImagePath`／DataRoot／服務帳號／啟動類型、重新啟動及目前 IPC API 健康狀態；驗證、寫入、回復等失敗階段會顯示穩定結果，失敗後重新探測既有 Service 並以受保護 broker 清理暫存副本。
+- 伺服器啟動前會在實際 Service 工作目錄建立缺少的 `server.properties`，或只更新既有檔案的 `server-port` 並保留註解與未知欄位；從保存的連接埠向上跳過其他 TCP listener，UDP 不會誤占 Minecraft 主連接埠，最終值同步至 Registry、API 與 GUI。
+- Java 狀態優先顯示受管理 Runtime `release` 檔提供的完整版本（例如 `Java 21.0.10`）；與舊版 API 相容時會保留已驗證或匯入的 Java 主版本，不再因受管理路徑不含版號而退回「未指定」。
+- 本版為 Beta，僅在 GitHub 發布原始碼並標示為研發中；正式簽署 Windows 與 Android 建置只留作本機驗證，不上傳安裝包、可執行檔、APK、簽章、雜湊或其他二進位成品。
+
 ## 1.2.9-beta.6 — 執行效能與狀態可視化修正版（研發中）
 
 - Service 狀態會直接回傳由實際 Java `release` 檔解析的版本、供應商、架構與 Runtime 類型；GUI 不再從受管理目錄名稱猜測版本，因此 Windows Service 實例可正確顯示 `Java 21` 等有效版本，不再固定顯示「未指定」。

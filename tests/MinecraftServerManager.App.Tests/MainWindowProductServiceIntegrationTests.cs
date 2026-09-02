@@ -385,6 +385,44 @@ public sealed class MainWindowProductServiceIntegrationTests
     }
 
     [Fact]
+    public async Task Api18ServiceWithoutRuntimeStatus_PreservesImportedJavaForOpaqueManagedPath()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        paths.EnsureCreated();
+        var serviceId = Guid.NewGuid();
+        using (var store = new JsonSettingsStore<ManagerSettings>(paths.SettingsFile))
+        {
+            await store.SaveAsync(new ManagerSettings
+            {
+                Instances =
+                [
+                    new ServerInstance
+                    {
+                        Id = serviceId,
+                        Name = "Service owned",
+                        DirectoryPath = Path.Combine(paths.Servers, "legacy-projection"),
+                        JavaMajorVersion = 21,
+                    },
+                ],
+            });
+        }
+
+        var client = new StubServiceClient(serviceId)
+        {
+            MaximumApiVersion = ProductApiProtocol.ServiceInstanceSettingsVersion,
+            RegistrationJavaRuntimePath = $"{serviceId:N}/bin/java.exe",
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+
+        var projected = Assert.Single(viewModel.Servers);
+        Assert.Equal(21, projected.Model.JavaMajorVersion);
+        Assert.Equal("Java 21", projected.JavaDisplay);
+    }
+
+    [Fact]
     public async Task Initialize_WhenServiceUnavailable_DoesNotFallBackToLegacyProcessOwnership()
     {
         using var temporary = new TemporaryDirectory();
@@ -1050,6 +1088,11 @@ public sealed class MainWindowProductServiceIntegrationTests
         public ProductServiceClientException? HandshakeError { get; init; }
 
         public ProductApiVersion MaximumApiVersion { get; set; } = ProductApiProtocol.CurrentVersion;
+
+        public string RegistrationJavaRuntimePath
+        {
+            init => _registration = _registration with { JavaRuntimePath = value };
+        }
 
         public string ServerPropertiesText
         {

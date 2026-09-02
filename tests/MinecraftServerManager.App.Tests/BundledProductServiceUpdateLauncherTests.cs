@@ -125,9 +125,10 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
             new RecordingVerifier(protectedUpdater),
             new RecordingRunner(exitCode: 0),
             "1.2.9-beta.4");
+        var failedStager = new RecordingStager(protectedRoot);
         var failed = new BundledProductServiceUpdateLauncher(
             () => guiPath,
-            new RecordingStager(protectedRoot),
+            failedStager,
             new RecordingVerifier(protectedUpdater),
             new RecordingRunner(exitCode: 17),
             "1.2.9-beta.4");
@@ -141,6 +142,38 @@ public sealed class BundledProductServiceUpdateLauncherTests : IDisposable
         Assert.False(failedResult.Succeeded);
         Assert.Equal(BundledProductServiceUpdateOutcome.UpdateFailed, failedResult.Outcome);
         Assert.Equal(17, failedResult.ExitCode);
+        Assert.Equal(protectedRoot, Assert.Single(failedStager.CleanupInvocations));
+    }
+
+    [Theory]
+    [InlineData(11, "Cancelled")]
+    [InlineData(12, "ValidationRejected")]
+    [InlineData(10, "RolledBack")]
+    [InlineData(13, "ProvisioningFailed")]
+    [InlineData(14, "RecoveryFailed")]
+    public async Task Update_MapsStableUpdaterFailureStageAndCleansProtectedStage(
+        int exitCode,
+        string expectedOutcomeName)
+    {
+        var guiPath = CreateFormalReleaseLayout(_directory);
+        var protectedRoot = Path.Combine(_directory, "protected", exitCode.ToString());
+        var protectedUpdater = Path.Combine(protectedRoot, "updater-win-x64", "Muhun MCSV Updater.exe");
+        var stager = new RecordingStager(protectedRoot);
+        var launcher = new BundledProductServiceUpdateLauncher(
+            () => guiPath,
+            stager,
+            new RecordingVerifier(protectedUpdater),
+            new RecordingRunner(exitCode),
+            "1.2.9-beta.4");
+
+        var result = await launcher.UpdateAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(
+            Enum.Parse<BundledProductServiceUpdateOutcome>(expectedOutcomeName),
+            result.Outcome);
+        Assert.Equal(exitCode, result.ExitCode);
+        Assert.Equal(protectedRoot, Assert.Single(stager.CleanupInvocations));
     }
 
     [Fact]

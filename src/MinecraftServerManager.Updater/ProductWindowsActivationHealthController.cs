@@ -1,11 +1,15 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MinecraftServerManager.Contracts;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 
 namespace MinecraftServerManager.Updater;
 
@@ -31,19 +35,53 @@ public interface IProductWindowsServicePlatform
     bool IsGuiActivationAlive(ProductGuiActivationAck acknowledgement);
 }
 
+internal sealed record ProductWindowsServiceRegistration(
+    string ImagePath,
+    string ObjectName,
+    int StartType);
+
+internal delegate Task<string> ProductWindowsServiceCommandRunner(
+    IReadOnlyList<string> arguments,
+    bool allowTransientStopFailure,
+    CancellationToken cancellationToken);
+
 public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatform
 {
     public const string ServiceName = "MuhunMCSV";
+    private const string ServiceRegistryPath = @"SYSTEM\CurrentControlSet\Services\MuhunMCSV";
+    private const int ServiceStopped = 1;
+    private const int ServiceRunning = 4;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan BrokerConnectTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan BrokerRequestTimeout = TimeSpan.FromSeconds(100);
+    private readonly ProductWindowsServiceCommandRunner _commandRunner;
+    private readonly Func<ProductWindowsServiceRegistration> _registrationReader;
+    private readonly Func<int> _serviceStateReader;
+    private readonly bool _enforceWindows;
+
+    public ProductWindowsServicePlatform()
+        : this(RunScAsync, ReadRegistration, ReadServiceState, enforceWindows: true)
+    {
+    }
+
+    internal ProductWindowsServicePlatform(
+        ProductWindowsServiceCommandRunner commandRunner,
+        Func<ProductWindowsServiceRegistration> registrationReader,
+        Func<int> serviceStateReader,
+        bool enforceWindows = false)
+    {
+        _commandRunner = commandRunner ?? throw new ArgumentNullException(nameof(commandRunner));
+        _registrationReader = registrationReader ?? throw new ArgumentNullException(nameof(registrationReader));
+        _serviceStateReader = serviceStateReader ?? throw new ArgumentNullException(nameof(serviceStateReader));
+        _enforceWindows = enforceWindows;
+    }
 
     public async Task ConfigureAndRestartAsync(
         string serviceExecutablePath,
         string dataRoot,
         CancellationToken cancellationToken)
     {
-        if (!OperatingSystem.IsWindows())
+        if (_enforceWindows && !OperatingSystem.IsWindows())
         {
             throw new PlatformNotSupportedException("Product activation requires Windows Service control.");
         }
@@ -52,10 +90,8 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
             serviceExecutablePath,
             "Muhun MCSV Service.exe");
         var normalizedDataRoot = ProductActivationCredentialReader.ValidateDataRoot(dataRoot);
-        _ = await RunScAsync(["stop", ServiceName], allowNotStarted: true, cancellationToken)
-            .ConfigureAwait(false);
-        await WaitForStoppedAsync(cancellationToken).ConfigureAwait(false);
-        _ = await RunScAsync(
+        await StopServiceAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _commandRunner(
                 [
                     "config",
                     ServiceName,
@@ -64,11 +100,16 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
                     "start=",
                     "delayed-auto",
                 ],
-                allowNotStarted: false,
+                allowTransientStopFailure: false,
                 cancellationToken)
             .ConfigureAwait(false);
-        _ = await RunScAsync(["start", ServiceName], allowNotStarted: false, cancellationToken)
+        ValidateRegistration(servicePath, normalizedDataRoot, _registrationReader());
+        _ = await _commandRunner(
+                ["start", ServiceName],
+                allowTransientStopFailure: false,
+                cancellationToken)
             .ConfigureAwait(false);
+        await WaitForRunningAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<ProductGuiActivationAck> RequestGuiActivationAsync(
@@ -175,15 +216,68 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
         }
     }
 
-    private static async Task WaitForStoppedAsync(CancellationToken cancellationToken)
+    private async Task StopServiceAsync(CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow.Add(CommandTimeout);
-        while (DateTimeOffset.UtcNow < deadline)
+        var elapsed = Stopwatch.StartNew();
+        _ = await _commandRunner(
+                ["stop", ServiceName],
+                allowTransientStopFailure: true,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var previousState = -1;
+        while (elapsed.Elapsed < CommandTimeout)
         {
-            var result = await RunScAsync(["query", ServiceName], allowNotStarted: true, cancellationToken)
-                .ConfigureAwait(false);
-            if (result.Contains("STOPPED", StringComparison.OrdinalIgnoreCase) ||
-                result.Contains("1060", StringComparison.Ordinal))
+            cancellationToken.ThrowIfCancellationRequested();
+            var state = _serviceStateReader();
+            if (state == ServiceStopped)
+            {
+                return;
+            }
+
+            if (state == ServiceRunning)
+            {
+                if (previousState != ServiceRunning)
+                {
+                    // A stop request made while Windows reports START_PENDING can fail with 1061.
+                    // That is only a transient request result, never proof of a stopped Service.
+                    // Once the service reaches RUNNING, resend stop and continue waiting for the
+                    // authoritative STOPPED state before mutating ImagePath.
+                    _ = await _commandRunner(
+                            ["stop", ServiceName],
+                            allowTransientStopFailure: true,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            else if (state is not (2 or 3 or 5 or 6 or 7))
+            {
+                throw new InvalidOperationException(
+                    $"Muhun MCSV Service reported unsupported transition state {state}.");
+            }
+
+            previousState = state;
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException("Muhun MCSV Service did not stop before the activation deadline.");
+    }
+
+    private Task WaitForRunningAsync(CancellationToken cancellationToken)
+        => WaitForServiceStateAsync(
+            ServiceRunning,
+            "Muhun MCSV Service did not enter the running state after registration.",
+            cancellationToken);
+
+    private async Task WaitForServiceStateAsync(
+        int expectedState,
+        string timeoutMessage,
+        CancellationToken cancellationToken)
+    {
+        var elapsed = Stopwatch.StartNew();
+        while (elapsed.Elapsed < CommandTimeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_serviceStateReader() == expectedState)
             {
                 return;
             }
@@ -191,12 +285,100 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
         }
 
-        throw new TimeoutException("Muhun MCSV Service did not stop before the activation deadline.");
+        throw new TimeoutException(timeoutMessage);
+    }
+
+    internal static void ValidateRegistration(
+        string expectedServicePath,
+        string expectedDataRoot,
+        ProductWindowsServiceRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        var (registeredServicePath, registeredDataRoot) =
+            ProductManagedInstallationResolver.ParseServiceImagePath(registration.ImagePath);
+        if (!string.Equals(
+                registeredServicePath,
+                Path.GetFullPath(expectedServicePath),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                Path.GetFullPath(registeredDataRoot).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(expectedDataRoot).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                registration.ObjectName,
+                @"NT SERVICE\MuhunMCSV",
+                StringComparison.OrdinalIgnoreCase) ||
+            registration.StartType != 2)
+        {
+            throw new InvalidDataException(
+                "The Windows Service registration did not bind to the verified managed version.");
+        }
+    }
+
+    private static ProductWindowsServiceRegistration ReadRegistration()
+    {
+        using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var service = machine.OpenSubKey(ServiceRegistryPath, writable: false)
+            ?? throw new InvalidOperationException("The managed Muhun MCSV Service registration disappeared.");
+        var imagePath = service.GetValue(
+                "ImagePath",
+                null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames) as string
+            ?? throw new InvalidDataException("The managed Service image path is missing after registration.");
+        var objectName = service.GetValue(
+                "ObjectName",
+                null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames) as string
+            ?? throw new InvalidDataException("The managed Service identity is missing after registration.");
+        var startType = service.GetValue(
+                "Start",
+                null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames) is int value
+            ? value
+            : throw new InvalidDataException("The managed Service start type is missing after registration.");
+        return new ProductWindowsServiceRegistration(imagePath, objectName, startType);
+    }
+
+    private static int ReadServiceState()
+    {
+        using var manager = OpenSCManagerW(null, null, ScManagerConnect);
+        if (manager.IsInvalid)
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Windows Service Control Manager could not be opened.");
+        }
+
+        using var service = OpenServiceW(manager, ServiceName, ServiceQueryStatus);
+        if (service.IsInvalid)
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Muhun MCSV Service status could not be opened.");
+        }
+
+        if (!QueryServiceStatusEx(
+                service,
+                ScStatusProcessInfo,
+                out var status,
+                checked((uint)Marshal.SizeOf<ServiceStatusProcess>()),
+                out _))
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Muhun MCSV Service status could not be queried.");
+        }
+
+        return checked((int)status.CurrentState);
     }
 
     private static async Task<string> RunScAsync(
         IReadOnlyList<string> arguments,
-        bool allowNotStarted,
+        bool allowTransientStopFailure,
         CancellationToken cancellationToken)
     {
         var windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
@@ -233,8 +415,9 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
         }
 
         if (process.ExitCode != 0 &&
-            !(allowNotStarted &&
+            !(allowTransientStopFailure &&
               (output.Contains("1060", StringComparison.Ordinal) ||
+               output.Contains("1061", StringComparison.Ordinal) ||
                output.Contains("1062", StringComparison.Ordinal))))
         {
             throw new InvalidOperationException($"Windows Service controller failed with exit code {process.ExitCode}.");
@@ -242,6 +425,59 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
 
         return output;
     }
+
+    private const uint ScManagerConnect = 0x0001;
+    private const uint ServiceQueryStatus = 0x0004;
+    private const int ScStatusProcessInfo = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ServiceStatusProcess
+    {
+        public uint ServiceType;
+        public uint CurrentState;
+        public uint ControlsAccepted;
+        public uint Win32ExitCode;
+        public uint ServiceSpecificExitCode;
+        public uint CheckPoint;
+        public uint WaitHint;
+        public uint ProcessId;
+        public uint ServiceFlags;
+    }
+
+    private sealed class SafeServiceHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SafeServiceHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle() => CloseServiceHandle(handle);
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeServiceHandle OpenSCManagerW(
+        string? machineName,
+        string? databaseName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeServiceHandle OpenServiceW(
+        SafeServiceHandle serviceControlManager,
+        string serviceName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryServiceStatusEx(
+        SafeServiceHandle service,
+        int infoLevel,
+        out ServiceStatusProcess serviceStatus,
+        uint bufferSize,
+        out uint bytesNeeded);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseServiceHandle(IntPtr serviceHandle);
 }
 
 public sealed class ProductWindowsActivationHealthController : IProductUpdateHealthController, IDisposable

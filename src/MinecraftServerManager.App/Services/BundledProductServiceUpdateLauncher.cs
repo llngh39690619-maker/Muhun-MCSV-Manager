@@ -12,6 +12,10 @@ internal enum BundledProductServiceUpdateOutcome
     Cancelled,
     ReleaseLayoutUnavailable,
     PublisherVerificationFailed,
+    ValidationRejected,
+    RolledBack,
+    ProvisioningFailed,
+    RecoveryFailed,
     UpdateFailed,
 }
 
@@ -173,13 +177,27 @@ internal sealed class BundledProductServiceUpdateLauncher : IBundledProductServi
             var exitCode = await _processRunner
                 .RunAsync(updaterPath, stage.ReleaseRoot, cancellationToken)
                 .ConfigureAwait(false);
-            return exitCode == 0
-                ? new BundledProductServiceUpdateResult(
-                    BundledProductServiceUpdateOutcome.Completed,
-                    exitCode)
-                : new BundledProductServiceUpdateResult(
-                    BundledProductServiceUpdateOutcome.UpdateFailed,
-                    exitCode);
+            var outcome = exitCode switch
+            {
+                0 => BundledProductServiceUpdateOutcome.Completed,
+                11 => BundledProductServiceUpdateOutcome.Cancelled,
+                12 => BundledProductServiceUpdateOutcome.ValidationRejected,
+                10 => BundledProductServiceUpdateOutcome.RolledBack,
+                13 => BundledProductServiceUpdateOutcome.ProvisioningFailed,
+                14 => BundledProductServiceUpdateOutcome.RecoveryFailed,
+                _ => BundledProductServiceUpdateOutcome.UpdateFailed,
+            };
+            if (outcome != BundledProductServiceUpdateOutcome.Completed)
+            {
+                // The elevated updater schedules self-containing staging for deletion at reboot,
+                // because its own executable is still locked while it runs. Once the process has
+                // exited, retry the exact nonce-bound stage through the existing protected Shell
+                // broker so repeated failures do not accumulate full release copies. Cleanup is
+                // best-effort and must never rewrite the stable activation outcome.
+                await _releaseStager.TryCleanupAsync(stage).ConfigureAwait(false);
+            }
+
+            return new BundledProductServiceUpdateResult(outcome, exitCode);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

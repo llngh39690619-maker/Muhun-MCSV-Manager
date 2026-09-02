@@ -572,9 +572,15 @@ public sealed class ServerInstanceViewModel : ObservableObject
         ? _serviceJavaRuntime.MajorVersion ?? Model.JavaMajorVersion
         : Model.JavaMajorVersion;
 
-    public string JavaDisplay => EffectiveJavaMajorVersion is { } version
-        ? $"Java {version}"
-        : L("server.java.unspecified");
+    public string JavaDisplay => _serviceJavaRuntime is
+        {
+            Available: true,
+            Version: { Length: > 0 } runtimeVersion,
+        }
+            ? $"Java {runtimeVersion}"
+            : EffectiveJavaMajorVersion is { } majorVersion
+                ? $"Java {majorVersion}"
+                : L("server.java.unspecified");
     public bool UsesGuiMemorySettings => true;
     public string MemoryConfigurationHint =>
         MemoryAllocationMode == MemoryAllocationMode.Automatic

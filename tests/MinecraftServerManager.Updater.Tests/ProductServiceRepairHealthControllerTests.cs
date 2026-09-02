@@ -60,7 +60,7 @@ public sealed class ProductServiceRepairHealthControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task WaitForHealthyAsync_RejectsServiceBelowEulaApiVersion()
+    public async Task WaitForHealthyAsync_RejectsTargetServiceBelowCurrentApiVersion()
     {
         var version = GetUpdaterProductVersion();
         var layoutRoot = CreateFormalLayout(version);
@@ -76,7 +76,7 @@ public sealed class ProductServiceRepairHealthControllerTests : IDisposable
             Json(HttpStatusCode.OK, new ProductHandshakeResponse(
                 "Muhun MCSV Manager",
                 version,
-                new ProductApiVersion(1, 5),
+                ProductApiProtocol.MinecraftEulaConsentVersion,
                 ProductApiProtocol.MinimumSupportedVersion,
                 true)));
         using var controller = new ProductServiceRepairHealthController(
