@@ -442,9 +442,11 @@ public sealed class FtbClientInstallFailureDiagnosticsTests
     {
         using var temporary = new TemporaryDirectory();
         var store = new ClientOperationDiagnosticStore(Path.Combine(temporary.Path, "diagnostics"));
-        var error = CreateLoaderProcessFailure(
+        var error = CreateLoaderProcessFailureWithMetadata(
             "loader-process",
             "maven.neoforged.net",
+            1,
+            MinecraftClientLoaderProcessFailureKind.AccessDenied,
             new TimeoutException(
                 "loader-process-message-secret "
                 + @"C:\Users\Loader Secret\installer.jar "
@@ -471,6 +473,10 @@ public sealed class FtbClientInstallFailureDiagnosticsTests
         var failure = document.RootElement.GetProperty("failure");
         Assert.Equal("loader-process", failure.GetProperty("loaderStage").GetString());
         Assert.Equal("maven.neoforged.net", failure.GetProperty("remoteHost").GetString());
+        Assert.Equal(1, failure.GetProperty("loaderProcessExitCode").GetInt32());
+        Assert.Equal(
+            "AccessDenied",
+            failure.GetProperty("loaderProcessFailureKind").GetString());
         Assert.Equal(JsonValueKind.Null, failure.GetProperty("downloadStage").ValueKind);
         Assert.Equal(JsonValueKind.Null, failure.GetProperty("transactionStage").ValueKind);
         Assert.False(document.RootElement.GetProperty("context").TryGetProperty("remoteHost", out _));
@@ -629,6 +635,29 @@ public sealed class FtbClientInstallFailureDiagnosticsTests
             modifiers: null);
         Assert.NotNull(constructor);
         return (Exception)constructor.Invoke([stage, host, innerException]);
+    }
+
+    private static Exception CreateLoaderProcessFailureWithMetadata(
+        string stage,
+        string? host,
+        int? exitCode,
+        MinecraftClientLoaderProcessFailureKind failureKind,
+        Exception innerException)
+    {
+        var constructor = typeof(MinecraftClientLoaderProcessException).GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            [
+                typeof(string),
+                typeof(string),
+                typeof(int?),
+                typeof(MinecraftClientLoaderProcessFailureKind),
+                typeof(Exception),
+            ],
+            modifiers: null);
+        Assert.NotNull(constructor);
+        return (Exception)constructor.Invoke(
+            [stage, host, exitCode, failureKind, innerException]);
     }
 
     private static void CreateDirectoryJunction(string linkPath, string targetPath)

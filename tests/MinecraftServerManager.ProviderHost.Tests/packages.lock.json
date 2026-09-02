@@ -105,7 +105,7 @@
       "minecraftservermanager.core": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.GameClient.Contracts": "[1.1.0, )"
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.10, )"
         }
       },
       "minecraftservermanager.gameclient.contracts": {
@@ -114,21 +114,21 @@
       "minecraftservermanager.providerhost": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.1.0, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.10, )"
         }
       },
       "Muhun.MCSV.BuiltinProvider": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.1.0, )",
-          "MinecraftServerManager.Core": "[1.1.0, )",
-          "MinecraftServerManager.ProviderHost": "[1.1.0, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.10, )",
+          "MinecraftServerManager.Core": "[1.2.9-beta.10, )",
+          "MinecraftServerManager.ProviderHost": "[1.2.9-beta.10, )"
         }
       },
       "Muhun.MCSV.HostileProvider": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.1.0, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.10, )"
         }
       }
     }

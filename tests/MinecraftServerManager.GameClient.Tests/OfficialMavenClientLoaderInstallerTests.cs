@@ -189,6 +189,47 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, ".loader-*", SearchOption.TopDirectoryOnly));
     }
 
+    [Fact]
+    public async Task InstallAsync_ChildProcessFailurePreservesSafeMetadataAndCleansBothLogNames()
+    {
+        var artifactUri = OfficialMavenClientLoaderInstaller.CreateArtifactUri(
+            MinecraftClientLoader.NeoForge,
+            "1.21.1",
+            "21.1.248");
+        var installerBytes = "verified classified process failure fixture"u8.ToArray();
+        var transport = CreateTransport(artifactUri, installerBytes, installerBytes);
+        var observedLogPaths = Array.Empty<string>();
+        var runner = new RecordingRunner((artifact, instanceDirectory) =>
+        {
+            observedLogPaths = VerifiedMavenClientLoaderProcessRunner
+                .GetInstallerLogPaths(instanceDirectory, artifact.Path)
+                .ToArray();
+            Assert.Equal(2, observedLogPaths.Length);
+            Assert.All(observedLogPaths, path => Assert.True(File.Exists(path)));
+            File.WriteAllText(
+                observedLogPaths[1],
+                "java.nio.file.AccessDeniedException: sensitive-path-redacted-by-classification");
+            throw new MinecraftClientLoaderChildProcessException(
+                1,
+                MinecraftClientLoaderProcessFailureKind.AccessDenied);
+        });
+        var installer = new OfficialMavenClientLoaderInstaller(transport, runner);
+
+        var error = await Assert.ThrowsAsync<MinecraftClientLoaderProcessException>(() =>
+            installer.InstallAsync(
+                MinecraftClientLoader.NeoForge,
+                "1.21.1",
+                "21.1.248",
+                _root,
+                Path.Combine(_root, "java.exe")));
+
+        Assert.Equal("loader-process", error.Stage);
+        Assert.Equal(1, error.ExitCode);
+        Assert.Equal(MinecraftClientLoaderProcessFailureKind.AccessDenied, error.FailureKind);
+        Assert.DoesNotContain("sensitive-path", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.All(observedLogPaths, path => Assert.False(File.Exists(path)));
+    }
+
     [Theory]
     [InlineData(
         MinecraftClientLoader.Forge,
@@ -230,6 +271,9 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
             Assert.True(document.RootElement.TryGetProperty("profiles", out var profiles));
             Assert.Equal(JsonValueKind.Object, profiles.ValueKind);
             Assert.Empty(profiles.EnumerateObject());
+            WriteSharedText(
+                temporaryProfile,
+                "{\"profiles\":{\"official-installer\":{\"lastVersionId\":\"bound\"}}}");
             File.WriteAllText(artifact.Path + ".log", "bounded installer log fixture");
             if (loader == MinecraftClientLoader.NeoForge && gameVersion != "1.20.1")
             {
@@ -871,6 +915,132 @@ public sealed class OfficialMavenClientLoaderInstallerTests : IDisposable
                 Assert.DoesNotContain("adfoc", value, StringComparison.OrdinalIgnoreCase);
                 Assert.DoesNotContain("browser", value, StringComparison.OrdinalIgnoreCase);
             });
+    }
+
+    [Fact]
+    public void InstallerLogPathsCoverJarNameAndProgramFilesFallbackWithoutEscapingInstance()
+    {
+        const string instance = @"C:\Program Files\MCSV\client\staging\payload";
+        var installer = Path.Combine(instance, ".loader-operation.verified.jar");
+
+        var paths = VerifiedMavenClientLoaderProcessRunner.GetInstallerLogPaths(
+            instance,
+            installer);
+
+        Assert.Equal(
+            [
+                installer + ".log",
+                Path.Combine(instance, "installer.log"),
+            ],
+            paths);
+        Assert.All(paths, path => Assert.StartsWith(instance, path, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void InstallerLogReaderSkipsEmptyJarLogAndReadsFallbackLog()
+    {
+        var installer = Path.Combine(_root, ".loader-operation.verified.jar");
+        var paths = VerifiedMavenClientLoaderProcessRunner.GetInstallerLogPaths(
+            _root,
+            installer);
+        File.WriteAllText(paths[0], string.Empty);
+        File.WriteAllText(paths[1], "java.nio.file.AccessDeniedException: private-path");
+
+        var diagnostics = VerifiedMavenClientLoaderProcessRunner.ReadBoundedInstallerLogs(
+            _root,
+            installer);
+
+        Assert.Equal(
+            ["java.nio.file.AccessDeniedException: private-path"],
+            diagnostics);
+    }
+
+    [Fact]
+    public void InstallerLogReaderKeepsErrorAtTailBeyondTotalDiagnosticLimit()
+    {
+        var installer = Path.Combine(_root, ".loader-operation.verified.jar");
+        var paths = VerifiedMavenClientLoaderProcessRunner.GetInstallerLogPaths(
+            _root,
+            installer);
+        File.WriteAllText(
+            paths[0],
+            new string('x', VerifiedMavenClientLoaderProcessRunner.MaximumDiagnosticCharacters + 1)
+            + " java.nio.file.AccessDeniedException: tail-only-error");
+        File.WriteAllText(paths[1], string.Empty);
+
+        var diagnostics = VerifiedMavenClientLoaderProcessRunner.ReadBoundedInstallerLogs(
+            _root,
+            installer);
+
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.EndsWith("java.nio.file.AccessDeniedException: tail-only-error", diagnostic);
+        Assert.True(
+            diagnostics.Sum(value => value.Length)
+            <= VerifiedMavenClientLoaderProcessRunner.MaximumDiagnosticCharacters);
+        Assert.Equal(
+            MinecraftClientLoaderProcessFailureKind.AccessDenied,
+            VerifiedMavenClientLoaderProcessRunner.ClassifyFailure(1, diagnostics.ToArray()));
+    }
+
+    [Fact]
+    public void InstallerLogReaderClassifiesSecondLogWhenBothLogsContainText()
+    {
+        var installer = Path.Combine(_root, ".loader-operation.verified.jar");
+        var paths = VerifiedMavenClientLoaderProcessRunner.GetInstallerLogPaths(
+            _root,
+            installer);
+        File.WriteAllText(paths[0], "ordinary installer progress");
+        File.WriteAllText(paths[1], "Download failed: HTTP 404 Not Found");
+
+        var diagnostics = VerifiedMavenClientLoaderProcessRunner.ReadBoundedInstallerLogs(
+            _root,
+            installer);
+
+        Assert.Equal(2, diagnostics.Count);
+        Assert.Equal(
+            MinecraftClientLoaderProcessFailureKind.HttpNotFound,
+            VerifiedMavenClientLoaderProcessRunner.ClassifyFailure(1, diagnostics.ToArray()));
+    }
+
+    [Theory]
+    [InlineData(
+        1,
+        "java.nio.file.AccessDeniedException: C:\\private\\secret",
+        MinecraftClientLoaderProcessFailureKind.AccessDenied)]
+    [InlineData(
+        1,
+        "Download failed: HTTP 404 Not Found",
+        MinecraftClientLoaderProcessFailureKind.HttpNotFound)]
+    [InlineData(
+        1,
+        "There was a problem writing the launch profile, is it write protected?",
+        MinecraftClientLoaderProcessFailureKind.LauncherProfile)]
+    [InlineData(
+        1,
+        "Checksum validation failed for sensitive.jar",
+        MinecraftClientLoaderProcessFailureKind.Integrity)]
+    [InlineData(
+        1,
+        "java.net.SocketTimeoutException: connect timed out",
+        MinecraftClientLoaderProcessFailureKind.Network)]
+    [InlineData(
+        1,
+        "unrecognized child failure containing C:\\private\\secret",
+        MinecraftClientLoaderProcessFailureKind.ProcessExit)]
+    [InlineData(
+        -1073741819,
+        null,
+        MinecraftClientLoaderProcessFailureKind.NativeCrash)]
+    public void ProcessFailureClassificationReturnsOnlyBoundedEnum(
+        int exitCode,
+        string? diagnostic,
+        MinecraftClientLoaderProcessFailureKind expected)
+    {
+        var actual = VerifiedMavenClientLoaderProcessRunner.ClassifyFailure(
+            exitCode,
+            diagnostic);
+
+        Assert.Equal(expected, actual);
     }
 
     [Fact]

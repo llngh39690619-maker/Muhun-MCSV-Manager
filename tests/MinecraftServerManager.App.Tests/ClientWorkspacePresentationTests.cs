@@ -168,13 +168,28 @@ public sealed class ClientWorkspacePresentationTests
             StringComparison.Ordinal);
         Assert.Contains("_ftbInstaller.InstallAsync", source, StringComparison.Ordinal);
         Assert.Contains("InstallSelectedFtbPackAsync", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "Path.Combine(_paths.ClientStaging, \"ftb\")",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("_legacyFtbRecovery = new FtbMinecraftClientPackInstaller", source, StringComparison.Ordinal);
+        Assert.Contains("recoverUnreceiptedStagingOperations: false", source, StringComparison.Ordinal);
         Assert.Contains("IncludeOptionalFiles: true", source, StringComparison.Ordinal);
         Assert.Contains("_ftbInstaller.RecoverPendingPromotionsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_legacyFtbRecovery.RecoverPendingPromotionsAsync", source, StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf(
+                "_legacyFtbRecovery.RecoverPendingPromotionsAsync",
+                StringComparison.Ordinal) <
+            source.IndexOf(
+                "_ftbInstaller.RecoverPendingPromotionsAsync",
+                StringComparison.Ordinal));
         Assert.Contains("FtbAppProtocol.OfficialDownloadPage", source, StringComparison.Ordinal);
         Assert.Contains("FtbClientInstallFailurePolicy.Classify", source, StringComparison.Ordinal);
         Assert.Contains("_clientOperationDiagnosticStore.WriteFailureAsync", source, StringComparison.Ordinal);
         Assert.Contains("new ClientOperationDiagnosticStore(_paths)", source, StringComparison.Ordinal);
-        Assert.Contains("progressTracker.LastStage", source, StringComparison.Ordinal);
+        Assert.Contains("progressTracker.StopAcceptingProgress", source, StringComparison.Ordinal);
+        Assert.Contains("LocalizeCatalogInstallJobFailure", source, StringComparison.Ordinal);
         Assert.Contains("[\"versionId\"]", source, StringComparison.Ordinal);
         Assert.Contains("[\"gameVersion\"]", source, StringComparison.Ordinal);
         Assert.Contains("[\"javaVersion\"]", source, StringComparison.Ordinal);
@@ -332,6 +347,8 @@ public sealed class ClientWorkspacePresentationTests
         Assert.DoesNotContain(pageScrollViewer, installTray.Ancestors());
         Assert.Equal("2", (string?)installTray.Attribute("Grid.Row"));
         Assert.Contains("{Binding CatalogInstallJobs}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding IsFailed}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{DynamicResource DangerBrush}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding ClearCompletedCatalogInstallJobsCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains(

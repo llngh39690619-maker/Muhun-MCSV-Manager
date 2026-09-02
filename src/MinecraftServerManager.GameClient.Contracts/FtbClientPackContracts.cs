@@ -13,7 +13,7 @@ public sealed record FtbClientPackInstallRequest(
     int WindowHeight,
     bool FullScreen,
     bool IncludeOptionalFiles = false,
-    int MaximumConcurrentDownloads = 8,
+    int MaximumConcurrentDownloads = 4,
     bool EnableQuickLaunch = false,
     bool HideLauncherAfterGameStarts = true,
     bool ShowGameLog = false,

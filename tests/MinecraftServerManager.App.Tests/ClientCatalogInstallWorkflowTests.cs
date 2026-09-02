@@ -84,6 +84,69 @@ public sealed class ClientCatalogInstallWorkflowTests
     }
 
     [Fact]
+    public void InstallJob_OnlyReachesOneAfterSuccessfulCompletionAndIgnoresLateProgress()
+    {
+        var job = new ClientCatalogInstallJobViewModel(
+            Guid.NewGuid(),
+            "FTB Pack",
+            "Stable",
+            "FTB",
+            "Queued");
+
+        job.Report("install-game", "Game payload reported complete", 1d);
+
+        Assert.True(job.IsRunning);
+        Assert.True(job.ProgressValue < 1d);
+
+        job.MarkFailed(
+            "Failed at install-game; diagnostic: diag-123",
+            "install-game",
+            "diag-123");
+        var failedProgress = job.ProgressValue;
+        job.Report("complete", "Late success callback", 1d);
+
+        Assert.True(job.IsFailed);
+        Assert.Equal("install-game", job.FailedStage);
+        Assert.Equal("diag-123", job.FailureDiagnosticId);
+        Assert.Equal(failedProgress, job.ProgressValue);
+        Assert.Equal("Failed at install-game; diagnostic: diag-123", job.StatusText);
+        Assert.DoesNotContain(job.Activities, item => item.StatusText == "Late success callback");
+
+        var completed = new ClientCatalogInstallJobViewModel(
+            Guid.NewGuid(),
+            "FTB Pack",
+            "Stable",
+            "FTB",
+            "Queued");
+        completed.Report("finalize", "Finalizing", 1d);
+        Assert.True(completed.ProgressValue < 1d);
+
+        completed.MarkCompleted("Completed");
+
+        Assert.Equal(ClientCatalogInstallJobState.Completed, completed.State);
+        Assert.Equal(1d, completed.ProgressValue);
+    }
+
+    [Theory]
+    [InlineData("install-game", 0d, 0.10d)]
+    [InlineData("install-game", 1d, 0.60d)]
+    [InlineData("download-content", 0d, 0.60d)]
+    [InlineData("download-content", 1d, 0.95d)]
+    [InlineData("finalize", 1d, 0.97d)]
+    public void FtbProgress_IsSegmentWeightedAndNeverReportsCompletion(
+        string stage,
+        double phaseFraction,
+        double expected)
+    {
+        var actual = ClientWorkspaceViewModel.ResolveFtbCatalogInstallProgress(
+            new FtbClientPackInstallProgress(stage, stage, Fraction: phaseFraction));
+
+        Assert.NotNull(actual);
+        Assert.Equal(expected, actual.Value);
+        Assert.True(actual.Value < 1d);
+    }
+
+    [Fact]
     public async Task InstallJobCollectionReset_DetachesRemovedJobObservers()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();

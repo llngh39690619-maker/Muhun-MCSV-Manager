@@ -14,8 +14,11 @@ public enum ClientCatalogInstallJobState
 public sealed class ClientCatalogInstallJobViewModel : ObservableObject
 {
     private const int MaximumActivityEntries = 24;
+    private const double MaximumNonCompletedProgress = 0.99d;
     private string _statusText;
     private string _currentStage = "queued";
+    private string? _failedStage;
+    private string? _failureDiagnosticId;
     private double _progressValue;
     private bool _isProgressIndeterminate = true;
     private ClientCatalogInstallJobState _state = ClientCatalogInstallJobState.Running;
@@ -70,6 +73,18 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         private set => SetProperty(ref _currentStage, value);
     }
 
+    public string? FailedStage
+    {
+        get => _failedStage;
+        private set => SetProperty(ref _failedStage, value);
+    }
+
+    public string? FailureDiagnosticId
+    {
+        get => _failureDiagnosticId;
+        private set => SetProperty(ref _failureDiagnosticId, value);
+    }
+
     public double ProgressValue
     {
         get => _progressValue;
@@ -91,6 +106,7 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(IsRunning));
                 OnPropertyChanged(nameof(IsTerminal));
+                OnPropertyChanged(nameof(IsFailed));
             }
         }
     }
@@ -98,6 +114,8 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
     public bool IsRunning => State == ClientCatalogInstallJobState.Running;
 
     public bool IsTerminal => !IsRunning;
+
+    public bool IsFailed => State == ClientCatalogInstallJobState.Failed;
 
     internal void Report(string stage, string statusText, double? progressValue = null)
     {
@@ -112,7 +130,9 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         StatusText = statusText;
         if (progressValue is { } progress)
         {
-            ProgressValue = progress;
+            ProgressValue = Math.Max(
+                ProgressValue,
+                Math.Min(progress, MaximumNonCompletedProgress));
             IsProgressIndeterminate = false;
         }
 
@@ -132,23 +152,67 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
 
     internal void MarkCompleted(string statusText)
     {
-        Report("complete", statusText, 1d);
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(statusText);
         State = ClientCatalogInstallJobState.Completed;
+        CurrentStage = "complete";
+        StatusText = statusText;
+        ProgressValue = 1d;
         IsProgressIndeterminate = false;
+        AddOrUpdateActivity(CurrentStage, statusText);
     }
 
-    internal void MarkFailed(string statusText)
+    internal void MarkFailed(
+        string statusText,
+        string? failedStage = null,
+        string? diagnosticId = null)
     {
-        Report("failed", statusText, ProgressValue);
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(statusText);
+        FailedStage = NormalizeFailureValue(failedStage) ?? CurrentStage;
+        FailureDiagnosticId = NormalizeFailureValue(diagnosticId);
         State = ClientCatalogInstallJobState.Failed;
+        StatusText = statusText;
+        ProgressValue = Math.Min(ProgressValue, MaximumNonCompletedProgress);
         IsProgressIndeterminate = false;
+        AddOrUpdateActivity(FailedStage, statusText);
     }
 
     internal void MarkCanceled(string statusText)
     {
-        Report("canceled", statusText, ProgressValue);
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(statusText);
         State = ClientCatalogInstallJobState.Canceled;
+        CurrentStage = "canceled";
+        StatusText = statusText;
+        ProgressValue = Math.Min(ProgressValue, MaximumNonCompletedProgress);
         IsProgressIndeterminate = false;
+        AddOrUpdateActivity(CurrentStage, statusText);
+    }
+
+    internal void UpdateFailureDiagnostic(string statusText, string? diagnosticId)
+    {
+        if (!IsFailed)
+        {
+            return;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(statusText);
+        FailureDiagnosticId = NormalizeFailureValue(diagnosticId);
+        StatusText = statusText;
+        AddOrUpdateActivity(FailedStage ?? CurrentStage, statusText);
     }
 
     internal void RefreshStatus(string statusText)
@@ -156,8 +220,29 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         ArgumentException.ThrowIfNullOrWhiteSpace(statusText);
         StatusText = statusText;
         Activities.Clear();
-        Activities.Add(new ClientCatalogInstallActivityItemViewModel(CurrentStage, statusText));
+        Activities.Add(new ClientCatalogInstallActivityItemViewModel(
+            IsFailed ? FailedStage ?? CurrentStage : CurrentStage,
+            statusText));
     }
+
+    private void AddOrUpdateActivity(string stage, string statusText)
+    {
+        if (Activities.LastOrDefault() is { } last &&
+            string.Equals(last.Stage, stage, StringComparison.Ordinal))
+        {
+            last.Update(statusText);
+            return;
+        }
+
+        Activities.Add(new ClientCatalogInstallActivityItemViewModel(stage, statusText));
+        while (Activities.Count > MaximumActivityEntries)
+        {
+            Activities.RemoveAt(0);
+        }
+    }
+
+    private static string? NormalizeFailureValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
 public sealed class ClientCatalogInstallActivityItemViewModel : ObservableObject

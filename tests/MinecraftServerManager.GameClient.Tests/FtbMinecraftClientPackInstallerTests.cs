@@ -11,6 +11,12 @@ namespace MinecraftServerManager.GameClient.Tests;
 
 public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
 {
+    [Fact]
+    public void InstallRequest_DefaultsToFourConcurrentDownloads()
+    {
+        Assert.Equal(4, Request().MaximumConcurrentDownloads);
+    }
+
     private static readonly Uri FileMirror =
         new("https://files.feed-the-beast.com/blob/client-file");
     private static readonly Uri FilePrimary =
@@ -79,6 +85,28 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         var stored = Assert.Single((await registry.LoadAsync()).Instances);
         Assert.Equal(result.Instance.Id, stored.Id);
         Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+    }
+
+    [Fact]
+    public async Task InstallAsync_ReportsFinalizationBelowOneAndLeavesCompletionToCaller()
+    {
+        var fixture = CreateFixture();
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+        var reports = new List<FtbClientPackInstallProgress>();
+        var progress = new SynchronousProgress<FtbClientPackInstallProgress>(reports.Add);
+
+        await installer.InstallAsync(Request(), javaExecutablePath: null, progress);
+
+        var finalization = Assert.Single(reports, report => report.Stage == "finalize");
+        Assert.Equal(0.97d, finalization.Fraction);
+        Assert.DoesNotContain(reports, report => report.Stage == "complete");
+        Assert.DoesNotContain(reports, report => report.Fraction >= 1d);
     }
 
     [Fact]
@@ -715,7 +743,7 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
     }
 
     [Fact]
-    public async Task InstallAsync_CompletionProgressSwapThenThrowStillRunsFinalInvariant()
+    public async Task InstallAsync_FinalizationProgressSwapThenThrowStillRunsFinalInvariant()
     {
         var fixture = CreateFixture();
         var request = Request();
@@ -736,7 +764,7 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         var swapOnce = 1;
         var progress = new SynchronousProgress<FtbClientPackInstallProgress>(value =>
         {
-            if (value.Stage == "complete" && Interlocked.Exchange(ref swapOnce, 0) == 1)
+            if (value.Stage == "finalize" && Interlocked.Exchange(ref swapOnce, 0) == 1)
             {
                 Directory.Move(finalRoot, movedOriginal);
                 Directory.Move(replacement, finalRoot);
@@ -850,6 +878,154 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         Assert.False(Directory.Exists(finalRoot));
         Assert.Empty(Directory.EnumerateFileSystemEntries(_staging));
         Assert.Empty((await recoveredRegistry.LoadAsync()).Instances);
+    }
+
+    [Fact]
+    public async Task RecoverPendingPromotionsAsync_RemovesOnlyUnreferencedGuidStagingOperations()
+    {
+        var fixture = CreateFixture();
+        var orphan = Path.Combine(_staging, Guid.NewGuid().ToString("N"));
+        var unrelated = Path.Combine(_staging, "manual-download-cache");
+        Directory.CreateDirectory(Path.Combine(orphan, "payload"));
+        Directory.CreateDirectory(unrelated);
+        await File.WriteAllTextAsync(Path.Combine(orphan, "payload", "partial.jar"), "partial");
+        await File.WriteAllTextAsync(Path.Combine(unrelated, "must-survive.txt"), "keep");
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var recovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+
+        await recovery.RecoverPendingPromotionsAsync();
+
+        Assert.False(Directory.Exists(orphan));
+        Assert.True(Directory.Exists(unrelated));
+        Assert.Equal("keep", await File.ReadAllTextAsync(
+            Path.Combine(unrelated, "must-survive.txt")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingPromotionsAsync_PreservesGuidOperationReferencedByRegistry()
+    {
+        var fixture = CreateFixture();
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var installer = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+        var installed = await installer.InstallAsync(Request(), javaExecutablePath: null);
+        File.Delete(Assert.Single(Directory.EnumerateFiles(
+            _staging,
+            ".ftb-client-promotion-*.json")));
+        var referencedOperation = Path.Combine(_staging, installed.Instance.Id.ToString("N"));
+        Directory.CreateDirectory(referencedOperation);
+        await File.WriteAllTextAsync(
+            Path.Combine(referencedOperation, "must-survive.txt"),
+            "registered");
+
+        await installer.RecoverPendingPromotionsAsync();
+
+        Assert.True(Directory.Exists(referencedOperation));
+        Assert.Equal("registered", await File.ReadAllTextAsync(
+            Path.Combine(referencedOperation, "must-survive.txt")));
+    }
+
+    [Fact]
+    public async Task RecoverPendingPromotionsAsync_DoesNotFollowUnreceiptedGuidJunction()
+    {
+        var fixture = CreateFixture();
+        var outside = Path.Combine(_root, "unreceipted-junction-target");
+        Directory.CreateDirectory(outside);
+        var sentinel = Path.Combine(outside, "must-survive.txt");
+        await File.WriteAllTextAsync(sentinel, "outside-content");
+        var junction = Path.Combine(_staging, Guid.NewGuid().ToString("N"));
+        CreateDirectoryJunction(junction, outside);
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var recovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts);
+
+        await recovery.RecoverPendingPromotionsAsync();
+
+        Assert.True(Directory.Exists(junction));
+        Assert.Equal("outside-content", await File.ReadAllTextAsync(sentinel));
+    }
+
+    [Fact]
+    public async Task LegacyRecovery_ReconcilesReceiptsWithoutDeletingOtherLegacyGuidOperations()
+    {
+        var fixture = CreateFixture();
+        var request = Request();
+        var dedicatedFtbStaging = Path.Combine(_staging, "ftb");
+        Directory.CreateDirectory(dedicatedFtbStaging);
+        using var registry = new MinecraftClientRegistry(_registryPath);
+        using var artifacts = CreateArtifactClient(fixture, out _);
+        var legacyInstaller = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            (trustedRoot, path, identity, cancellationToken) =>
+            {
+                if (PathsEqual(trustedRoot, _staging))
+                {
+                    throw new IOException("Simulated beta.9 staging cleanup lock.");
+                }
+
+                return SafePath.DeleteTreeWithoutFollowingReparsePointsWithRetryAsync(
+                    trustedRoot,
+                    path,
+                    identity,
+                    protectedObjectIdentities: null,
+                    cancellationToken);
+            });
+        var installed = await legacyInstaller.InstallAsync(request, javaExecutablePath: null);
+        var receiptedLegacyOperation = Path.Combine(_staging, request.InstanceId.ToString("N"));
+        var unrelatedLegacyOperation = Path.Combine(_staging, Guid.NewGuid().ToString("N"));
+        var dedicatedFtbOrphan = Path.Combine(dedicatedFtbStaging, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(unrelatedLegacyOperation);
+        Directory.CreateDirectory(dedicatedFtbOrphan);
+        await File.WriteAllTextAsync(
+            Path.Combine(unrelatedLegacyOperation, "must-survive.txt"),
+            "legacy-non-ftb");
+        await File.WriteAllTextAsync(
+            Path.Combine(dedicatedFtbOrphan, "partial.jar"),
+            "partial");
+        Assert.True(Directory.Exists(receiptedLegacyOperation));
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
+
+        var legacyRecovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            stagingRoot: _staging,
+            recoverUnreceiptedStagingOperations: false);
+        var currentRecovery = CreateInstaller(
+            registry,
+            new FakePayloadInstaller(),
+            fixture,
+            artifacts,
+            stagingRoot: dedicatedFtbStaging);
+
+        await legacyRecovery.RecoverPendingPromotionsAsync();
+        await currentRecovery.RecoverPendingPromotionsAsync();
+
+        Assert.False(Directory.Exists(receiptedLegacyOperation));
+        Assert.True(Directory.Exists(unrelatedLegacyOperation));
+        Assert.Equal("legacy-non-ftb", await File.ReadAllTextAsync(
+            Path.Combine(unrelatedLegacyOperation, "must-survive.txt")));
+        Assert.False(Directory.Exists(dedicatedFtbOrphan));
+        Assert.True(Directory.Exists(installed.Instance.DirectoryPath));
+        Assert.Equal(installed.Instance.Id, Assert.Single((await registry.LoadAsync()).Instances).Id);
+        Assert.Single(Directory.EnumerateFiles(_staging, ".ftb-client-promotion-*.json"));
     }
 
     [Fact]
@@ -1070,7 +1246,9 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
         Func<string, string, SafePathObjectIdentity, CancellationToken, Task>? deleteOwnedTree = null,
         Action<string>? afterPromotionBeforeLease = null,
         Action<string>? duringCommittedFinalization = null,
-        Action<string>? duringRegisteredRecovery = null)
+        Action<string>? duringRegisteredRecovery = null,
+        string? stagingRoot = null,
+        bool recoverUnreceiptedStagingOperations = true)
     {
         var releases = new FakeReleaseCatalog("1.21.1");
         var catalog = new FakeCatalog(fixture.Pack, fixture.Manifest);
@@ -1083,7 +1261,7 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
                 cancellationToken);
         return new FtbMinecraftClientPackInstaller(
             _instances,
-            _staging,
+            stagingRoot ?? _staging,
             registry,
             releases,
             payload,
@@ -1092,7 +1270,8 @@ public sealed class FtbMinecraftClientPackInstallerTests : IDisposable
             deleteOwnedTree,
             afterPromotionBeforeLease,
             duringCommittedFinalization,
-            duringRegisteredRecovery);
+            duringRegisteredRecovery,
+            recoverUnreceiptedStagingOperations);
     }
 
     private static bool PathsEqual(string first, string second) =>

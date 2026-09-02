@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Security.Cryptography;
 using CmlLib.Core;
@@ -14,6 +15,8 @@ namespace MinecraftServerManager.GameClient;
 internal sealed class AtomicRetryingParallelGameInstaller : ParallelGameInstaller, IGameInstaller
 {
     private const int BufferSize = 128 * 1024;
+    private const long MinimumProgressReportBytes = 1024 * 1024;
+    private static readonly TimeSpan MinimumProgressReportInterval = TimeSpan.FromMilliseconds(125);
     private const string ForceUnknownHashDownload = "x-mcsv-force-positive-file";
     internal const long MaximumGameFileBytes = 2L * 1024 * 1024 * 1024;
     private readonly HttpClient _httpClient;
@@ -163,6 +166,8 @@ internal sealed class AtomicRetryingParallelGameInstaller : ParallelGameInstalle
             ? file.Size
             : Math.Max(0, response.Content.Headers.ContentLength ?? 0);
         var declaredLength = response.Content.Headers.ContentLength;
+        long lastReportedBytes = 0;
+        var lastProgressTimestamp = Stopwatch.GetTimestamp();
         await using var source = await response.Content.ReadAsStreamAsync(cancellationToken)
             .ConfigureAwait(false);
         long totalRead = 0;
@@ -197,10 +202,16 @@ internal sealed class AtomicRetryingParallelGameInstaller : ParallelGameInstalle
                             buffer.AsMemory(0, read),
                             cancellationToken)
                         .ConfigureAwait(false);
-                    progress?.Report(new ByteProgress(expectedProgressLength, totalRead));
+                    ReportProgressIfDue(
+                        progress,
+                        expectedProgressLength,
+                        totalRead,
+                        force: false,
+                        ref lastReportedBytes,
+                        ref lastProgressTimestamp);
                 }
 
-                await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 destination.Flush(flushToDisk: true);
             }
             finally
@@ -217,6 +228,50 @@ internal sealed class AtomicRetryingParallelGameInstaller : ParallelGameInstalle
 
         await ValidateTemporaryFileAsync(file, temporaryPath, cancellationToken)
             .ConfigureAwait(false);
+        ReportProgressIfDue(
+            progress,
+            expectedProgressLength,
+            totalRead,
+            force: true,
+            ref lastReportedBytes,
+            ref lastProgressTimestamp);
+    }
+
+    private static void ReportProgressIfDue(
+        IProgress<ByteProgress>? progress,
+        long expectedLength,
+        long currentBytes,
+        bool force,
+        ref long lastReportedBytes,
+        ref long lastProgressTimestamp)
+    {
+        if (progress is null || currentBytes <= lastReportedBytes)
+        {
+            return;
+        }
+
+        // Reserve the exact terminal byte count until size/hash verification succeeds. Intermediate
+        // notifications are both byte- and time-bounded so four parallel downloads cannot flood the
+        // UI dispatcher while still providing visible progress for slower transfers.
+        if (!force)
+        {
+            if (expectedLength > 0 && currentBytes >= expectedLength ||
+                currentBytes - lastReportedBytes < MinimumProgressReportBytes)
+            {
+                return;
+            }
+
+            var now = Stopwatch.GetTimestamp();
+            if (Stopwatch.GetElapsedTime(lastProgressTimestamp, now) < MinimumProgressReportInterval)
+            {
+                return;
+            }
+
+            lastProgressTimestamp = now;
+        }
+
+        lastReportedBytes = currentBytes;
+        progress.Report(new ByteProgress(expectedLength, currentBytes));
     }
 
     private static async Task ValidateTemporaryFileAsync(

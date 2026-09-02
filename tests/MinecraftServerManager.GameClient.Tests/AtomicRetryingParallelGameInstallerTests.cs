@@ -259,10 +259,39 @@ public sealed class AtomicRetryingParallelGameInstallerTests : IDisposable
         var installer = new AtomicRetryingParallelGameInstaller(client);
 
         Assert.Equal(4, installer.MaxChecker);
-        Assert.Equal(8, installer.MaxDownloader);
+        Assert.Equal(4, installer.MaxDownloader);
         Assert.Equal(512, installer.BoundedCapacity);
         Assert.True(installer.CheckFileSize);
         Assert.True(installer.CheckFileChecksum);
+    }
+
+    [Fact]
+    public async Task Install_ThrottlesByteProgressAndPublishesExactTotalOnlyAfterVerification()
+    {
+        var destination = Path.Combine(_root, "progress.bin");
+        var expected = new byte[(4 * 1024 * 1024) + 317];
+        Random.Shared.NextBytes(expected);
+        using var client = new HttpClient(new CallbackHandler((_, _) =>
+            Task.FromResult(Response(expected))));
+        var installer = CreateInstaller(client, maximumFileAttempts: 1);
+        var reports = new List<CmlLib.Core.ByteProgress>();
+        var progress = new SynchronousProgress<CmlLib.Core.ByteProgress>(reports.Add);
+
+        await installer.Install(
+            [GameFile(destination, expected)],
+            fileProgress: null,
+            byteProgress: progress,
+            CancellationToken.None);
+
+        Assert.NotEmpty(reports);
+        Assert.Equal(expected.LongLength, reports[^1].TotalBytes);
+        Assert.Equal(expected.LongLength, reports[^1].ProgressedBytes);
+        Assert.DoesNotContain(
+            reports.Take(reports.Count - 1),
+            item => item.ProgressedBytes == expected.LongLength);
+        Assert.InRange(reports.Count, 1, 5);
+        Assert.Equal(expected, File.ReadAllBytes(destination));
+        AssertNoPartialFiles();
     }
 
     [Fact]
@@ -548,6 +577,11 @@ public sealed class AtomicRetryingParallelGameInstallerTests : IDisposable
                 return;
             }
         }
+    }
+
+    private sealed class SynchronousProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 
     private sealed class CallbackHandler(

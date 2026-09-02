@@ -19,7 +19,7 @@ internal sealed record ClientOperationDiagnosticReference(
 
 internal sealed partial class ClientOperationDiagnosticStore
 {
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
     private const int MaximumPayloadBytes = 64 * 1024;
     private const int MaximumExceptionCount = 12;
     private const int MaximumContextEntries = 16;
@@ -223,6 +223,11 @@ internal sealed partial class ClientOperationDiagnosticStore
         var failureCode = FtbClientInstallFailurePolicy.IsKnownFailureCode(request.FailureCode)
             ? request.FailureCode
             : policyClassification.FailureCode;
+        var loaderProcess = FtbClientInstallFailurePolicy
+            .DescribeExceptionGraph(request.Exception)
+            .Select(item => item.Exception)
+            .OfType<MinecraftClientLoaderProcessException>()
+            .FirstOrDefault();
         var exceptions = CreateSafeExceptionChain(request.Exception);
         var context = CreateSafeContext(request.Context);
 
@@ -245,6 +250,8 @@ internal sealed partial class ClientOperationDiagnosticStore
                 policyClassification.DownloadStage,
                 policyClassification.DownloadFailureKind,
                 policyClassification.LoaderStage,
+                LoaderProcessExitCode = loaderProcess?.ExitCode,
+                LoaderProcessFailureKind = loaderProcess?.FailureKind.ToString(),
                 policyClassification.TransactionStage,
                 ExceptionChain = exceptions
             },

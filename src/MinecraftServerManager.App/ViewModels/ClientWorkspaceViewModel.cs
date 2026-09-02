@@ -64,6 +64,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly ModrinthClientContentInstaller _modrinthContentInstaller;
     private readonly FtbClientCatalog _ftbCatalog;
     private readonly FtbMinecraftClientPackInstaller _ftbInstaller;
+    private readonly FtbMinecraftClientPackInstaller _legacyFtbRecovery;
     private readonly ClientOperationDiagnosticStore _clientOperationDiagnosticStore;
     private readonly IOnlineModpackArtworkCache _artworkCache;
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
@@ -284,12 +285,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _gameHttpClient);
         _ftbInstaller = new FtbMinecraftClientPackInstaller(
             _paths.Clients,
-            _paths.ClientStaging,
+            Path.Combine(_paths.ClientStaging, "ftb"),
             _registry,
             _releaseCatalog,
             payloadInstaller,
             _ftbCatalog,
             _gameHttpClient);
+        _legacyFtbRecovery = new FtbMinecraftClientPackInstaller(
+            _paths.Clients,
+            _paths.ClientStaging,
+            _registry,
+            _releaseCatalog,
+            payloadInstaller,
+            _ftbCatalog,
+            _gameHttpClient,
+            recoverUnreceiptedStagingOperations: false);
         _clientOperationDiagnosticStore = new ClientOperationDiagnosticStore(_paths);
         _artworkCache = new OnlineModpackArtworkCache(_paths);
         _bedrockOfficialHandoff = new BedrockOfficialHandoffService();
@@ -2028,6 +2038,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             ApplyMemoryMode(defaults.MemoryMode);
+            await _legacyFtbRecovery.RecoverPendingPromotionsAsync(
+                _lifetimeCancellation.Token);
             await _ftbInstaller.RecoverPendingPromotionsAsync(_lifetimeCancellation.Token);
             var document = await _registry.LoadAsync();
             var bedrockDocument = await _bedrockShortcutRegistry.LoadAsync(
@@ -2843,15 +2855,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         var progressTracker = new FtbInstallProgressTracker(
             new Progress<FtbClientPackInstallProgress>(value =>
             {
+                if (!job.IsRunning)
+                {
+                    return;
+                }
+
                 StatusText = LocalizeFtbInstallProgress(value);
-                var fraction = ResolveCatalogInstallProgress(
-                    value.Fraction,
-                    value.CompletedItems,
-                    value.TotalItems);
+                var fraction = ResolveFtbCatalogInstallProgress(value);
                 job.Report(value.Stage, StatusText, fraction);
                 if (fraction is not null)
                 {
-                    ProgressValue = fraction.Value;
+                    ProgressValue = job.ProgressValue;
                 }
             }));
         progressTracker.SetStage("prepare-java");
@@ -2867,9 +2881,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                                 CoreType.Unknown).MajorVersion;
             diagnosticJavaMajor = javaMajor;
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
-            job.Report("prepare-java", StatusText);
+            job.Report("prepare-java", StatusText, 0.03d);
+            ProgressValue = job.ProgressValue;
             var java = await ResolveJavaAsync(javaMajor, operation.Token);
             progressTracker.SetStage("cache-artwork");
+            StatusText = L("client.vm.progress.ftb.cacheArtwork");
+            job.Report("cache-artwork", StatusText, 0.08d);
+            ProgressValue = job.ProgressValue;
             await CacheCatalogArtworkAsync([project], operation.Token);
             operation.Token.ThrowIfCancellationRequested();
             var request = new FtbClientPackInstallRequest(
@@ -2896,11 +2914,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 CatalogIconImagePath: project.IconImagePath,
                 CatalogPreviewImagePath: project.PreviewImagePath);
             progressTracker.SetStage("install-game");
+            StatusText = L("client.vm.progress.ftb.installGame");
+            job.Report("install-game", StatusText, 0.10d);
+            ProgressValue = job.ProgressValue;
             var result = await _ftbInstaller.InstallAsync(
                 request,
                 java,
                 progressTracker,
                 operation.Token);
+            progressTracker.StopAcceptingProgress();
 
             var item = new ClientInstanceItemViewModel(result.Instance)
             {
@@ -2914,20 +2936,25 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
         catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
+            progressTracker.StopAcceptingProgress();
             throw;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
+            var failedStage = progressTracker.StopAcceptingProgress();
+            job.MarkFailed(
+                LocalizeCatalogInstallJobFailure(failedStage, diagnosticId: null),
+                failedStage);
             var classification = FtbClientInstallFailurePolicy.Classify(
                 error,
-                progressTracker.LastStage);
+                failedStage);
             ClientOperationDiagnosticReference? diagnostic = null;
             try
             {
                 diagnostic = await _clientOperationDiagnosticStore.WriteFailureAsync(
                     new ClientOperationDiagnosticWriteRequest(
                         "ftb-client-install",
-                        progressTracker.LastStage,
+                        failedStage,
                         classification.FailureCode,
                         error,
                         new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -2952,7 +2979,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             var failureLocalizationKey = SelectFtbInstallFailureLocalizationKey(
                 classification,
-                progressTracker.LastStage);
+                failedStage);
             _lastFtbInstallFailureLocalizationKey = failureLocalizationKey;
             _lastFtbInstallDiagnosticId = diagnostic?.DiagnosticId;
             HasFtbInstallDiagnostic = diagnostic is not null;
@@ -2962,7 +2989,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 diagnostic?.DiagnosticId);
             CatalogStatusText = L("client.vm.catalog.ftb.fallbackAvailable");
             StatusText = CatalogStatusText;
-            job.MarkFailed(L("client.vm.catalog.jobs.failed"));
+            job.UpdateFailureDiagnostic(
+                LocalizeCatalogInstallJobFailure(failedStage, diagnostic?.DiagnosticId),
+                diagnostic?.DiagnosticId);
         }
         finally
         {
@@ -3171,6 +3200,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             version.Name,
             project.SourceLabel,
             L("client.vm.catalog.jobs.queued"));
+        ProgressValue = 0d;
         CatalogInstallJobs.Insert(0, job);
         ActiveCatalogInstallJob = job;
         IsCatalogInstallQueueExpanded = true;
@@ -6217,11 +6247,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private static string LocalizeFtbInstallProgress(FtbClientPackInstallProgress progress) =>
         progress.Stage switch
         {
+            "cache-artwork" => L("client.vm.progress.ftb.cacheArtwork"),
             "install-game" => L("client.vm.progress.ftb.installGame"),
             "download-content" => L(
                 "client.vm.progress.ftb.downloadContent",
                 progress.CompletedItems,
                 progress.TotalItems),
+            "finalize" => L("client.vm.progress.ftb.finalize"),
             "complete" => L("client.vm.progress.ftb.complete"),
             _ => L("client.vm.progress.working"),
         };
@@ -6240,6 +6272,33 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             ? Math.Clamp(completedItems / (double)totalItems, 0d, 1d)
             : null;
     }
+
+    internal static double? ResolveFtbCatalogInstallProgress(
+        FtbClientPackInstallProgress progress)
+    {
+        ArgumentNullException.ThrowIfNull(progress);
+        var phaseFraction = ResolveCatalogInstallProgress(
+            progress.Fraction,
+            progress.CompletedItems,
+            progress.TotalItems);
+        return progress.Stage switch
+        {
+            "prepare-java" => 0.03d,
+            "cache-artwork" => 0.08d,
+            "install-game" => 0.10d + ((phaseFraction ?? 0d) * 0.50d),
+            "download-content" => 0.60d + ((phaseFraction ?? 0d) * 0.35d),
+            "finalize" or "complete" => 0.97d,
+            _ when phaseFraction is { } value => Math.Min(value * 0.95d, 0.95d),
+            _ => null,
+        };
+    }
+
+    private static string LocalizeCatalogInstallJobFailure(
+        string failedStage,
+        string? diagnosticId) =>
+        string.IsNullOrWhiteSpace(diagnosticId)
+            ? L("client.vm.catalog.jobs.failedAtStage", failedStage)
+            : L("client.vm.catalog.jobs.failedAtStageWithDiagnostic", failedStage, diagnosticId);
 
     private static string LocalizeFtbInstallFailure(
         string localizationKey,
@@ -6538,6 +6597,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             job.RefreshStatus(job.State switch
             {
                 ClientCatalogInstallJobState.Completed => L("client.vm.catalog.jobs.completed"),
+                ClientCatalogInstallJobState.Failed when !string.IsNullOrWhiteSpace(job.FailedStage) =>
+                    LocalizeCatalogInstallJobFailure(job.FailedStage, job.FailureDiagnosticId),
                 ClientCatalogInstallJobState.Failed => L("client.vm.catalog.jobs.failed"),
                 ClientCatalogInstallJobState.Canceled => L("client.vm.catalog.jobs.canceled"),
                 _ => L("client.vm.catalog.jobs.running"),
@@ -6727,26 +6788,51 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         IProgress<FtbClientPackInstallProgress> presentationProgress)
         : IProgress<FtbClientPackInstallProgress>
     {
+        private readonly object _gate = new();
         private string _lastStage = "prepare-java";
-
-        public string LastStage => Volatile.Read(ref _lastStage);
+        private bool _acceptingProgress = true;
 
         public void SetStage(string stage)
         {
-            var normalized = !string.IsNullOrWhiteSpace(stage) &&
-                             stage.Length <= 64 &&
-                             stage.All(character =>
-                                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
-                ? stage
-                : "unknown";
-            Volatile.Write(ref _lastStage, normalized);
+            lock (_gate)
+            {
+                if (_acceptingProgress)
+                {
+                    _lastStage = NormalizeStage(stage);
+                }
+            }
+        }
+
+        public string StopAcceptingProgress()
+        {
+            lock (_gate)
+            {
+                _acceptingProgress = false;
+                return _lastStage;
+            }
         }
 
         public void Report(FtbClientPackInstallProgress value)
         {
             ArgumentNullException.ThrowIfNull(value);
-            SetStage(value.Stage);
-            presentationProgress.Report(value);
+            lock (_gate)
+            {
+                if (!_acceptingProgress)
+                {
+                    return;
+                }
+
+                _lastStage = NormalizeStage(value.Stage);
+                presentationProgress.Report(value);
+            }
         }
+
+        private static string NormalizeStage(string stage) =>
+            !string.IsNullOrWhiteSpace(stage) &&
+            stage.Length <= 64 &&
+            stage.All(character =>
+                char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
+                ? stage
+                : "unknown";
     }
 }

@@ -4,6 +4,15 @@ namespace MinecraftServerManager.GameClient.Tests;
 
 public sealed class CmlDownloadRetryPolicyTests
 {
+    [Fact]
+    public void Options_DefaultsLimitDownloadAndVerificationParallelism()
+    {
+        var options = CmlDownloadReliabilityOptions.Default.Validate();
+
+        Assert.Equal(4, options.MaximumConcurrentChecks);
+        Assert.Equal(4, options.MaximumConcurrentDownloads);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.RequestTimeout)]
     [InlineData((HttpStatusCode)429)]

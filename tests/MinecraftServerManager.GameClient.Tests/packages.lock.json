@@ -208,7 +208,7 @@
       "minecraftservermanager.core": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.GameClient.Contracts": "[1.1.0, )"
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.10, )"
         }
       },
       "minecraftservermanager.gameclient": {
@@ -218,8 +218,8 @@
           "CmlLib.Core.Auth.Microsoft": "[3.3.1, )",
           "Microsoft.Identity.Client": "[4.88.0, )",
           "Microsoft.Identity.Client.Extensions.Msal": "[4.88.0, )",
-          "MinecraftServerManager.Core": "[1.1.0, )",
-          "MinecraftServerManager.GameClient.Contracts": "[1.1.0, )",
+          "MinecraftServerManager.Core": "[1.2.9-beta.10, )",
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.10, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )",
           "XboxAuthNet.Game.Msal": "[0.1.3, )"
         }

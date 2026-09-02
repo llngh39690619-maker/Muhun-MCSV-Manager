@@ -84,6 +84,10 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
     : IVerifiedMavenClientLoaderProcessRunner
 {
     internal const int MaximumDiagnosticCharacters = 64 * 1024;
+    internal const int MaximumDiagnosticSources = 4;
+    internal const int MaximumDiagnosticCharactersPerSource =
+        MaximumDiagnosticCharacters / MaximumDiagnosticSources;
+    internal const string FallbackInstallerLogName = "installer.log";
     internal static readonly TimeSpan ProcessTimeout = TimeSpan.FromMinutes(20);
 
     public async Task RunAsync(
@@ -137,18 +141,32 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
                 fullInstanceDirectory),
             EnableRaisingEvents = true,
         };
-        if (!process.Start())
+        try
         {
-            throw new InvalidOperationException("The verified loader installer process did not start.");
+            if (!process.Start())
+            {
+                throw new InvalidOperationException(
+                    "The verified loader installer process did not start.");
+            }
         }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            throw new MinecraftClientLoaderChildProcessException(
+                exitCode: null,
+                MinecraftClientLoaderProcessFailureKind.StartFailure,
+                exception);
+        }
+
+        TrySetBelowNormalPriority(process);
 
         var standardOutput = DrainBoundedAsync(
             process.StandardOutput,
-            MaximumDiagnosticCharacters,
+            MaximumDiagnosticCharactersPerSource,
             CancellationToken.None);
         var standardError = DrainBoundedAsync(
             process.StandardError,
-            MaximumDiagnosticCharacters,
+            MaximumDiagnosticCharactersPerSource,
             CancellationToken.None);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ProcessTimeout);
@@ -161,17 +179,23 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
             TryKill(process);
             await WaitForDrainAsync(standardOutput, standardError).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            throw new TimeoutException(
-                $"The verified loader installer exceeded the {ProcessTimeout.TotalMinutes:0}-minute limit.");
+            throw new MinecraftClientLoaderChildProcessException(
+                exitCode: null,
+                MinecraftClientLoaderProcessFailureKind.Timeout,
+                new TimeoutException("The verified loader installer exceeded its time limit."));
         }
 
         var output = await standardOutput.ConfigureAwait(false);
         var error = await standardError.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
-            var diagnostic = string.IsNullOrWhiteSpace(error) ? output : error;
-            throw new InvalidOperationException(
-                $"The verified loader installer exited with code {process.ExitCode}. {diagnostic}".Trim());
+            var diagnostics = new List<string?> { error, output };
+            diagnostics.AddRange(ReadBoundedInstallerLogs(
+                fullInstanceDirectory,
+                fullInstallerPath));
+            throw new MinecraftClientLoaderChildProcessException(
+                process.ExitCode,
+                ClassifyFailure(process.ExitCode, diagnostics.ToArray()));
         }
     }
 
@@ -195,6 +219,90 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
         return startInfo;
     }
 
+    internal static IReadOnlyList<string> GetInstallerLogPaths(
+        string instanceDirectory,
+        string installerPath)
+    {
+        var fullInstanceDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(instanceDirectory));
+        var artifactLog = Path.Combine(
+            fullInstanceDirectory,
+            Path.GetFileName(installerPath) + ".log");
+        var fallbackLog = Path.Combine(fullInstanceDirectory, FallbackInstallerLogName);
+        return artifactLog.Equals(fallbackLog, StringComparison.OrdinalIgnoreCase)
+            ? [artifactLog]
+            : [artifactLog, fallbackLog];
+    }
+
+    internal static MinecraftClientLoaderProcessFailureKind ClassifyFailure(
+        int exitCode,
+        params string?[] diagnostics)
+    {
+        foreach (var diagnostic in diagnostics)
+        {
+            if (string.IsNullOrEmpty(diagnostic))
+            {
+                continue;
+            }
+
+            if (ContainsAny(
+                    diagnostic,
+                    "AccessDeniedException",
+                    "access is denied",
+                    "access denied",
+                    "permission denied"))
+            {
+                return MinecraftClientLoaderProcessFailureKind.AccessDenied;
+            }
+
+            if (ContainsAny(
+                    diagnostic,
+                    "404 not found",
+                    "response code: 404",
+                    "status code 404",
+                    "http 404"))
+            {
+                return MinecraftClientLoaderProcessFailureKind.HttpNotFound;
+            }
+
+            if (ContainsAny(
+                    diagnostic,
+                    "problem writing the launch profile",
+                    "failed to read launcher_profiles",
+                    "launcher profile") &&
+                ContainsAny(diagnostic, "write", "read", "protected", "missing"))
+            {
+                return MinecraftClientLoaderProcessFailureKind.LauncherProfile;
+            }
+
+            if (ContainsAny(
+                    diagnostic,
+                    "checksum validation failed",
+                    "checksum mismatch",
+                    "hash mismatch",
+                    "invalid checksum"))
+            {
+                return MinecraftClientLoaderProcessFailureKind.Integrity;
+            }
+
+            if (ContainsAny(
+                    diagnostic,
+                    "SocketTimeoutException",
+                    "ConnectException",
+                    "UnknownHostException",
+                    "SSLHandshakeException",
+                    "connection reset",
+                    "connection refused"))
+            {
+                return MinecraftClientLoaderProcessFailureKind.Network;
+            }
+        }
+
+        return exitCode < 0
+            ? MinecraftClientLoaderProcessFailureKind.NativeCrash
+            : MinecraftClientLoaderProcessFailureKind.ProcessExit;
+    }
+
     private static async Task<string> DrainBoundedAsync(
         StreamReader reader,
         int maximumCharacters,
@@ -210,11 +318,7 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
                 return captured.ToString();
             }
 
-            var remaining = maximumCharacters - captured.Length;
-            if (remaining > 0)
-            {
-                captured.Append(buffer, 0, Math.Min(remaining, read));
-            }
+            AppendBoundedTail(captured, buffer, read, maximumCharacters);
         }
     }
 
@@ -227,6 +331,113 @@ internal sealed class VerifiedMavenClientLoaderProcessRunner
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {
             ExceptionGraphSafety.RethrowOutOfMemory(exception);
+        }
+    }
+
+    internal static IReadOnlyList<string> ReadBoundedInstallerLogs(
+        string instanceDirectory,
+        string installerPath)
+    {
+        var diagnostics = new List<string>(2);
+        foreach (var path in GetInstallerLogPaths(instanceDirectory, installerPath))
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                using var lease = SafePath.AcquireNoFollowFileIdentityLease(path);
+                using var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    4_096,
+                    FileOptions.SequentialScan);
+                using var reader = new StreamReader(
+                    stream,
+                    Encoding.UTF8,
+                    detectEncodingFromByteOrderMarks: true,
+                    bufferSize: 4_096,
+                    leaveOpen: false);
+                var buffer = new char[4_096];
+                var captured = new StringBuilder(
+                    Math.Min(4_096, MaximumDiagnosticCharactersPerSource));
+                while (true)
+                {
+                    var read = reader.Read(buffer, 0, buffer.Length);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    AppendBoundedTail(
+                        captured,
+                        buffer,
+                        read,
+                        MaximumDiagnosticCharactersPerSource);
+                }
+
+                var diagnostic = captured.ToString();
+                if (!string.IsNullOrWhiteSpace(diagnostic))
+                {
+                    diagnostics.Add(diagnostic);
+                }
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or System.ComponentModel.Win32Exception)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(exception);
+                // Diagnostic recovery is best effort and must not obscure the real exit code.
+            }
+        }
+
+        return diagnostics;
+    }
+
+    private static void AppendBoundedTail(
+        StringBuilder destination,
+        char[] source,
+        int count,
+        int maximumCharacters)
+    {
+        if (count >= maximumCharacters)
+        {
+            destination.Clear();
+            destination.Append(source, count - maximumCharacters, maximumCharacters);
+            return;
+        }
+
+        var excess = destination.Length + count - maximumCharacters;
+        if (excess > 0)
+        {
+            destination.Remove(0, excess);
+        }
+
+        destination.Append(source, 0, count);
+    }
+
+    private static bool ContainsAny(string value, params string[] candidates)
+        => candidates.Any(candidate =>
+            value.Contains(candidate, StringComparison.OrdinalIgnoreCase));
+
+    private static void TrySetBelowNormalPriority(Process process)
+    {
+        try
+        {
+            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException
+                or NotSupportedException
+                or System.ComponentModel.Win32Exception)
+        {
+            ExceptionGraphSafety.RethrowOutOfMemory(exception);
+            // Best effort only: a short-lived child may exit before priority can be adjusted.
         }
     }
 
@@ -357,7 +568,9 @@ internal sealed class OfficialMavenClientLoaderInstaller
         var operationId = Guid.NewGuid().ToString("N");
         var partialPath = Path.Combine(fullStagingDirectory, $".loader-{operationId}.partial");
         var verifiedPath = Path.Combine(fullStagingDirectory, $".loader-{operationId}.verified.jar");
-        var installerLogPath = verifiedPath + ".log";
+        var installerLogPaths = VerifiedMavenClientLoaderProcessRunner.GetInstallerLogPaths(
+            fullStagingDirectory,
+            verifiedPath);
         byte[]? expectedSha256 = null;
         try
         {
@@ -396,7 +609,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
                         artifact,
                         javaExecutablePath,
                         fullStagingDirectory,
-                        installerLogPath,
+                        installerLogPaths,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -454,7 +667,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         VerifiedMavenClientLoaderArtifact artifact,
         string javaExecutablePath,
         string stagingDirectory,
-        string installerLogPath,
+        IReadOnlyList<string> installerLogPaths,
         CancellationToken cancellationToken)
     {
         // Forge and NeoForge's official client installers intentionally refuse to run unless
@@ -464,7 +677,7 @@ internal sealed class OfficialMavenClientLoaderInstaller
         // this is compatibility metadata, not an account or authentication profile.
         var preparedFiles = await PrepareLoaderProcessFilesAsync(
                 stagingDirectory,
-                installerLogPath,
+                installerLogPaths,
                 cancellationToken)
             .ConfigureAwait(false);
         Exception? processFailure = null;
@@ -505,9 +718,13 @@ internal sealed class OfficialMavenClientLoaderInstaller
         finally
         {
             preparedFiles.Dispose();
-            cleanupFailures = await CollectCleanupFailuresAsync(
-                    () => RemoveOwnedProcessFileAsync(preparedFiles.TemporaryLauncherProfile),
-                    () => RemoveOwnedProcessFileAsync(preparedFiles.InstallerLog))
+            var cleanupOperations = new List<Func<Task>>
+            {
+                () => RemoveOwnedProcessFileAsync(preparedFiles.TemporaryLauncherProfile),
+            };
+            cleanupOperations.AddRange(preparedFiles.InstallerLogs.Select<OwnedProcessFile, Func<Task>>(
+                log => () => RemoveOwnedProcessFileAsync(log)));
+            cleanupFailures = await CollectCleanupFailuresAsync(cleanupOperations.ToArray())
                 .ConfigureAwait(false);
         }
 
@@ -524,12 +741,12 @@ internal sealed class OfficialMavenClientLoaderInstaller
 
     private static async Task<PreparedLoaderProcessFiles> PrepareLoaderProcessFilesAsync(
         string stagingDirectory,
-        string installerLogPath,
+        IReadOnlyList<string> installerLogPaths,
         CancellationToken cancellationToken)
     {
         var profileGuards = new List<GuardedProcessFile>(2);
         OwnedProcessFile? temporaryProfile = null;
-        OwnedProcessFile? installerLog = null;
+        var installerLogs = new List<OwnedProcessFile>(installerLogPaths.Count);
         Exception? preparationFailure = null;
         try
         {
@@ -565,15 +782,19 @@ internal sealed class OfficialMavenClientLoaderInstaller
                         temporaryProfile.Identity)));
             }
 
-            installerLog = CreateOwnedProcessFile(
-                stagingDirectory,
-                installerLogPath,
-                "loader-log",
-                ReadOnlySpan<byte>.Empty,
-                cancellationToken);
+            foreach (var installerLogPath in installerLogPaths)
+            {
+                installerLogs.Add(CreateOwnedProcessFile(
+                    stagingDirectory,
+                    installerLogPath,
+                    "loader-log",
+                    ReadOnlySpan<byte>.Empty,
+                    cancellationToken));
+            }
+
             return new PreparedLoaderProcessFiles(
                 temporaryProfile,
-                installerLog,
+                installerLogs,
                 profileGuards);
         }
         catch (Exception exception)
@@ -587,9 +808,13 @@ internal sealed class OfficialMavenClientLoaderInstaller
             profileGuards[index].Lease.Dispose();
         }
 
-        var cleanupFailures = await CollectCleanupFailuresAsync(
-                () => RemoveOwnedProcessFileAsync(temporaryProfile),
-                () => RemoveOwnedProcessFileAsync(installerLog))
+        var cleanupOperations = new List<Func<Task>>
+        {
+            () => RemoveOwnedProcessFileAsync(temporaryProfile),
+        };
+        cleanupOperations.AddRange(installerLogs.Select<OwnedProcessFile, Func<Task>>(
+            log => () => RemoveOwnedProcessFileAsync(log)));
+        var cleanupFailures = await CollectCleanupFailuresAsync(cleanupOperations.ToArray())
             .ConfigureAwait(false);
         ThrowPrimaryFailure(
             preparationFailure ?? new InvalidOperationException(
@@ -764,14 +989,14 @@ internal sealed class OfficialMavenClientLoaderInstaller
 
     private sealed class PreparedLoaderProcessFiles(
         OwnedProcessFile? temporaryLauncherProfile,
-        OwnedProcessFile installerLog,
+        IReadOnlyList<OwnedProcessFile> installerLogs,
         IReadOnlyList<GuardedProcessFile> profileGuards) : IDisposable
     {
         private IReadOnlyList<GuardedProcessFile>? _profileGuards = profileGuards;
 
         public OwnedProcessFile? TemporaryLauncherProfile { get; } = temporaryLauncherProfile;
 
-        public OwnedProcessFile InstallerLog { get; } = installerLog;
+        public IReadOnlyList<OwnedProcessFile> InstallerLogs { get; } = installerLogs;
 
         public void ValidateProfileIdentities()
         {

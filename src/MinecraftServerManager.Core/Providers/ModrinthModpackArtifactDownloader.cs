@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 
@@ -76,6 +77,8 @@ public sealed class OfficialModrinthModpackUriPolicy : IModrinthModpackUriPolicy
 public sealed class ModrinthModpackArtifactDownloader
 {
     private const int MaximumErrorBytes = 64 * 1024;
+    private const long MinimumProgressReportBytes = 1024 * 1024;
+    private static readonly TimeSpan MinimumProgressReportInterval = TimeSpan.FromMilliseconds(125);
     private readonly IModrinthModpackHttpTransport _transport;
     private readonly IModrinthModpackUriPolicy _uriPolicy;
     private readonly int _maxRedirects;
@@ -192,6 +195,8 @@ public sealed class ModrinthModpackArtifactDownloader
 
         var buffer = new byte[128 * 1024];
         long total = 0;
+        long lastReportedBytes = 0;
+        var lastProgressTimestamp = Stopwatch.GetTimestamp();
         while (true)
         {
             var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
@@ -205,10 +210,16 @@ public sealed class ModrinthModpackArtifactDownloader
             sha512.AppendData(buffer, 0, read);
             sha1?.AppendData(buffer, 0, read);
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            byteProgress?.Report(total);
+            ReportProgressIfDue(
+                byteProgress,
+                expectedSize,
+                total,
+                force: false,
+                ref lastReportedBytes,
+                ref lastProgressTimestamp);
         }
 
-        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         output.Flush(flushToDisk: true);
         if (total != expectedSize)
         {
@@ -226,7 +237,49 @@ public sealed class ModrinthModpackArtifactDownloader
             throw new InvalidDataException("下載檔案 SHA-1 驗證失敗。");
         }
 
-        byteProgress?.Report(total);
+        ReportProgressIfDue(
+            byteProgress,
+            expectedSize,
+            total,
+            force: true,
+            ref lastReportedBytes,
+            ref lastProgressTimestamp);
+    }
+
+    private static void ReportProgressIfDue(
+        IProgress<long>? progress,
+        long expectedLength,
+        long currentBytes,
+        bool force,
+        ref long lastReportedBytes,
+        ref long lastProgressTimestamp)
+    {
+        if (progress is null || currentBytes <= lastReportedBytes)
+        {
+            return;
+        }
+
+        // Do not publish the terminal byte count until both declared hashes have passed. During the
+        // transfer, cap notifications by bytes and time to avoid flooding the UI from parallel files.
+        if (!force)
+        {
+            if (expectedLength > 0 && currentBytes >= expectedLength ||
+                currentBytes - lastReportedBytes < MinimumProgressReportBytes)
+            {
+                return;
+            }
+
+            var now = Stopwatch.GetTimestamp();
+            if (Stopwatch.GetElapsedTime(lastProgressTimestamp, now) < MinimumProgressReportInterval)
+            {
+                return;
+            }
+
+            lastProgressTimestamp = now;
+        }
+
+        lastReportedBytes = currentBytes;
+        progress.Report(currentBytes);
     }
 
     private async Task<HttpResponseMessage> FollowRedirectsAsync(Uri source, CancellationToken cancellationToken)

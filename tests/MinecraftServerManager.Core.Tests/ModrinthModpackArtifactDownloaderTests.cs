@@ -34,12 +34,47 @@ public sealed class ModrinthModpackArtifactDownloaderTests
         var destination = Path.Combine(temp.Path, "bad.bin");
         var downloader = new ModrinthModpackArtifactDownloader(
             new FixtureTransport((_, _) => Task.FromResult(FixtureTransport.Bytes(content))), new TestUriPolicy());
+        var reportedBytes = new List<long>();
 
         await Assert.ThrowsAsync<IOException>(() => downloader.DownloadAsync(
-            new[] { new Uri("https://files.test/bad") }, destination, content.Length, new string('0', 128), new string('0', 40)));
+            new[] { new Uri("https://files.test/bad") },
+            destination,
+            content.Length,
+            new string('0', 128),
+            new string('0', 40),
+            new SynchronousProgress<long>(reportedBytes.Add)));
 
         Assert.False(File.Exists(destination));
         Assert.Empty(Directory.GetFiles(temp.Path, "*.partial-*"));
+        Assert.DoesNotContain(content.LongLength, reportedBytes);
+    }
+
+    [Fact]
+    public async Task DownloadThrottlesByteProgressAndPublishesExactTotalOnlyAfterHashVerification()
+    {
+        using var temp = new TemporaryDirectory();
+        var content = new byte[(4 * 1024 * 1024) + 317];
+        Random.Shared.NextBytes(content);
+        var hashes = ModrinthModpackTestFixtures.Hashes(content);
+        var downloader = new ModrinthModpackArtifactDownloader(
+            new FixtureTransport((_, _) => Task.FromResult(FixtureTransport.Bytes(content))),
+            new TestUriPolicy());
+        var destination = Path.Combine(temp.Path, "progress.bin");
+        var reportedBytes = new List<long>();
+
+        await downloader.DownloadAsync(
+            new[] { new Uri("https://files.test/progress") },
+            destination,
+            content.LongLength,
+            hashes.Sha512,
+            hashes.Sha1,
+            new SynchronousProgress<long>(reportedBytes.Add));
+
+        Assert.NotEmpty(reportedBytes);
+        Assert.Equal(content.LongLength, reportedBytes[^1]);
+        Assert.DoesNotContain(content.LongLength, reportedBytes.Take(reportedBytes.Count - 1));
+        Assert.InRange(reportedBytes.Count, 1, 5);
+        Assert.Equal(content, File.ReadAllBytes(destination));
     }
 
     [Fact]
@@ -102,5 +137,10 @@ public sealed class ModrinthModpackArtifactDownloaderTests
 
         Assert.Throws<InvalidDataException>(() => policy.EnsureAllowed(uri, isRedirect: false));
         policy.EnsureAllowed(uri, isRedirect: true);
+    }
+
+    private sealed class SynchronousProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 }

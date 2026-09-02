@@ -8,7 +8,7 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProductMetadataTests
 {
-    private const string CurrentVersion = "1.2.9-beta.9";
+    private const string CurrentVersion = "1.2.9-beta.10";
     private const string CurrentAssemblyVersion = "1.2.9.0";
     private static readonly string[] VersionedSourceProjects =
     [

@@ -15,7 +15,7 @@ internal sealed record CmlDownloadReliabilityOptions
 
     public int MaximumConcurrentChecks { get; init; } = 4;
 
-    public int MaximumConcurrentDownloads { get; init; } = 8;
+    public int MaximumConcurrentDownloads { get; init; } = 4;
 
     public int BoundedCapacity { get; init; } = 512;
 

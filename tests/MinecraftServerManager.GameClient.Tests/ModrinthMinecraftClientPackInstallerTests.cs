@@ -11,6 +11,12 @@ namespace MinecraftServerManager.GameClient.Tests;
 
 public sealed class ModrinthMinecraftClientPackInstallerTests : IDisposable
 {
+    [Fact]
+    public void InstallRequest_DefaultsToFourConcurrentDownloads()
+    {
+        Assert.Equal(4, Request().MaximumConcurrentDownloads);
+    }
+
     private static readonly Uri PackUri = new(
         "https://cdn.modrinth.com/data/PackGood1/versions/StableV1/good.mrpack");
     private static readonly Uri ClientModUri = new(

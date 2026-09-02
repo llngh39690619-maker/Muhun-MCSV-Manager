@@ -26,6 +26,7 @@ public sealed class FtbMinecraftClientPackInstaller
     private const long MaximumManifestTotalBytes = 16L * 1024 * 1024 * 1024;
     private const long MaximumCatalogArtworkBytes = 5L * 1024 * 1024;
     private const int MaximumPendingPromotionReceipts = 1_024;
+    private const int MaximumOrphanOperationDirectories = 1_024;
     private const long MaximumPromotionReceiptBytes = 16L * 1024;
     private const int PromotionReceiptSchemaVersion = 1;
     private const string PromotionReceiptPrefix = ".ftb-client-promotion-";
@@ -53,6 +54,7 @@ public sealed class FtbMinecraftClientPackInstaller
     private readonly Action<string>? _afterPromotionBeforeLeaseForTesting;
     private readonly Action<string>? _duringCommittedFinalizationForTesting;
     private readonly Action<string>? _duringRegisteredRecoveryForTesting;
+    private readonly bool _recoverUnreceiptedStagingOperations;
     private readonly SemaphoreSlim _mutationGate = new(1, 1);
 
     public FtbMinecraftClientPackInstaller(
@@ -62,7 +64,8 @@ public sealed class FtbMinecraftClientPackInstaller
         IMinecraftReleaseCatalog releaseCatalog,
         IMinecraftClientPayloadInstaller payloadInstaller,
         IFtbClientPackCatalog catalog,
-        HttpClient artifactHttpClient)
+        HttpClient artifactHttpClient,
+        bool recoverUnreceiptedStagingOperations = true)
         : this(
             instancesDirectory,
             stagingDirectory,
@@ -74,7 +77,8 @@ public sealed class FtbMinecraftClientPackInstaller
             DeleteOwnedTreeWithRetryAsync,
             afterPromotionBeforeLeaseForTesting: null,
             duringCommittedFinalizationForTesting: null,
-            duringRegisteredRecoveryForTesting: null)
+            duringRegisteredRecoveryForTesting: null,
+            recoverUnreceiptedStagingOperations: recoverUnreceiptedStagingOperations)
     {
     }
 
@@ -89,7 +93,8 @@ public sealed class FtbMinecraftClientPackInstaller
         Func<string, string, SafePathObjectIdentity, CancellationToken, Task> deleteOwnedTreeAsync,
         Action<string>? afterPromotionBeforeLeaseForTesting = null,
         Action<string>? duringCommittedFinalizationForTesting = null,
-        Action<string>? duringRegisteredRecoveryForTesting = null)
+        Action<string>? duringRegisteredRecoveryForTesting = null,
+        bool recoverUnreceiptedStagingOperations = true)
     {
         _instancesRoot = NormalizeRoot(instancesDirectory, nameof(instancesDirectory));
         _stagingRoot = NormalizeRoot(stagingDirectory, nameof(stagingDirectory));
@@ -103,6 +108,7 @@ public sealed class FtbMinecraftClientPackInstaller
         _afterPromotionBeforeLeaseForTesting = afterPromotionBeforeLeaseForTesting;
         _duringCommittedFinalizationForTesting = duringCommittedFinalizationForTesting;
         _duringRegisteredRecoveryForTesting = duringRegisteredRecoveryForTesting;
+        _recoverUnreceiptedStagingOperations = recoverUnreceiptedStagingOperations;
         _downloader = new ModrinthModpackArtifactDownloader(
             new HttpClientModrinthModpackHttpTransport(artifactHttpClient),
             DownloadUriPolicy,
@@ -348,24 +354,27 @@ public sealed class FtbMinecraftClientPackInstaller
                         integrityError);
                 }
 
-                // Invoke the caller-controlled completion observer before the final security
+                // Invoke the caller-controlled finalization observer before the final security
                 // invariant, but never let an observer exception skip finalization. A synchronous
                 // observer can both mutate filesystem state and throw; the tree must still be
                 // validated/revoked before this method can return or propagate an installation
-                // failure. Observer failures alone are diagnostic and do not undo a safe commit.
-                OutOfMemoryException? completionOutOfMemory = null;
+                // failure. This deliberately remains below 100%: only a successful return from
+                // InstallAsync proves that the committed promotion was finalized safely.
+                // Observer failures alone are diagnostic and do not undo a safe commit.
+                OutOfMemoryException? finalizationProgressOutOfMemory = null;
                 try
                 {
                     progress?.Report(new FtbClientPackInstallProgress(
-                        "complete",
-                        "FTB 客戶端模組包已安全安裝並加入 X MCSV。",
+                        "finalize",
+                        "正在完成 FTB 客戶端模組包的安全驗證與交易封存…",
+                        0,
                         1,
-                        1,
-                        Fraction: 1d));
+                        Fraction: 0.97d));
                 }
                 catch (Exception observerError)
                 {
-                    completionOutOfMemory = ExceptionGraphSafety.FindOutOfMemory(observerError);
+                    finalizationProgressOutOfMemory =
+                        ExceptionGraphSafety.FindOutOfMemory(observerError);
                     // Observer failures cannot participate in the durable commit decision. Avoid
                     // even formatting the caller-provided exception before finalization because a
                     // custom Exception.ToString implementation can itself throw.
@@ -387,9 +396,9 @@ public sealed class FtbMinecraftClientPackInstaller
                         rollbackPermitted = false;
                         ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
                         ExceptionGraphSafety.RethrowOutOfMemory(revocationError);
-                        if (completionOutOfMemory is not null)
+                        if (finalizationProgressOutOfMemory is not null)
                         {
-                            ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
+                            ExceptionDispatchInfo.Capture(finalizationProgressOutOfMemory).Throw();
                         }
 
                         throw new FtbClientInstallRecoveryRequiredException(
@@ -398,9 +407,9 @@ public sealed class FtbMinecraftClientPackInstaller
                     }
 
                     ExceptionGraphSafety.RethrowOutOfMemory(integrityError);
-                    if (completionOutOfMemory is not null)
+                    if (finalizationProgressOutOfMemory is not null)
                     {
-                        ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
+                        ExceptionDispatchInfo.Capture(finalizationProgressOutOfMemory).Throw();
                     }
 
                     throw new InvalidDataException(
@@ -408,9 +417,9 @@ public sealed class FtbMinecraftClientPackInstaller
                         integrityError);
                 }
 
-                if (completionOutOfMemory is not null)
+                if (finalizationProgressOutOfMemory is not null)
                 {
-                    ExceptionDispatchInfo.Capture(completionOutOfMemory).Throw();
+                    ExceptionDispatchInfo.Capture(finalizationProgressOutOfMemory).Throw();
                 }
 
                 return new FtbClientPackInstallResult(
@@ -496,7 +505,23 @@ public sealed class FtbMinecraftClientPackInstaller
                 [new InvalidDataException("Too many pending FTB client promotion receipts were found.")]);
         }
 
-        if (receiptPaths.Length == 0)
+        var orphanCandidates = _recoverUnreceiptedStagingOperations
+            ? Directory.EnumerateDirectories(
+                    _stagingRoot,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .Where(path => TryGetStagingOperationId(path, out _))
+                .Take(MaximumOrphanOperationDirectories + 1)
+                .ToArray()
+            : [];
+        if (orphanCandidates.Length > MaximumOrphanOperationDirectories)
+        {
+            throw new FtbClientInstallRecoveryRequiredException(
+                "pending-recovery",
+                [new InvalidDataException("Too many orphaned FTB client staging operations were found.")]);
+        }
+
+        if (receiptPaths.Length == 0 && orphanCandidates.Length == 0)
         {
             return;
         }
@@ -633,6 +658,103 @@ public sealed class FtbMinecraftClientPackInstaller
                 "pending-recovery",
                 failures);
         }
+
+        await DeleteUnreferencedStagingOperationsAsync(
+                orphanCandidates,
+                registry,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task DeleteUnreferencedStagingOperationsAsync(
+        IReadOnlyList<string> candidatePaths,
+        MinecraftClientRegistryDocument registry,
+        CancellationToken cancellationToken)
+    {
+        if (candidatePaths.Count == 0)
+        {
+            return;
+        }
+
+        // Re-enumerate durable receipts after normal receipt recovery. A malformed receipt makes
+        // recovery fail before this point, so every remaining exact receipt name is a deliberate
+        // ownership barrier even if its operation directory is currently absent.
+        var receiptedInstanceIds = Directory.EnumerateFiles(
+                _stagingRoot,
+                $"{PromotionReceiptPrefix}*{PromotionReceiptSuffix}",
+                SearchOption.TopDirectoryOnly)
+            .Select(path => TryGetPromotionReceiptInstanceId(path, out var id) ? id : Guid.Empty)
+            .Where(static id => id != Guid.Empty)
+            .ToHashSet();
+
+        foreach (var candidatePath in candidatePaths.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!TryGetStagingOperationId(candidatePath, out var instanceId) ||
+                receiptedInstanceIds.Contains(instanceId) ||
+                registry.Instances.Any(instance =>
+                    instance.Id == instanceId || PathsEqual(instance.DirectoryPath, candidatePath)))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (!Directory.Exists(candidatePath))
+                {
+                    continue;
+                }
+
+                var safePath = SafePath.EnsureNoReparsePointsUnderRoot(
+                    _stagingRoot,
+                    candidatePath);
+                SafePath.EnsureTreeContainsNoReparsePoints(safePath);
+                var identity = SafePath.GetExistingObjectIdentity(safePath);
+                await _deleteOwnedTreeAsync(
+                        _stagingRoot,
+                        safePath,
+                        identity,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                ExceptionGraphSafety.RethrowOutOfMemory(error);
+                // An unreceipted operation has no durable ownership proof. If its tree is unsafe,
+                // locked, or changes during deletion, leave it untouched for a later recovery run.
+                Debug.WriteLine(
+                    $"Deferred unreferenced FTB staging cleanup ({error.GetType().Name}).");
+            }
+        }
+    }
+
+    private static bool TryGetStagingOperationId(string path, out Guid instanceId)
+    {
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+        instanceId = Guid.Empty;
+        return name.Length == 32 && Guid.TryParseExact(name, "N", out instanceId);
+    }
+
+    private static bool TryGetPromotionReceiptInstanceId(string path, out Guid instanceId)
+    {
+        var name = Path.GetFileName(path);
+        var expectedLength = PromotionReceiptPrefix.Length + 32 + PromotionReceiptSuffix.Length;
+        if (name.Length != expectedLength ||
+            !name.StartsWith(PromotionReceiptPrefix, StringComparison.OrdinalIgnoreCase) ||
+            !name.EndsWith(PromotionReceiptSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            instanceId = Guid.Empty;
+            return false;
+        }
+
+        return Guid.TryParseExact(
+            name.AsSpan(PromotionReceiptPrefix.Length, 32),
+            "N",
+            out instanceId);
     }
 
     private Task CommitRegistryInstanceAsync(MinecraftClientInstance instance) =>
