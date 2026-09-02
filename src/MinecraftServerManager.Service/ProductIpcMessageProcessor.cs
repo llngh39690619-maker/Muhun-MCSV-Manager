@@ -555,7 +555,11 @@ public sealed class ProductIpcMessageProcessor
                 },
                 ProductIpcProtocol.ServerPlayersMethod => Success(request.RequestId) with
                 {
-                    Players = GetPlayers(request.ServerId!.Value),
+                    Players = await GetPlayersAsync(
+                            request.ServerId!.Value,
+                            negotiation.SelectedVersion.Value,
+                            cancellationToken)
+                        .ConfigureAwait(false),
                 },
                 ProductIpcProtocol.ServerCommandMethod => await SendCommandAsync(request, cancellationToken)
                     .ConfigureAwait(false),
@@ -617,19 +621,48 @@ public sealed class ProductIpcMessageProcessor
         }
     }
 
-    private ProductServerPlayerList GetPlayers(Guid serverId)
+    private async Task<ProductServerPlayerList> GetPlayersAsync(
+        Guid serverId,
+        ProductApiVersion negotiatedApiVersion,
+        CancellationToken cancellationToken)
     {
         // GetStatus validates that the id belongs to the Service registry before player metadata
         // is projected. The IPC page remains below the 64 KiB frame limit even at its maximum.
         _ = _runtime!.GetStatus(serverId);
-        var players = _players!.GetPlayers(serverId)
+        var onlinePlayers = _players!.GetPlayers(serverId)
             .Where(player => player.Online
                              && player.Name.Length is > 0 and <= 64
                              && !player.Name.Any(char.IsControl))
-            .Take(256)
+            .Take(ProductServerPlayerContract.MaximumOnlinePlayers)
             .Select(player => new ProductServerPlayerSummary(player.Name, player.LastSeenUtc))
             .ToArray();
-        return new ProductServerPlayerList(serverId, DateTimeOffset.UtcNow, players);
+        var response = new ProductServerPlayerList(
+            serverId,
+            DateTimeOffset.UtcNow,
+            onlinePlayers);
+        if (negotiatedApiVersion.CompareTo(ProductApiProtocol.KnownPlayerRosterVersion) < 0)
+        {
+            return response;
+        }
+
+        var knownPlayers = await _players.GetKnownPlayersAsync(serverId, cancellationToken)
+            .ConfigureAwait(false);
+        return response with
+        {
+            KnownPlayers = knownPlayers
+                .Where(player => player.Name.Length is > 0 and <= 16 &&
+                                 !player.Name.Any(char.IsControl))
+                .Take(ProductServerPlayerContract.MaximumKnownPlayers)
+                .Select(static player => new ProductKnownPlayerSummary(
+                    player.Name,
+                    player.Uuid,
+                    player.Online,
+                    player.Operator,
+                    player.Whitelisted,
+                    player.Banned,
+                    player.LastSeenUtc))
+                .ToArray(),
+        };
     }
 
     private async Task<ProductIpcResponse> ProcessUpdateAsync(

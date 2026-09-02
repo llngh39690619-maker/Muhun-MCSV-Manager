@@ -83,8 +83,49 @@ public sealed class ProductIpcContractTests
         Assert.Equal(new ProductApiVersion(1, 7), ProductApiProtocol.ServerPropertiesEditorVersion);
         Assert.Equal(new ProductApiVersion(1, 8), ProductApiProtocol.ServiceInstanceSettingsVersion);
         Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.RuntimeStatusVersion);
-        Assert.Equal(ProductApiProtocol.RuntimeStatusVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 10), ProductApiProtocol.KnownPlayerRosterVersion);
+        Assert.Equal(ProductApiProtocol.KnownPlayerRosterVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void KnownPlayerRoster_RoundTripsNullCapabilityAndStaysWithinIpcFrameBound()
+    {
+        var captured = DateTimeOffset.Parse("2026-09-02T12:34:56.789+00:00");
+        var online = Enumerable.Range(0, ProductServerPlayerContract.MaximumOnlinePlayers)
+            .Select(index => new ProductServerPlayerSummary(
+                $"Player{index:D9}",
+                captured))
+            .ToArray();
+        var known = Enumerable.Range(0, ProductServerPlayerContract.MaximumKnownPlayers)
+            .Select(index => new ProductKnownPlayerSummary(
+                $"Known{index:D10}",
+                Guid.Parse("f84c6a79-0a4e-45c3-b682-16ba4a8c4d50"),
+                Online: index % 2 == 0,
+                Operator: true,
+                Whitelisted: true,
+                Banned: true,
+                LastSeenUtc: captured))
+            .ToArray();
+        var response = new ProductIpcResponse(
+            ProductIpcProtocol.CurrentSchemaVersion,
+            Guid.NewGuid(),
+            true,
+            Handshake: null,
+            Error: null)
+        {
+            Players = new ProductServerPlayerList(Guid.NewGuid(), captured, online)
+            {
+                KnownPlayers = known,
+            },
+        };
+
+        var payload = JsonSerializer.SerializeToUtf8Bytes(response);
+        var roundTrip = JsonSerializer.Deserialize<ProductIpcResponse>(payload);
+
+        Assert.True(payload.Length <= ProductIpcProtocol.MaximumFrameBytes);
+        Assert.Equal(known, roundTrip!.Players!.KnownPlayers);
+        Assert.Null(new ProductServerPlayerList(Guid.NewGuid(), captured, []).KnownPlayers);
     }
 
     [Fact]

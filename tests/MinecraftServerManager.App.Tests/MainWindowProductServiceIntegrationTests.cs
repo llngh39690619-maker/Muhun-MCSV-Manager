@@ -624,6 +624,91 @@ public sealed class MainWindowProductServiceIntegrationTests
     }
 
     [Fact]
+    public async Task ServiceKnownPlayers_ToggleAndRefreshProjectOnlineAndOfflineRoster()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            PlayerNames = ["OnlineUser"],
+            KnownPlayers =
+            [
+                new ProductKnownPlayerSummary(
+                    "OnlineUser", Guid.NewGuid(), true, true, false, false, DateTimeOffset.UtcNow),
+                new ProductKnownPlayerSummary(
+                    "OfflineUser", Guid.NewGuid(), false, false, true, false, DateTimeOffset.UtcNow.AddDays(-1)),
+            ],
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        var projected = Assert.Single(viewModel.Servers);
+
+        viewModel.SelectedWorkspaceTabKey = MainWindowViewModel.PlayersWorkspaceTabKey;
+        await WaitUntilAsync(() => client.PlayerListRequestCount >= 1 && projected.Players.Count == 2);
+
+        Assert.Equal(["OnlineUser"], projected.VisiblePlayers.Select(player => player.Name));
+        Assert.Equal(1, projected.OnlinePlayerCount);
+
+        projected.ShowKnownPlayers = true;
+        Assert.Equal(["OfflineUser", "OnlineUser"], projected.VisiblePlayers.Select(player => player.Name));
+        Assert.Equal(1, client.PlayerListRequestCount);
+
+        projected.ShowKnownPlayers = false;
+        Assert.Equal(["OnlineUser"], projected.VisiblePlayers.Select(player => player.Name));
+
+        client.KnownPlayers =
+        [
+            .. client.KnownPlayers!,
+            new ProductKnownPlayerSummary(
+                "NewOfflineUser", Guid.NewGuid(), false, false, false, true, DateTimeOffset.UtcNow),
+        ];
+        projected.ShowKnownPlayers = true;
+        viewModel.RefreshPlayersCommand.Execute(null);
+        await WaitUntilAsync(() => client.PlayerListRequestCount >= 2 && projected.Players.Count == 3);
+
+        Assert.Equal(
+            ["NewOfflineUser", "OfflineUser", "OnlineUser"],
+            projected.VisiblePlayers.Select(player => player.Name));
+
+        client.KnownPlayers = null;
+        viewModel.RefreshPlayersCommand.Execute(null);
+        await WaitUntilAsync(() => client.PlayerListRequestCount >= 3 && projected.Players.Count == 1);
+
+        Assert.Equal(["OnlineUser"], projected.Players.Select(player => player.Name));
+        Assert.Equal(["OnlineUser"], projected.VisiblePlayers.Select(player => player.Name));
+    }
+
+    [Fact]
+    public async Task ServiceApi19_IgnoresKnownPlayerExtensionAndKeepsOnlineFallback()
+    {
+        using var temporary = new TemporaryDirectory();
+        var paths = new ApplicationPaths(temporary.Path);
+        var client = new StubServiceClient(Guid.NewGuid())
+        {
+            MaximumApiVersion = ProductApiProtocol.RuntimeStatusVersion,
+            PlayerNames = ["LegacyOnline"],
+            KnownPlayers =
+            [
+                new ProductKnownPlayerSummary(
+                    "LegacyOnline", Guid.NewGuid(), true, false, false, false, DateTimeOffset.UtcNow),
+                new ProductKnownPlayerSummary(
+                    "UnsupportedOffline", Guid.NewGuid(), false, false, false, false, DateTimeOffset.UtcNow),
+            ],
+        };
+        await using var viewModel = MainWindowViewModel.CreateServiceOwned(paths, client);
+        await viewModel.InitializeAsync(allowInteractiveAutoImport: false);
+        var projected = Assert.Single(viewModel.Servers);
+
+        viewModel.SelectedWorkspaceTabKey = MainWindowViewModel.PlayersWorkspaceTabKey;
+        await WaitUntilAsync(() => client.PlayerListRequestCount >= 1 && projected.OnlinePlayerCount == 1);
+        projected.ShowKnownPlayers = true;
+
+        Assert.Equal(["LegacyOnline"], projected.Players.Select(player => player.Name));
+        Assert.Equal(["LegacyOnline"], projected.VisiblePlayers.Select(player => player.Name));
+        Assert.Equal(1, client.PlayerListRequestCount);
+    }
+
+    [Fact]
     public async Task ServiceSettings_ManagerDefaultPersistsCurrentGlobalRangeAndMode()
     {
         using var temporary = new TemporaryDirectory();
@@ -1063,6 +1148,7 @@ public sealed class MainWindowProductServiceIntegrationTests
         private string _serverPropertiesText = "server-port=25565\n";
         private string _serverPropertiesRevision = CalculatePropertiesRevision("server-port=25565\n");
         private int _serverPropertiesReadCount;
+        private int _playerListRequestCount;
         private ProductServerRegistration _registration = new()
         {
             Id = serverId,
@@ -1115,7 +1201,11 @@ public sealed class MainWindowProductServiceIntegrationTests
 
         public List<string> Mutations { get; } = [];
 
-        public IReadOnlyList<string> PlayerNames { get; init; } = [];
+        public IReadOnlyList<string> PlayerNames { get; set; } = [];
+
+        public IReadOnlyList<ProductKnownPlayerSummary>? KnownPlayers { get; set; }
+
+        public int PlayerListRequestCount => Volatile.Read(ref _playerListRequestCount);
 
         public TaskCompletionSource PlayersListed { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1202,11 +1292,15 @@ public sealed class MainWindowProductServiceIntegrationTests
             CancellationToken cancellationToken = default)
         {
             Assert.Equal(serverId, requestedServerId);
+            Interlocked.Increment(ref _playerListRequestCount);
             PlayersListed.TrySetResult();
             return Task.FromResult(new ProductServerPlayerList(
                 serverId,
                 DateTimeOffset.UtcNow,
-                PlayerNames.Select(name => new ProductServerPlayerSummary(name, DateTimeOffset.UtcNow)).ToArray()));
+                PlayerNames.Select(name => new ProductServerPlayerSummary(name, DateTimeOffset.UtcNow)).ToArray())
+            {
+                KnownPlayers = KnownPlayers,
+            });
         }
 
         public Task<ProductServerMutationResult> StartAsync(

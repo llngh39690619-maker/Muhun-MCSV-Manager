@@ -558,8 +558,30 @@ public sealed class ProductServiceClient : IProductServiceClient
                 "Service player response was invalid.");
         }
 
+        if (players.KnownPlayers is { } knownPlayers)
+        {
+            var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (knownPlayers.Count > ProductServerPlayerContract.MaximumKnownPlayers
+                || knownPlayers.Any(player => player is null
+                    || !IsValidMinecraftPlayerName(player.Name)
+                    || !knownNames.Add(player.Name)))
+            {
+                throw new ProductServiceClientException(
+                    "protocol.payload_invalid",
+                    "Service known-player response was invalid.");
+            }
+        }
+
         return players;
     }
+
+    private static bool IsValidMinecraftPlayerName(string? name)
+        => name is { Length: >= 1 and <= 16 }
+           && name.All(static character =>
+               character is >= 'A' and <= 'Z'
+                   or >= 'a' and <= 'z'
+                   or >= '0' and <= '9'
+                   or '_');
 
     public async Task<ProductServerStatus> SendCommandAsync(
         Guid serverId,

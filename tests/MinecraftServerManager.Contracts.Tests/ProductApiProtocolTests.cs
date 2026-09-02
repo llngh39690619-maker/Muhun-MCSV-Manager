@@ -57,7 +57,8 @@ public sealed class ProductApiProtocolTests
         Assert.True(result.IsCompatible);
         Assert.Equal(api18, result.SelectedVersion);
         Assert.True(api18.CompareTo(ProductApiProtocol.RuntimeStatusVersion) < 0);
-        Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.RuntimeStatusVersion);
+        Assert.Equal(new ProductApiVersion(1, 10), ProductApiProtocol.CurrentVersion);
     }
 
     [Fact]

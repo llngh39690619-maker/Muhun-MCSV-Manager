@@ -276,6 +276,94 @@ public sealed class ProductServiceClientTests
     }
 
     [Fact]
+    public async Task PlayerList_RejectsOversizedKnownPlayerProjection()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var knownPlayers = Enumerable.Range(
+                0,
+                ProductServerPlayerContract.MaximumKnownPlayers + 1)
+            .Select(index => new ProductKnownPlayerSummary(
+                $"Player_{index}",
+                Guid.NewGuid(),
+                false,
+                false,
+                false,
+                false,
+                DateTimeOffset.UtcNow))
+            .ToArray();
+        var server = RunServerOnceAsync(pipeName, request => new ProductIpcResponse(
+            1, request.RequestId, true, null, null)
+        {
+            Players = new ProductServerPlayerList(serverId, DateTimeOffset.UtcNow, [])
+            {
+                KnownPlayers = knownPlayers,
+            },
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(
+            () => client.ListPlayersAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
+    public async Task PlayerList_RejectsInvalidMinecraftNameInKnownPlayerProjection()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request => new ProductIpcResponse(
+            1, request.RequestId, true, null, null)
+        {
+            Players = new ProductServerPlayerList(serverId, DateTimeOffset.UtcNow, [])
+            {
+                KnownPlayers =
+                [
+                    new ProductKnownPlayerSummary(
+                        "Invalid-Player", Guid.NewGuid(), false, false, false, false, DateTimeOffset.UtcNow),
+                ],
+            },
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(
+            () => client.ListPlayersAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
+    public async Task PlayerList_RejectsCaseInsensitiveDuplicateKnownPlayerNames()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request => new ProductIpcResponse(
+            1, request.RequestId, true, null, null)
+        {
+            Players = new ProductServerPlayerList(serverId, DateTimeOffset.UtcNow, [])
+            {
+                KnownPlayers =
+                [
+                    new ProductKnownPlayerSummary(
+                        "PlayerOne", Guid.NewGuid(), true, false, false, false, DateTimeOffset.UtcNow),
+                    new ProductKnownPlayerSummary(
+                        "playerone", Guid.NewGuid(), false, false, false, false, DateTimeOffset.UtcNow),
+                ],
+            },
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var error = await Assert.ThrowsAsync<ProductServiceClientException>(
+            () => client.ListPlayersAsync(serverId));
+
+        Assert.Equal("protocol.payload_invalid", error.Code);
+        await server;
+    }
+
+    [Fact]
     public async Task RemoteAccessStatus_UsesServiceOwnedIpcMethod()
     {
         var pipeName = $"muhun-test-{Guid.NewGuid():N}";

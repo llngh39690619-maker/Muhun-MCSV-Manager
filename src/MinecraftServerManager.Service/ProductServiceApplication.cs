@@ -197,6 +197,7 @@ public static class ProductServiceApplication
         builder.Services.AddSingleton<IMinecraftStatusProbe, MinecraftStatusProbe>();
         builder.Services.AddSingleton<ProductServerModpackUpdateCoordinator>();
         builder.Services.AddSingleton<ProductServerBackupManager>();
+        builder.Services.AddSingleton<ProductKnownPlayerRegistryReader>();
         builder.Services.AddSingleton<ProductPlayerPresenceTracker>();
         builder.Services.AddSingleton<ProductServerAdministrationReader>();
         builder.Services.AddSingleton<ProductServerListenerStateReader>();

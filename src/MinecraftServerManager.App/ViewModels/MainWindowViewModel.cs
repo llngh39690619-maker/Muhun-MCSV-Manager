@@ -865,6 +865,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IsProductServiceConnected &&
         _productServiceNegotiatedApiVersion is { } version &&
         version.CompareTo(ProductApiProtocol.ServiceInstanceSettingsVersion) >= 0;
+    private bool SupportsProductServiceKnownPlayerRoster =>
+        IsProductServiceConnected &&
+        _productServiceNegotiatedApiVersion is { } version &&
+        version.CompareTo(ProductApiProtocol.KnownPlayerRosterVersion) >= 0;
     public bool KeepsRunningServersOnGuiExit => IsProductServiceRuntime;
     public string ProductServiceConnectionText => FormatProductServiceConnection(
         _productServiceConnectionState,
@@ -6572,6 +6576,24 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
 
                 server.UpdateOnlinePlayers(servicePlayers.Players.Select(static player => player.Name));
+                if (SupportsProductServiceKnownPlayerRoster
+                    && servicePlayers.KnownPlayers is { } knownPlayers)
+                {
+                    server.ReplacePlayers(knownPlayers.Select(static player => new PlayerStatusRecord(
+                        player.Name,
+                        player.Uuid?.ToString(),
+                        player.Online,
+                        player.Operator,
+                        player.Whitelisted,
+                        player.Banned)));
+                }
+                else
+                {
+                    // A downgraded/legacy Service has no durable roster capability. Clear any
+                    // projection retained from an earlier 1.10 connection while preserving the
+                    // authoritative online names that were applied immediately above.
+                    server.ReplacePlayers([]);
+                }
                 _loadedPlayerRegistries[server.Id] = 0;
                 return true;
             }

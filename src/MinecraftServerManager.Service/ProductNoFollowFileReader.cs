@@ -16,6 +16,7 @@ internal static class ProductNoFollowFileReader
     private const uint FileReadAttributes = 0x00000080;
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
@@ -23,6 +24,23 @@ internal static class ProductNoFollowFileReader
     private const uint FileFlagOverlapped = 0x40000000;
 
     public static ProductNoFollowReadLease Open(string trustedRoot, string path)
+        => OpenCore(trustedRoot, path, FileShareRead);
+
+    /// <summary>
+    /// Opens a mutable file below a Service-owned root without following a reparse point. Minecraft
+    /// may replace its JSON registries while running, so this variant permits concurrent writers
+    /// and replacement after the handle has bound the read to one verified filesystem object.
+    /// </summary>
+    public static ProductNoFollowReadLease OpenManagedMutable(string trustedRoot, string path)
+        => OpenCore(
+            trustedRoot,
+            path,
+            FileShareRead | FileShareWrite | FileShareDelete);
+
+    private static ProductNoFollowReadLease OpenCore(
+        string trustedRoot,
+        string path,
+        uint fileShareMode)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -55,7 +73,7 @@ internal static class ProductNoFollowFileReader
             fileHandle = OpenHandle(
                 candidate,
                 GenericRead | FileReadAttributes,
-                FileShareRead,
+                fileShareMode,
                 FileFlagOpenReparsePoint | FileFlagSequentialScan | FileFlagOverlapped);
             var information = GetInformation(fileHandle, candidate);
             var attributes = (FileAttributes)information.FileAttributes;

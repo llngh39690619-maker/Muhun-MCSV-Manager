@@ -14,7 +14,8 @@ namespace MinecraftServerManager.Service;
 public sealed class ProductPlayerPresenceTracker(
     ServerProcessManager processManager,
     ProductServerRegistry registry,
-    TimeProvider timeProvider) : IHostedService, IDisposable
+    TimeProvider timeProvider,
+    ProductKnownPlayerRegistryReader? knownPlayerReader = null) : IHostedService, IDisposable
 {
     public const int MaximumTrackedPlayersPerServer = 4_096;
     private readonly ConcurrentDictionary<Guid, ServerPresence> _servers = new();
@@ -40,8 +41,54 @@ public sealed class ProductPlayerPresenceTracker(
 
     public IReadOnlyList<RemotePlayerDto> GetPlayers(Guid serverId)
         => _servers.TryGetValue(serverId, out var presence)
-            ? presence.Capture()
+            ? presence.CaptureOnline()
             : [];
+
+    public async Task<IReadOnlyList<ProductKnownPlayerRecord>> GetKnownPlayersAsync(
+        Guid serverId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var tracked = _servers.TryGetValue(serverId, out var presence)
+            ? presence.CaptureKnown()
+            : [];
+        if (knownPlayerReader is null)
+        {
+            return tracked;
+        }
+
+        var stored = await knownPlayerReader.ReadAsync(serverId, cancellationToken)
+            .ConfigureAwait(false);
+        if (stored.Count == 0)
+        {
+            return tracked;
+        }
+
+        var merged = stored.ToDictionary(player => player.Name, StringComparer.OrdinalIgnoreCase);
+        foreach (var live in tracked)
+        {
+            if (merged.TryGetValue(live.Name, out var persisted))
+            {
+                merged[live.Name] = live with
+                {
+                    Uuid = live.Uuid ?? persisted.Uuid,
+                    Operator = live.Operator || persisted.Operator,
+                    Whitelisted = live.Whitelisted || persisted.Whitelisted,
+                    Banned = live.Banned || persisted.Banned,
+                };
+            }
+            else if (merged.Count < MaximumTrackedPlayersPerServer || live.Online)
+            {
+                merged[live.Name] = live;
+            }
+        }
+
+        return merged.Values
+            .OrderByDescending(static player => player.Online)
+            .ThenBy(static player => player.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(MaximumTrackedPlayersPerServer)
+            .ToArray();
+    }
 
     public void Dispose()
     {
@@ -139,15 +186,37 @@ public sealed class ProductPlayerPresenceTracker(
             }
         }
 
-        public IReadOnlyList<RemotePlayerDto> Capture()
+        public IReadOnlyList<RemotePlayerDto> CaptureOnline()
         {
             lock (_gate)
             {
                 return _players.Values
+                    .Where(static player => player.Online)
                     .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
                     .Take(MaximumTrackedPlayersPerServer)
                     .ToArray();
             }
         }
+
+        public IReadOnlyList<ProductKnownPlayerRecord> CaptureKnown()
+        {
+            lock (_gate)
+            {
+                return _players.Values
+                    .OrderByDescending(static player => player.Online)
+                    .ThenBy(static player => player.Name, StringComparer.OrdinalIgnoreCase)
+                    .Take(MaximumTrackedPlayersPerServer)
+                    .Select(static player => new ProductKnownPlayerRecord(
+                        player.Name,
+                        player.Uuid,
+                        player.Online,
+                        player.Operator,
+                        Whitelisted: false,
+                        Banned: player.Banned,
+                        LastSeenUtc: player.LastSeenUtc))
+                    .ToArray();
+            }
+        }
+
     }
 }

@@ -126,6 +126,8 @@ public sealed class ProductRemoteControlBackend(
             return ValueTask.FromResult<RemotePlayerListDto?>(null);
         }
 
+        // Remote clients poll this endpoint frequently. Keep that path on the in-memory online
+        // snapshot; durable registries are loaded only by the explicit desktop IPC request.
         return ValueTask.FromResult<RemotePlayerListDto?>(new RemotePlayerListDto(
             DateTimeOffset.UtcNow,
             playerTracker.GetPlayers(id)));

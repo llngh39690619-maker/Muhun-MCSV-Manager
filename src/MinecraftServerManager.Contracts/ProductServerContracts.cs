@@ -406,10 +406,32 @@ public sealed record ProductServerPlayerSummary(
     string Name,
     DateTimeOffset? LastSeenUtc);
 
+public static class ProductServerPlayerContract
+{
+    public const int MaximumOnlinePlayers = 256;
+    public const int MaximumKnownPlayers = 128;
+}
+
 public sealed record ProductServerPlayerList(
     Guid ServerId,
     DateTimeOffset CapturedAtUtc,
-    IReadOnlyList<ProductServerPlayerSummary> Players);
+    IReadOnlyList<ProductServerPlayerSummary> Players)
+{
+    /// <summary>
+    /// API 1.10+ bounded roster. Null means the negotiated Service does not support known-player
+    /// projection; an empty collection means it supports the capability but has no known players.
+    /// </summary>
+    public IReadOnlyList<ProductKnownPlayerSummary>? KnownPlayers { get; init; }
+}
+
+public sealed record ProductKnownPlayerSummary(
+    string Name,
+    Guid? Uuid,
+    bool Online,
+    bool Operator,
+    bool Whitelisted,
+    bool Banned,
+    DateTimeOffset? LastSeenUtc);
 
 public sealed record ProductServerMutationResult(
     Guid ServerId,

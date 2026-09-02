@@ -233,10 +233,21 @@ public sealed class ProductServerRuntimeTests
     {
         var fixture = await RuntimeFixture.CreateAsync();
         await using var runtime = fixture.Runtime;
+        var serverDirectory = Path.Combine(
+            fixture.Layout.Servers,
+            fixture.Registration.ServerDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(serverDirectory, "usercache.json"),
+            "[{\"name\":\"OfflinePlayer\",\"uuid\":\"f84c6a790a4e45c3b68216ba4a8c4d50\"}," +
+            "{\"name\":\"PlayerOne\",\"uuid\":\"156755d237614740a9b5e7a25a14a5ef\"}]");
+        var knownPlayerReader = new ProductKnownPlayerRegistryReader(
+            fixture.Layout,
+            fixture.Registry);
         using var tracker = new ProductPlayerPresenceTracker(
             fixture.Manager,
             fixture.Registry,
-            TimeProvider.System);
+            TimeProvider.System,
+            knownPlayerReader);
         await tracker.StartAsync(default);
         var state = new ProductServiceState(TimeProvider.System);
         state.Initialize(Guid.NewGuid());
@@ -270,6 +281,46 @@ public sealed class ProductServerRuntimeTests
         Assert.True(response.Success);
         Assert.Equal(fixture.Registration.Id, response.Players?.ServerId);
         Assert.Equal("PlayerOne", Assert.Single(response.Players!.Players).Name);
+        Assert.Collection(
+            response.Players.KnownPlayers!,
+            player =>
+            {
+                Assert.True(player.Online);
+                Assert.Equal("PlayerOne", player.Name);
+            },
+            player =>
+            {
+                Assert.False(player.Online);
+                Assert.Equal("OfflinePlayer", player.Name);
+                Assert.Equal(Guid.Parse("f84c6a79-0a4e-45c3-b682-16ba4a8c4d50"), player.Uuid);
+            });
+
+        var legacyResponse = await processor.ProcessAsync(
+            Request(ProductIpcProtocol.ServerPlayersMethod) with
+            {
+                ServerId = fixture.Registration.Id,
+                ClientMaximumApiVersion = ProductApiProtocol.RuntimeStatusVersion,
+            },
+            default);
+        Assert.True(legacyResponse.Success);
+        Assert.Equal("PlayerOne", Assert.Single(legacyResponse.Players!.Players).Name);
+        Assert.Null(legacyResponse.Players.KnownPlayers);
+
+        Assert.Single(fixture.Factory.Processes)
+            .EmitOutput("[12:35:56] [Server thread/INFO]: PlayerOne left the game");
+        Assert.True(SpinWait.SpinUntil(
+            () => tracker.GetPlayers(fixture.Registration.Id).Count == 0,
+            TimeSpan.FromSeconds(2)));
+        var afterLeave = await processor.ProcessAsync(
+            Request(ProductIpcProtocol.ServerPlayersMethod) with
+            {
+                ServerId = fixture.Registration.Id,
+            },
+            default);
+        Assert.Empty(afterLeave.Players!.Players);
+        Assert.Contains(
+            afterLeave.Players.KnownPlayers!,
+            player => player.Name == "PlayerOne" && !player.Online);
         await tracker.StopAsync(default);
     }
 

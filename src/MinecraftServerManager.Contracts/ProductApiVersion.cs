@@ -82,7 +82,14 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion RuntimeStatusVersion { get; } = new(1, 9);
 
-    public static ProductApiVersion CurrentVersion { get; } = RuntimeStatusVersion;
+    /// <summary>
+    /// First API version that exposes a distinct bounded known-player roster. The legacy Players
+    /// field remains online-only so clients negotiated to 1.9 or older cannot mistake historical
+    /// players for currently connected players.
+    /// </summary>
+    public static ProductApiVersion KnownPlayerRosterVersion { get; } = new(1, 10);
+
+    public static ProductApiVersion CurrentVersion { get; } = KnownPlayerRosterVersion;
 
     public const string RestBasePath = "/api/v1";
 
