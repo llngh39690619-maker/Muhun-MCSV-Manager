@@ -2,12 +2,20 @@
 
 ## 未發布
 
+## 1.2.9-beta.13 — Explorer 啟動器權限修正版（研發中）
+
+- 修正安裝器只替 `launcher` 資料夾設定 current-user／Service 讀取與執行權，卻讓其中的 `Muhun MCSV Updater.exe` 保留建置階段 administrative-only protected ACL，導致開始功能表捷徑目標與參數雖正確，Explorer 仍顯示「Windows 無法存取指定的裝置、路徑或檔案」的問題。
+- 版本樹與穩定 launcher 樹現在共用同一套逐目錄、逐檔案的受保護唯讀執行 ACL；保留 SYSTEM／Administrators 完全控制、目前安裝使用者／Service 讀取與執行、reparse point 拒絕與有界遍歷，並在建立開始功能表捷徑前完成套用。
+- 本機 Android 驗證建置使用 `versionCode 32`；Windows 正式建置共 `3,224 / 3,224` 項測試通過。beta.9 → beta.13 實機升級後，穩定 launcher EXE 的受保護 ACL、Service 自動啟動設定與 active version 均驗證通過，且一般使用者可由穩定 launcher 成功開啟 `1.2.9-beta.13` GUI。
+- 1.2.9-beta.13 本輪只進行 local verification，未發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，本機建置、升級、ACL 與 GUI 啟動驗收通過，尚未發布；研發中。**
+
 ## 1.2.9-beta.12 — 繼承 ACL 快照驗證與服務復原修正版（研發中）
 
 - 修正安裝器把合法的 inherited／unprotected 子項目安全描述元與自身快照比較時，錯誤要求 DACL 必須為 protected、因而安全中止安裝的問題；專用修復快照仍會精確驗證 owner、group、DACL 與控制旗標，只容許 Windows 自動維護的 `DiscretionaryAclAutoInherited` 差異。SACL 不屬於 beta.9 current-user ACL 所授予的可修改範圍，且讀取需額外的 `SeSecurityPrivilege`，因此不納入這條相容性修復路徑。
 - 已因安全修復重試而處於 `Start=4` 的既有受管理 Service，即使 Registry 的 `DelayedAutoStart=0`，後續一般安裝階段失敗時仍會按產品原本的 delayed-auto 模式恢復並重新啟動；秘密修復尚未提交時維持 fail closed，不會提早恢復 Service。
-- 本機 Android 驗證建置使用 `versionCode 31`。1.2.9-beta.12 本輪只進行 local verification，未發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
-- **狀態：Beta，local verification，尚未發布；研發中。**
+- 本機 Android 驗證建置使用 `versionCode 31`。Windows 建置、秘密 ACL 修復、Service 啟動與 beta.9 → beta.12 實機升級通過，但開始功能表捷徑所指的穩定 launcher EXE 保留 administrative-only ACL，導致一般 Explorer token 無法開啟 GUI，因此未發布。
+- **狀態：Beta，建置與核心升級通過、啟動捷徑驗收失敗，未發布；研發中。**
 
 ## 1.2.9-beta.11 — 安裝秘密 ACL 與權杖輪替安全修正版（研發中）
 

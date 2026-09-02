@@ -3827,14 +3827,10 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                 DirectoryGrant(AdministratorsSid, FileSystemRights.FullControl),
                 DirectoryGrant(serviceSid, FileSystemRights.Modify),
             ]);
-        SetExactDirectoryAcl(
-            layout.LauncherRoot,
-            [
-                DirectoryGrant(LocalSystemSid, FileSystemRights.FullControl),
-                DirectoryGrant(AdministratorsSid, FileSystemRights.FullControl),
-                DirectoryGrant(userSid, FileSystemRights.ReadAndExecute),
-                DirectoryGrant(serviceSid, FileSystemRights.ReadAndExecute),
-            ]);
+        // File.Replace preserves the destination launcher's prior ACL. Harden the
+        // complete stable-launcher tree so an older administrative-only ACL cannot
+        // leave an otherwise successful upgrade impossible to launch from Explorer.
+        ApplyReadOnlyExecutableTree(layout.LauncherRoot, userSid, serviceSid);
         SetTraverseContainer(
             Path.GetDirectoryName(layout.ServiceRoot)!,
             [serviceSid, userSid, operatorsSid]);

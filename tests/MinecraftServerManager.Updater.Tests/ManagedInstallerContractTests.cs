@@ -409,6 +409,64 @@ public sealed class ManagedInstallerContractTests
     }
 
     [Fact]
+    public void InstallerHardensTheStableLauncherFileBeforePublishingItsShortcut()
+    {
+        var repository = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            repository,
+            "src",
+            "MinecraftServerManager.Installer",
+            "InstallerEngine.cs"));
+        var applyStart = source.IndexOf(
+            "public void ApplyAccessControl(",
+            StringComparison.Ordinal);
+        var applyEnd = source.IndexOf(
+            "public void ApplyActivePointerAccessControl(",
+            applyStart,
+            StringComparison.Ordinal);
+        Assert.True(applyStart >= 0 && applyEnd > applyStart);
+        var apply = source[applyStart..applyEnd];
+
+        Assert.Contains(
+            "ApplyReadOnlyExecutableTree(targetVersionRoot, userSid, serviceSid);",
+            apply,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ApplyReadOnlyExecutableTree(layout.LauncherRoot, userSid, serviceSid);",
+            apply,
+            StringComparison.Ordinal);
+
+        var installLauncher = source.IndexOf(
+            "launcherRollback = InstallLauncherTransactionally(",
+            StringComparison.Ordinal);
+        var applyAccess = source.IndexOf(
+            "_platform.ApplyAccessControl(",
+            installLauncher,
+            StringComparison.Ordinal);
+        var createShortcut = source.IndexOf(
+            "InstallerShellIntegrationTransaction.Apply(",
+            applyAccess,
+            StringComparison.Ordinal);
+        Assert.True(
+            installLauncher >= 0 && applyAccess > installLauncher && createShortcut > applyAccess,
+            "The stable launcher file must receive its final executable ACL before its shortcut is published.");
+
+        var helperStart = source.IndexOf(
+            "private static void ApplyReadOnlyExecutableTree(",
+            StringComparison.Ordinal);
+        var helperEnd = source.IndexOf(
+            "private static InstallerAclGrant DirectoryGrant(",
+            helperStart,
+            StringComparison.Ordinal);
+        Assert.True(helperStart >= 0 && helperEnd > helperStart);
+        var helper = source[helperStart..helperEnd];
+        Assert.Contains("Directory.EnumerateFiles(directory)", helper, StringComparison.Ordinal);
+        Assert.Contains("SetExactFileAcl(", helper, StringComparison.Ordinal);
+        Assert.Contains("new InstallerAclGrant(userSid, FileSystemRights.ReadAndExecute)", helper, StringComparison.Ordinal);
+        Assert.Contains("new InstallerAclGrant(serviceSid, FileSystemRights.ReadAndExecute)", helper, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormalPipeline_EmitsOnlyTheSignedSetupExecutableAndRemovesStaging()
     {
         var repository = FindRepositoryRoot();
