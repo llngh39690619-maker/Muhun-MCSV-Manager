@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.IO.Pipes;
 using System.Text.Json;
 using MinecraftServerManager.Contracts;
@@ -225,14 +226,19 @@ public sealed class ProductIpcHostedService : BackgroundService
                     break;
                 }
                 catch (Exception exception) when (
-                    exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+                    exception is IOException or InvalidDataException or
+                    UnauthorizedAccessException or InvalidOperationException or Win32Exception)
                 {
                     pipe?.Dispose();
                     _clientSlots.Release();
-                    _serviceState?.MarkIpcNotReady();
+                    var diagnostic = _serviceState?.MarkIpcFailure(exception)
+                        ?? ProductServiceState.CreateIpcFailureDiagnostic(exception);
                     _logger.LogError(
-                        exception,
-                        "The local IPC accept loop could not create or accept a protected named-pipe instance.");
+                        "The local IPC accept loop could not create or accept a protected named-pipe " +
+                        "instance. Code: {FailureCode}; exception: {ExceptionType}; HRESULT: {HResult}.",
+                        diagnostic.Code,
+                        diagnostic.ExceptionType,
+                        $"0x{unchecked((uint)diagnostic.HResult):X8}");
                     await Task.Delay(TimeSpan.FromMilliseconds(250), stoppingToken).ConfigureAwait(false);
                 }
             }

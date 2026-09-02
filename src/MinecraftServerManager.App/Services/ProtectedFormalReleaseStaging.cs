@@ -271,7 +271,7 @@ internal sealed class WindowsManagedProductLauncherDirectoryResolver
             throw new InvalidDataException("The installed Service is not beneath a managed version layout.");
         }
 
-        ValidateProgramFilesInstallRoot(installRoot);
+        ValidateSafeLocalInstallRoot(installRoot);
         ValidateInstallMarker(installRoot);
         var launcher = Path.Combine(installRoot, "launcher");
         if (!Directory.Exists(launcher))
@@ -308,24 +308,34 @@ internal sealed class WindowsManagedProductLauncherDirectoryResolver
         return Path.GetFullPath(executable);
     }
 
-    private static void ValidateProgramFilesInstallRoot(string installRoot)
+    internal static string ValidateSafeLocalInstallRoot(string installRoot)
     {
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (string.IsNullOrWhiteSpace(programFiles))
+        var candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+        if (candidate.StartsWith(@"\\", StringComparison.Ordinal) ||
+            !Directory.Exists(candidate))
         {
-            throw new InvalidOperationException("Windows Program Files is unavailable.");
+            throw new InvalidDataException("The managed install root must be an existing local directory.");
         }
 
-        var prefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(programFiles))
-                     + Path.DirectorySeparatorChar;
-        var candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot))
-                        + Path.DirectorySeparatorChar;
-        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        var volumeRoot = Path.GetPathRoot(candidate)
+            ?? throw new InvalidDataException("The managed install root has no local volume.");
+        if (string.Equals(
+                candidate,
+                Path.TrimEndingDirectorySeparator(volumeRoot),
+                StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The managed product is not installed below Program Files.");
+            throw new InvalidDataException("The managed product cannot use a volume root directly.");
         }
 
-        WindowsProtectedProductPathSecurityValidator.RejectExistingReparsePoints(installRoot);
+        var drive = new DriveInfo(volumeRoot);
+        if (!drive.IsReady || drive.DriveType != DriveType.Fixed ||
+            !string.Equals(drive.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The managed install root must use a local fixed NTFS volume.");
+        }
+
+        WindowsProtectedProductPathSecurityValidator.RejectExistingReparsePoints(candidate);
+        return candidate;
     }
 
     private static void ValidateInstallMarker(string installRoot)

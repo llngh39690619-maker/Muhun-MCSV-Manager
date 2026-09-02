@@ -415,7 +415,7 @@ public sealed class ProductWindowsActivationHealthControllerTests : IDisposable
 
     private (string DataRoot, string Token, Guid InstallationId) CreateDataRoot()
     {
-        var root = Path.Combine(_root, "data-root");
+        var root = Path.Combine(_root, "service", "beta");
         Directory.CreateDirectory(Path.Combine(root, "secrets"));
         Directory.CreateDirectory(Path.Combine(root, "data"));
         File.WriteAllText(Path.Combine(root, ".muhun-mcsv-data-root"), "muhun.mcsv.manager:1\n");
@@ -441,6 +441,7 @@ public sealed class ProductWindowsActivationHealthControllerTests : IDisposable
     private sealed class CapturingPlatform : IProductWindowsServicePlatform
     {
         public string? ServicePath { get; private set; }
+        public string? ExchangeRoot { get; private set; }
         public string? GuiPath { get; private set; }
         public string? Version { get; private set; }
         public bool Alive { get; set; } = true;
@@ -448,9 +449,11 @@ public sealed class ProductWindowsActivationHealthControllerTests : IDisposable
         public Task ConfigureAndRestartAsync(
             string serviceExecutablePath,
             string dataRoot,
+            string exchangeRoot,
             CancellationToken cancellationToken)
         {
             ServicePath = serviceExecutablePath;
+            ExchangeRoot = exchangeRoot;
             return Task.CompletedTask;
         }
 

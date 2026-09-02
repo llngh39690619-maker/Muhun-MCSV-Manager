@@ -6,8 +6,27 @@ public sealed class ApplicationPaths
     public const string PublisherDirectoryName = "Muhun";
 
     public ApplicationPaths(string applicationRoot)
+        : this(
+            applicationRoot,
+            installRoot: null,
+            channel: null,
+            currentUserSid: null,
+            productExchangeRoot: Path.Combine(Path.GetFullPath(applicationRoot), "exchange"))
+    {
+    }
+
+    private ApplicationPaths(
+        string applicationRoot,
+        string? installRoot,
+        string? channel,
+        string? currentUserSid,
+        string productExchangeRoot)
     {
         Root = Path.GetFullPath(applicationRoot);
+        InstallRoot = installRoot is null ? null : Path.GetFullPath(installRoot);
+        Channel = channel;
+        CurrentUserSid = currentUserSid;
+        ProductExchangeRoot = Path.GetFullPath(productExchangeRoot);
         Servers = Path.Combine(Root, "servers");
         ClientRoot = Path.Combine(Root, "client");
         Clients = Path.Combine(ClientRoot, "instances");
@@ -33,40 +52,31 @@ public sealed class ApplicationPaths
     }
 
     /// <summary>
-    /// Resolves the writable per-user root used by the formally installed GUI.  The executable
-    /// lives below Program Files and must never treat its immutable version directory as a data
-    /// directory.  The optional root is intentionally exposed for deterministic contract tests.
+    /// Resolves the writable per-user root used by a managed installation. The install root is
+    /// derived from the active, marker-bound executable instead of an ambient profile folder or
+    /// current working directory. There is deliberately no LocalAppData/ProgramData fallback.
     /// </summary>
-    public static ApplicationPaths CreateForCurrentUser(string? localApplicationDataRoot = null)
+    public static ApplicationPaths CreateForCurrentInstallation(
+        string? guiExecutablePath = null,
+        string? currentUserSid = null)
     {
-        var localRoot = string.IsNullOrWhiteSpace(localApplicationDataRoot)
-            ? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
-            : localApplicationDataRoot;
-        if (string.IsNullOrWhiteSpace(localRoot) || !Path.IsPathFullyQualified(localRoot))
-        {
-            throw new InvalidOperationException("Windows LocalApplicationData is unavailable or invalid.");
-        }
-
-        var fullRoot = Path.GetFullPath(localRoot).TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar);
-        var volumeRoot = Path.GetPathRoot(fullRoot)?.TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar);
-        if (fullRoot.StartsWith(@"\\", StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(volumeRoot) ||
-            string.Equals(fullRoot, volumeRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Windows LocalApplicationData must be a non-root local directory.");
-        }
-
-        return new ApplicationPaths(Path.Combine(
-            fullRoot,
-            PublisherDirectoryName,
-            ProductDirectoryName));
+        var binding = ManagedGuiDataRootResolver.Resolve(
+            guiExecutablePath ?? Environment.ProcessPath,
+            currentUserSid);
+        return new ApplicationPaths(
+            binding.UserDataRoot,
+            binding.InstallRoot,
+            binding.Channel,
+            binding.CurrentUserSid,
+            binding.ProductExchangeRoot);
     }
 
     public string Root { get; }
+    public string? InstallRoot { get; }
+    public string? Channel { get; }
+    public string? CurrentUserSid { get; }
+    public bool IsManagedInstallation => InstallRoot is not null;
+    public string ProductExchangeRoot { get; }
     public string Servers { get; }
     public string ClientRoot { get; }
     public string Clients { get; }
@@ -92,15 +102,23 @@ public sealed class ApplicationPaths
 
     public void EnsureCreated()
     {
-        foreach (var path in new[]
-                 {
-                     Root, Servers, ClientRoot, Clients, ClientCache, ClientCatalogCache,
-                     ClientOperations, ClientStaging, ClientSecrets, ClientRuntimes, Runtimes,
-                     Backups, Cache, OnlineModpackArtworkCache, Themes, Logs, CrashReports,
-                     RecoveryPoints
-                 })
+        var directories = new[]
         {
-            Directory.CreateDirectory(path);
+            Root, ProductExchangeRoot, Servers, ClientRoot, Clients, ClientCache,
+            ClientCatalogCache, ClientOperations, ClientStaging, ClientSecrets,
+            ClientRuntimes, Runtimes, Backups, Cache, OnlineModpackArtworkCache,
+            Themes, Logs, CrashReports, RecoveryPoints
+        };
+        foreach (var path in directories)
+        {
+            if (InstallRoot is null)
+            {
+                Directory.CreateDirectory(path);
+            }
+            else
+            {
+                ManagedGuiDataRootResolver.EnsureDirectoryUnderInstallRoot(InstallRoot, path);
+            }
         }
 
         var probe = Path.Combine(Root, $".write-test-{Guid.NewGuid():N}");

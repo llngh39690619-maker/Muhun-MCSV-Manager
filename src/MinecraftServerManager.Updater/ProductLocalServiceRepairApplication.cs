@@ -399,6 +399,7 @@ internal static class ProductLocalServiceRepairApplication
     {
         if (!string.Equals(initial.InstallRoot, current.InstallRoot, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(initial.DataRoot, current.DataRoot, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(initial.ExchangeRoot, current.ExchangeRoot, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(current.ActiveVersion, activator.ReadActiveVersion(), StringComparison.Ordinal) ||
             !string.Equals(current.ServiceVersion, current.ActiveVersion, StringComparison.Ordinal))
         {

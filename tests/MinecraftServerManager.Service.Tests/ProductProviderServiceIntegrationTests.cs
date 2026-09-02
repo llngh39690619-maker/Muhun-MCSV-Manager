@@ -53,6 +53,7 @@ public sealed class ProductProviderServiceIntegrationTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port={port}",
             UniqueIpcPipeArgument(),
         ]);
@@ -126,6 +127,7 @@ public sealed class ProductProviderServiceIntegrationTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port={port}",
             UniqueIpcPipeArgument(),
         ]);

@@ -76,7 +76,7 @@
     "main.remoteManagement": "Remote management",
     "main.mobileRemote": "Mobile remote",
     "main.webConsole": "Web console",
-    "main.openDataDirectory": "Open data folder",
+    "main.openDataDirectory": "Open GUI / client data",
     "main.onlineModpack": "Install modpack online",
     "main.importServer": "+ Import existing server",
     "main.createCore": "Create server from core",

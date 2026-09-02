@@ -33,6 +33,8 @@ param(
     [ValidateRange(1, 64)]
     [int]$MaxBuildConcurrency = 4,
 
+    [bool]$InstallerOnly = $true,
+
     [switch]$KeepStaging
 )
 
@@ -75,7 +77,13 @@ $stagingRoot = Join-Path $stagingParent "$Version-$([guid]::NewGuid().ToString('
 $stagingMarker = Join-Path $stagingRoot '.muhun-formal-staging'
 $payloadRoot = Join-Path $stagingRoot 'payload'
 $builtinProviderRoot = Join-Path $stagingRoot 'builtin-provider-win-x64'
+$installerHostRoot = Join-Path $stagingRoot 'installer-host-win-x64'
 $testResultsRoot = Join-Path $stagingRoot 'test-results'
+$formalOutputRoot = if ($InstallerOnly) {
+    Join-Path $stagingRoot 'formal-release'
+} else {
+    [IO.Path]::GetFullPath($OutputDirectory)
+}
 $androidBuildToolsRoot = Join-Path $resolvedToolingRoot 'android-sdk\build-tools\36.0.0'
 $androidApkSigner = Join-Path $androidBuildToolsRoot 'apksigner.bat'
 $androidAapt2 = Join-Path $androidBuildToolsRoot 'aapt2.exe'
@@ -558,6 +566,7 @@ function Assert-FormalSourceIdentity {
         'src\MinecraftServerManager.Service\MinecraftServerManager.Service.csproj' = 'Muhun MCSV Service'
         'src\MinecraftServerManager.App\MinecraftServerManager.App.csproj' = 'Muhun MCSV Manager'
         'src\MinecraftServerManager.Updater\MinecraftServerManager.Updater.csproj' = 'Muhun MCSV Updater'
+        'src\MinecraftServerManager.Installer\MinecraftServerManager.Installer.csproj' = 'Muhun MCSV Setup'
         'src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj' = 'Muhun.MCSV.BuiltinProvider'
     }
     foreach ($entry in $formalAssemblyNames.GetEnumerator()) {
@@ -625,7 +634,6 @@ New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $testResultsRoot -Force | Out-Null
 [IO.File]::WriteAllText($stagingMarker, 'muhun.mcsv.formal-staging:1', [Text.UTF8Encoding]::new($false))
 
-$buildCompleted = $false
 $heavyBuildMutex = [Threading.Mutex]::new($false, 'Local\Muhun.Mcsv.HeavyBuild.v1')
 $heavyBuildMutexHeld = $false
 try {
@@ -730,10 +738,12 @@ try {
     )
     $providerProject = Join-Path $projectRoot `
         'src\MinecraftServerManager.BuiltinProvider\MinecraftServerManager.BuiltinProvider.csproj'
+    $installerProject = Join-Path $projectRoot `
+        'src\MinecraftServerManager.Installer\MinecraftServerManager.Installer.csproj'
     # RID-specific lock data is intentionally scoped to publishable source projects. Including
     # test projects in a solution-wide RID restore is invalid because their lock files are
     # framework-only. These restores are incremental and never rebuild the solution.
-    foreach ($publishRestoreProject in @($publishProjects.Project) + @($providerProject)) {
+    foreach ($publishRestoreProject in @($publishProjects.Project) + @($providerProject, $installerProject)) {
         Invoke-Dotnet @(
             'restore', $publishRestoreProject,
             '--runtime', 'win-x64',
@@ -747,6 +757,10 @@ try {
             -Destination $publish.Destination)
         Remove-PublishDebugArtifacts -Destination $publish.Destination
     }
+    Invoke-Dotnet (Get-PublishArguments `
+        -Project $installerProject `
+        -Destination $installerHostRoot)
+    Remove-PublishDebugArtifacts -Destination $installerHostRoot
 
     foreach ($releaseDocument in @(
             [pscustomobject]@{ Source = 'THIRD-PARTY-NOTICES.txt'; Destination = 'THIRD-PARTY-NOTICES.txt' },
@@ -770,20 +784,37 @@ try {
     & (Join-Path $PSScriptRoot 'New-MuhunMcsvRelease.ps1') `
         -PayloadDirectory $payloadRoot `
         -BuiltinProviderDirectory $builtinProviderRoot `
+        -InstallerHostDirectory $installerHostRoot `
+        -InstallerVerifierAssemblyPath (Join-Path $projectRoot `
+            'src\MinecraftServerManager.Installer\bin\Release\net10.0-windows\Muhun MCSV Setup.dll') `
+        -DotNetHostPath $dotnet `
         -MobileArtifactDirectory $mobileArtifactRoot `
         -AndroidApkSignerPath $androidApkSigner `
         -AndroidAapt2Path $androidAapt2 `
         -AndroidVersionCode $AndroidVersionCode `
-        -OutputDirectory $OutputDirectory `
+        -OutputDirectory $formalOutputRoot `
         -Version $Version `
         -PackageBaseUri $PackageBaseUri `
         -SigningIdentityDirectory $SigningIdentityDirectory `
         -Channel $Channel `
         -PublisherTrustMode $PublisherTrustMode `
         -TimestampServerUrl $TimestampServerUrl
-    $buildCompleted = $true
+    if ($InstallerOnly) {
+        [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory)) | Out-Null
+        $installerFileName = "Muhun-MCSV-$Version-Setup.exe"
+        $installerSource = Join-Path $formalOutputRoot $installerFileName
+        $installerDestination = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $installerFileName
+        if (-not [IO.File]::Exists($installerSource) -or [IO.File]::Exists($installerDestination)) {
+            throw 'The verified single-EXE installer output is missing or would overwrite a file.'
+        }
+        [IO.File]::Copy($installerSource, $installerDestination, $false)
+        $finalFiles = @(Get-ChildItem -LiteralPath ([IO.Path]::GetFullPath($OutputDirectory)) -File -Force)
+        if ($finalFiles.Count -ne 1 -or $finalFiles[0].FullName -cne $installerDestination) {
+            throw 'InstallerOnly output must contain exactly one setup EXE.'
+        }
+    }
 } finally {
-    if ($buildCompleted -and -not $KeepStaging -and
+    if (-not $KeepStaging -and
         [IO.File]::Exists($stagingMarker) -and
         [IO.File]::ReadAllText($stagingMarker) -eq 'muhun.mcsv.formal-staging:1') {
         $resolvedStaging = [IO.Path]::GetFullPath($stagingRoot)

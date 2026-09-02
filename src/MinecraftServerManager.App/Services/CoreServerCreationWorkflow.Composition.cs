@@ -62,7 +62,9 @@ public sealed partial class CoreServerCreationWorkflow
                 spigotMetadataClient,
                 spigotArtifactClient,
                 ProviderUserAgent),
-            new SpigotBuildToolsRunner());
+            new SpigotBuildToolsRunner(
+                localWorkspaceRoot: Path.Combine(paths.Cache, "build-tools-work"),
+                managedMinGitCacheRoot: Path.Combine(paths.Cache, "managed-tools", "mingit")));
         var backend = new CompositeCoreServerCreationBackend(
         [
             new KeyValuePair<string, ICoreServerCreationBackend>(

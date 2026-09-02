@@ -48,11 +48,12 @@ public static class ProductServiceApplication
 
         var serviceOptions = ReadOptions(builder.Configuration);
         ProductServiceOptionsValidator.ValidateAndThrow(serviceOptions);
-        if (!WindowsServiceHelpers.IsWindowsService() && string.IsNullOrWhiteSpace(serviceOptions.DataRoot))
+        if (string.IsNullOrWhiteSpace(serviceOptions.DataRoot) ||
+            string.IsNullOrWhiteSpace(serviceOptions.ExchangeRoot))
         {
             throw new InvalidOperationException(
-                "Console execution of this foundation build requires an explicit Mcsv:Service:DataRoot. " +
-                "The Windows Service installer will provision the production data root and ACL.");
+                "Service execution requires explicit Mcsv:Service:DataRoot and " +
+                "Mcsv:Service:ExchangeRoot values provisioned by the installer.");
         }
 
         var layout = ProductDataLayout.FromOptions(serviceOptions);
@@ -278,6 +279,7 @@ public static class ProductServiceApplication
             Port = section.GetValue<int?>(nameof(ProductServiceOptions.Port))
                    ?? ProductServiceOptions.DefaultPort,
             DataRoot = section[nameof(ProductServiceOptions.DataRoot)],
+            ExchangeRoot = section[nameof(ProductServiceOptions.ExchangeRoot)],
             IpcPipeName = section[nameof(ProductServiceOptions.IpcPipeName)]
                           ?? ProductApiProtocol.IpcPackage,
             EnableRemoteWebInConsole = section.GetValue<bool?>(
@@ -385,14 +387,19 @@ public static class ProductServiceApplication
 
         application.MapGet(
             $"{ProductApiProtocol.RestBasePath}/system/activation-ready",
-            (ProductServiceState state) => Results.Json(
-                new ProductActivationReadyResponse(
-                    state.IsReady ? "ready" : "starting",
-                    ProductName,
-                    ProductVersion,
-                    state.InstallationId,
-                    state.StartedAtUtc,
-                    state.IsReady)));
+            (ProductServiceState state) =>
+            {
+                var ready = state.IsReady;
+                return Results.Json(
+                    new ProductActivationReadyResponse(
+                        ready ? "ready" : "starting",
+                        ProductName,
+                        ProductVersion,
+                        state.InstallationId,
+                        state.StartedAtUtc,
+                        ready,
+                        ready ? null : state.StartupFailure));
+            });
 
         var serversPath = $"{ProductApiProtocol.RestBasePath}/servers";
         application.MapGet(

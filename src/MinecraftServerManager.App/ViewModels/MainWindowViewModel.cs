@@ -231,6 +231,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             onlineModpackDialogService: null,
             serverDeletionConfirmationService: deletionConfirmationService,
             productServiceClient: client ?? new ProductServiceClient(),
+            productServiceImportsRoot: paths.ProductExchangeRoot,
             productServiceUpdateLauncher: productServiceUpdateLauncher);
 
     internal MainWindowViewModel(
@@ -576,6 +577,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     public RelayCommand OpenBackgroundJobsCommand { get; }
     public AsyncRelayCommand UpdateProductServiceCommand { get; }
     public RelayCommand OpenDataFolderCommand { get; }
+
+    public string UserDataRootPath => _paths.Root;
     public RelayCommand OpenSettingsCommand { get; }
     public RelayCommand OpenAppearanceSettingsCommand { get; }
     public RelayCommand OpenServerAppearanceCommand { get; }

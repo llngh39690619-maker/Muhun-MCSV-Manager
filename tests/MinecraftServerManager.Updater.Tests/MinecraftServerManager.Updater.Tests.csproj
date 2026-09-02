@@ -15,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\MinecraftServerManager.Installer\MinecraftServerManager.Installer.csproj" />
     <ProjectReference Include="..\..\src\MinecraftServerManager.Updater\MinecraftServerManager.Updater.csproj" />
   </ItemGroup>
 

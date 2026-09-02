@@ -25,6 +25,7 @@ public interface IProductWindowsServicePlatform
     Task ConfigureAndRestartAsync(
         string serviceExecutablePath,
         string dataRoot,
+        string exchangeRoot,
         CancellationToken cancellationToken);
 
     Task<ProductGuiActivationAck> RequestGuiActivationAsync(
@@ -79,6 +80,7 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
     public async Task ConfigureAndRestartAsync(
         string serviceExecutablePath,
         string dataRoot,
+        string exchangeRoot,
         CancellationToken cancellationToken)
     {
         if (_enforceWindows && !OperatingSystem.IsWindows())
@@ -90,20 +92,29 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
             serviceExecutablePath,
             "Muhun MCSV Service.exe");
         var normalizedDataRoot = ProductActivationCredentialReader.ValidateDataRoot(dataRoot);
+        var normalizedExchangeRoot = Path.GetFullPath(exchangeRoot);
+        ProductManagedStorageLayout.ValidateCanonicalSiblingRoots(
+            normalizedDataRoot,
+            normalizedExchangeRoot);
         await StopServiceAsync(cancellationToken).ConfigureAwait(false);
         _ = await _commandRunner(
                 [
                     "config",
                     ServiceName,
                     "binPath=",
-                    $"\"{servicePath}\" \"--Mcsv:Service:DataRoot={normalizedDataRoot}\"",
+                    $"\"{servicePath}\" \"--Mcsv:Service:DataRoot={normalizedDataRoot}\" " +
+                    $"\"--Mcsv:Service:ExchangeRoot={normalizedExchangeRoot}\"",
                     "start=",
                     "delayed-auto",
                 ],
                 allowTransientStopFailure: false,
                 cancellationToken)
             .ConfigureAwait(false);
-        ValidateRegistration(servicePath, normalizedDataRoot, _registrationReader());
+        ValidateRegistration(
+            servicePath,
+            normalizedDataRoot,
+            normalizedExchangeRoot,
+            _registrationReader());
         _ = await _commandRunner(
                 ["start", ServiceName],
                 allowTransientStopFailure: false,
@@ -291,10 +302,11 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
     internal static void ValidateRegistration(
         string expectedServicePath,
         string expectedDataRoot,
+        string expectedExchangeRoot,
         ProductWindowsServiceRegistration registration)
     {
         ArgumentNullException.ThrowIfNull(registration);
-        var (registeredServicePath, registeredDataRoot) =
+        var (registeredServicePath, registeredDataRoot, registeredExchangeRoot) =
             ProductManagedInstallationResolver.ParseServiceImagePath(registration.ImagePath);
         if (!string.Equals(
                 registeredServicePath,
@@ -305,6 +317,14 @@ public sealed class ProductWindowsServicePlatform : IProductWindowsServicePlatfo
                     Path.DirectorySeparatorChar,
                     Path.AltDirectorySeparatorChar),
                 Path.GetFullPath(expectedDataRoot).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                Path.GetFullPath(registeredExchangeRoot).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(expectedExchangeRoot).TrimEnd(
                     Path.DirectorySeparatorChar,
                     Path.AltDirectorySeparatorChar),
                 StringComparison.OrdinalIgnoreCase) ||
@@ -490,6 +510,7 @@ public sealed class ProductWindowsActivationHealthController : IProductUpdateHea
     };
     private readonly int _servicePort;
     private readonly string _dataRoot;
+    private readonly string _exchangeRoot;
     private readonly IProductWindowsServicePlatform _platform;
     private readonly HttpClient _httpClient;
     private readonly byte[] _serviceToken;
@@ -510,6 +531,8 @@ public sealed class ProductWindowsActivationHealthController : IProductUpdateHea
 
         _servicePort = servicePort;
         _dataRoot = ProductActivationCredentialReader.ValidateDataRoot(dataRoot);
+        _exchangeRoot = ProductManagedStorageLayout.ResolveExchangeRootFromServiceDataRoot(
+            _dataRoot);
         (_serviceToken, _installationId) = ProductActivationCredentialReader.Read(_dataRoot);
         _platform = platform ?? new ProductWindowsServicePlatform();
         _httpClient = new HttpClient(httpHandler ?? new SocketsHttpHandler
@@ -531,7 +554,11 @@ public sealed class ProductWindowsActivationHealthController : IProductUpdateHea
         var layout = ProductActivationPathPolicy.ResolveFormalLayout(executablePath);
         ProductActivationPathPolicy.ValidateMatchingProductVersions(layout);
 
-        await _platform.ConfigureAndRestartAsync(layout.ServicePath, _dataRoot, cancellationToken)
+        await _platform.ConfigureAndRestartAsync(
+                layout.ServicePath,
+                _dataRoot,
+                _exchangeRoot,
+                cancellationToken)
             .ConfigureAwait(false);
         _guiAcknowledgement = await _platform
             .RequestGuiActivationAsync(layout.GuiPath, layout.Version, cancellationToken)

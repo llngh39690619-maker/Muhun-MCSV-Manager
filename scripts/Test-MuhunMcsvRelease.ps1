@@ -266,13 +266,33 @@ function Assert-FormalProductVersion {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-    $productVersion = ([string]$versionInfo.ProductVersion).Trim()
     $versionParts = $ExpectedVersion.Split('-', 2)[0].Split('.')
     $expectedNumericVersion = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).0"
+    $maximumVersionInfoReadAttempts = 4
+    $versionInfo = $null
+    $productVersion = ''
+    $fileVersion = ''
+    for ($attempt = 1; $attempt -le $maximumVersionInfoReadAttempts; $attempt++) {
+        # Keep bounded protection for a genuinely transient double-empty metadata read after
+        # extraction; partial or incorrect metadata still fails at once.
+        $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+        $productVersion = ([string]$versionInfo.ProductVersion).Trim()
+        $fileVersion = ([string]$versionInfo.FileVersion).Trim()
+        if ($productVersion -ceq $ExpectedVersion -and
+            $fileVersion -ceq $expectedNumericVersion) {
+            break
+        }
+        if (-not ([string]::IsNullOrWhiteSpace($productVersion) -and
+                [string]::IsNullOrWhiteSpace($fileVersion))) {
+            break
+        }
+        if ($attempt -lt $maximumVersionInfoReadAttempts) {
+            [Threading.Thread]::Sleep(100)
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($productVersion) -or
         $productVersion -cne $ExpectedVersion -or
-        ([string]$versionInfo.FileVersion).Trim() -cne $expectedNumericVersion) {
+        $fileVersion -cne $expectedNumericVersion) {
         throw "$Label ProductVersion/FileVersion does not equal signed release '$ExpectedVersion' / '$expectedNumericVersion'."
     }
 
@@ -511,45 +531,42 @@ try {
         } catch {
             throw '開始使用.txt must be strict UTF-8.'
         }
+        $releaseStageLabel = if ($manifest.channel -eq 'beta') { '研發中' } else { '正式版' }
         $requiredGettingStartedText = @(
-            "X MCSV $($manifest.version) 正式發行包 — 開始使用",
-            '這不是可攜式（portable）單一 EXE',
-            'PowerShell 7.4 或更新版本',
-            '以系統管理員身分開啟 PowerShell 7',
-            "`$expectedPublisherCertificateSha256 = '$expectedPublisherCertificateSha256'",
-            'Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256',
-            'GitHub Release 的獨立正式公告核對',
-            'Read-Host',
-            'certutil.exe" -addstore -f Root',
-            'if ($LASTEXITCODE -ne 0)',
-            'certutil.exe" -addstore -f TrustedPublisher',
-            'Get-AuthenticodeSignature',
-            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
-            'Test-MuhunMcsvRelease.ps1',
-            'Install-MuhunMcsv.ps1',
+            "X MCSV $($manifest.version) 安裝程式 — $releaseStageLabel",
+            "版本狀態：$releaseStageLabel。",
+            '可直接安裝的單一 Setup EXE',
+            "雙擊「Muhun-MCSV-$($manifest.version)-Setup.exe」",
+            'Windows 使用者帳戶控制（UAC）',
+            '自由選擇安全的本機安裝位置',
+            '所有程式與永久資料都保存在所選安裝根目錄',
+            'D:\MCSV 與其所有子目錄',
+            '不會讀取、寫入、移動或刪除其中任何內容',
             'Windows 開始功能表的「X MCSV」捷徑啟動 GUI'
         )
+        $forbiddenGettingStartedPattern =
+            '(?i)PowerShell|pwsh|certutil|Set-ExecutionPolicy|Get-AuthenticodeSignature|' +
+            'Install-MuhunMcsv\.ps1|Test-MuhunMcsvRelease\.ps1|Read-Host|publisher\.cer'
+        $guideWithoutProtectedLegacyRoot = $gettingStartedText.Replace(
+            'D:\MCSV',
+            '',
+            [StringComparison]::OrdinalIgnoreCase)
         if (@($requiredGettingStartedText | Where-Object {
                     -not $gettingStartedText.Contains($_, [StringComparison]::Ordinal)
                 }).Count -ne 0 -or
-            $gettingStartedText -match '(?i)-ExecutionPolicy\s+Bypass' -or
-            $gettingStartedText -match '(?i)\b[a-z]:[\\/]' -or
+            $gettingStartedText -match $forbiddenGettingStartedPattern -or
+            $guideWithoutProtectedLegacyRoot -match '(?i)\b[a-z]:[\\/]' -or
             $gettingStartedText -match '(?i)(?:formal-release-output|new-chat[\\/]work)') {
-            throw '開始使用.txt is incomplete, has the wrong version, or contains a fixed build path.'
+            throw '開始使用.txt is incomplete, has the wrong version, requires a manual script, or contains an unexpected fixed build path.'
         }
         $orderedGettingStartedText = @(
-            'Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256',
-            'Write-Host "publisher.cer SHA-256:',
-            'GitHub Release 的獨立正式公告核對',
-            'Read-Host',
-            'certutil.exe" -addstore -f Root',
-            'if ($LASTEXITCODE -ne 0)',
-            'certutil.exe" -addstore -f TrustedPublisher',
-            'if ($LASTEXITCODE -ne 0)',
-            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
-            'Get-AuthenticodeSignature',
-            "& (Join-Path `$release 'Test-MuhunMcsvRelease.ps1')",
-            "& (Join-Path `$release 'Install-MuhunMcsv.ps1')"
+            "雙擊「Muhun-MCSV-$($manifest.version)-Setup.exe」",
+            'Windows 使用者帳戶控制（UAC）',
+            '自由選擇安全的本機安裝位置',
+            '按下「安裝」',
+            '所有程式與永久資料都保存在所選安裝根目錄',
+            'D:\MCSV 與其所有子目錄',
+            'Windows 開始功能表的「X MCSV」捷徑啟動 GUI'
         )
         $previousGuideOffset = -1
         foreach ($orderedText in $orderedGettingStartedText) {
@@ -558,12 +575,13 @@ try {
                 $previousGuideOffset + 1,
                 [StringComparison]::Ordinal)
             if ($guideOffset -lt 0) {
-                throw '開始使用.txt does not preserve the required trust-bootstrap execution order.'
+                throw '開始使用.txt does not preserve the required single-EXE installation order.'
             }
             $previousGuideOffset = $guideOffset
         }
 
         $requiredAuthenticodeFiles = @(
+            "Muhun-MCSV-$($manifest.version)-Setup.exe",
             'service-win-x64/Muhun MCSV Service.exe',
             'gui-win-x64/Muhun MCSV Manager.exe',
             'updater-win-x64/Muhun MCSV Updater.exe',

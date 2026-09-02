@@ -322,13 +322,14 @@ public sealed class SpigotBuildToolsRunner
     public SpigotBuildToolsRunner(
         IModrinthLoaderBootstrapProcessRunner? processRunner = null,
         SpigotBuildToolsCommandBuilder? commandBuilder = null,
-        string? localWorkspaceRoot = null)
+        string? localWorkspaceRoot = null,
+        string? managedMinGitCacheRoot = null)
         : this(
             processRunner,
             commandBuilder,
             SpigotBuildToolsProvider.ReviewedBuildTools,
             localWorkspaceRoot ?? GetDefaultLocalWorkspaceRoot(),
-            new ManagedMinGitProvider(GetDefaultManagedMinGitCacheRoot()))
+            new ManagedMinGitProvider(managedMinGitCacheRoot ?? GetDefaultManagedMinGitCacheRoot()))
     {
     }
 

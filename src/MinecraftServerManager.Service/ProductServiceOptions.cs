@@ -14,6 +14,13 @@ public sealed class ProductServiceOptions
     public string? DataRoot { get; init; }
 
     /// <summary>
+    /// Administrator-provisioned exchange directory writable by both the desktop operator and
+    /// the Service. It is intentionally outside the Service-owned data tree so staging access
+    /// never grants desktop users access to secrets, registries, backups or live worlds.
+    /// </summary>
+    public string? ExchangeRoot { get; init; }
+
+    /// <summary>
     /// Named-pipe endpoint used by the local desktop client. Production installations keep the
     /// protocol default; isolated diagnostics may choose a unique name so a signed candidate can
     /// be verified without stopping the active Service.
@@ -54,44 +61,27 @@ public static class ProductServiceOptionsValidator
 
         if (!string.IsNullOrWhiteSpace(options.DataRoot))
         {
-            if (!Path.IsPathFullyQualified(options.DataRoot))
+            ValidateLocalRoot(options.DataRoot, "data", errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ExchangeRoot))
+        {
+            ValidateLocalRoot(options.ExchangeRoot, "exchange", errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.DataRoot) &&
+            !string.IsNullOrWhiteSpace(options.ExchangeRoot) &&
+            errors.Count == 0)
+        {
+            try
             {
-                errors.Add("Service data root must be an absolute path.");
+                ProductManagedStorageLayout.ValidateSeparatedRoots(
+                    options.DataRoot,
+                    options.ExchangeRoot);
             }
-            else
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException)
             {
-                try
-                {
-                    var fullPath = Path.GetFullPath(options.DataRoot);
-                    var pathRoot = Path.GetPathRoot(fullPath);
-                    var isRemoteOrDevicePath = fullPath.StartsWith(@"\\", StringComparison.Ordinal) ||
-                                               fullPath.StartsWith("//", StringComparison.Ordinal);
-                    if (isRemoteOrDevicePath)
-                    {
-                        errors.Add("Service data root must be on a local drive, not a UNC or device path.");
-                    }
-
-                    if (string.Equals(
-                            fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                            pathRoot?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        errors.Add("Service data root cannot be a drive root.");
-                    }
-
-                    if (!isRemoteOrDevicePath && File.Exists(fullPath))
-                    {
-                        errors.Add("Service data root must be a directory, not a file.");
-                    }
-                    else if (!isRemoteOrDevicePath && ContainsExistingReparsePoint(fullPath))
-                    {
-                        errors.Add("Service data root cannot traverse an existing reparse point.");
-                    }
-                }
-                catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-                {
-                    errors.Add("Service data root is not a valid absolute path.");
-                }
+                errors.Add(exception.Message);
             }
         }
 
@@ -120,6 +110,51 @@ public static class ProductServiceOptionsValidator
         }
 
         return false;
+    }
+
+    private static void ValidateLocalRoot(
+        string value,
+        string label,
+        ICollection<string> errors)
+    {
+        if (!Path.IsPathFullyQualified(value))
+        {
+            errors.Add($"Service {label} root must be an absolute path.");
+            return;
+        }
+
+        try
+        {
+            var fullPath = Path.GetFullPath(value);
+            var pathRoot = Path.GetPathRoot(fullPath);
+            var isRemoteOrDevicePath = fullPath.StartsWith(@"\\", StringComparison.Ordinal) ||
+                                       fullPath.StartsWith("//", StringComparison.Ordinal);
+            if (isRemoteOrDevicePath)
+            {
+                errors.Add($"Service {label} root must be on a local drive, not a UNC or device path.");
+            }
+
+            if (string.Equals(
+                    fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    pathRoot?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errors.Add($"Service {label} root cannot be a drive root.");
+            }
+
+            if (!isRemoteOrDevicePath && File.Exists(fullPath))
+            {
+                errors.Add($"Service {label} root must be a directory, not a file.");
+            }
+            else if (!isRemoteOrDevicePath && ContainsExistingReparsePoint(fullPath))
+            {
+                errors.Add($"Service {label} root cannot traverse an existing reparse point.");
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            errors.Add($"Service {label} root is not a valid absolute path.");
+        }
     }
 
     public static void ValidateAndThrow(ProductServiceOptions options)

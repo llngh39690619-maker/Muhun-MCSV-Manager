@@ -47,6 +47,8 @@ public sealed class InstallerScriptContractTests
             StringComparison.Ordinal);
         Assert.Contains("$operatorsBrowseAcl = $operatorsPrincipal + ':(OI)(CI)RX'", source, StringComparison.Ordinal);
         Assert.Contains("$installerBrowseAcl = '*' + $installerSidValue + ':(OI)(CI)RX'", source, StringComparison.Ordinal);
+        Assert.Contains("users\\$installerSidValue\\$channel", source, StringComparison.Ordinal);
+        Assert.Contains("'/setowner' ('*' + $installerSidValue) '/T' '/C' '/Q' '/L'", source, StringComparison.Ordinal);
         Assert.Contains("$serviceBrowseDirectory '/inheritance:r' '/grant:r'", source, StringComparison.Ordinal);
         Assert.Contains("$serviceBrowseDirectory '/grant:r'", source, StringComparison.Ordinal);
         Assert.Contains("$operatorsBrowseAcl $installerBrowseAcl '/T' '/C' '/Q' '/L'", source, StringComparison.Ordinal);
@@ -459,6 +461,56 @@ public sealed class InstallerScriptContractTests
         Assert.DoesNotContain("Cert:\\LocalMachine\\Root", identity, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("Set-AuthenticodeSignature", release, StringComparison.Ordinal);
+        foreach (var (scriptSource, scriptLabel) in new[]
+                 {
+                     (release, "release builder"),
+                     (verifier, "release verifier")
+                 })
+        {
+            var formalProductVersionFunction = System.Text.RegularExpressions.Regex.Match(
+                scriptSource,
+                @"(?ms)^function Assert-FormalProductVersion \{.*?^\}\r?$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            Assert.True(
+                formalProductVersionFunction.Success,
+                $"Could not locate the formal ProductVersion validator in the {scriptLabel}.");
+            Assert.Contains(
+                "$maximumVersionInfoReadAttempts = 4",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "$attempt -le $maximumVersionInfoReadAttempts",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "$attempt -lt $maximumVersionInfoReadAttempts",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "[Diagnostics.FileVersionInfo]::GetVersionInfo($Path)",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "[Threading.Thread]::Sleep(100)",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Matches(
+                @"(?s)\$productVersion -ceq \$ExpectedVersion -and\s+" +
+                @"\$fileVersion -ceq \$expectedNumericVersion\) \{\s+break\s+\}\s+" +
+                @"if \(-not \(\[string\]::IsNullOrWhiteSpace\(\$productVersion\) -and\s+" +
+                @"\[string\]::IsNullOrWhiteSpace\(\$fileVersion\)\)\) \{\s+break\s+\}\s+" +
+                @"if \(\$attempt -lt \$maximumVersionInfoReadAttempts\)",
+                formalProductVersionFunction.Value);
+            Assert.Contains(
+                "$productVersion -cne $ExpectedVersion",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "$fileVersion -cne $expectedNumericVersion",
+                formalProductVersionFunction.Value,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("while (", formalProductVersionFunction.Value, StringComparison.Ordinal);
+        }
         Assert.Contains("ConvertTo-ReleasePowerShellUtf8Bom", release, StringComparison.Ordinal);
         Assert.Contains("Assert-SignedReleasePowerShellScript", release, StringComparison.Ordinal);
         Assert.Contains("[Text.UTF8Encoding]::new($false, $true)", release, StringComparison.Ordinal);
@@ -543,6 +595,20 @@ public sealed class InstallerScriptContractTests
         Assert.Contains("providers/muhun.catalog/muhun.catalog.mcsvp", verifier, StringComparison.Ordinal);
         Assert.Contains("Muhun.MCSV.BuiltinProvider.exe", release, StringComparison.Ordinal);
         Assert.Contains("Muhun.MCSV.BuiltinProvider.exe", verifier, StringComparison.Ordinal);
+        Assert.Contains(
+            "Join-Path $outputRoot \".p-$([guid]::NewGuid().ToString('N'))\"",
+            release,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(".provider-staging-", release, StringComparison.Ordinal);
+        Assert.Contains(
+            "$providerExecutable = [IO.Path]::GetFullPath(",
+            release,
+            StringComparison.Ordinal);
+        Assert.Contains("$providerExecutable.Length -ge 260", release, StringComparison.Ordinal);
+        Assert.Contains(
+            "exceeds the classic Windows path limit",
+            release,
+            StringComparison.Ordinal);
         Assert.Contains("$archive.Entries.Count -gt 10000", verifier, StringComparison.Ordinal);
         Assert.Contains("$totalUncompressedLength", verifier, StringComparison.Ordinal);
         Assert.Contains("$zipEntry.CompressedLength", verifier, StringComparison.Ordinal);
@@ -573,6 +639,37 @@ public sealed class InstallerScriptContractTests
     }
 
     [Fact]
+    public void AuthenticodeSigningRetriesOnlyBoundedNativeFileLockFailures()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            RepositoryRoot,
+            "scripts",
+            "New-MuhunMcsvRelease.ps1"));
+        var signingFunction = System.Text.RegularExpressions.Regex.Match(
+            source,
+            @"(?ms)^function Set-ProductAuthenticodeSignature \{.*?^\}\r?$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        Assert.True(signingFunction.Success, "Could not locate the Authenticode signing helper.");
+        Assert.Contains("$maximumSigningAttempts = 6", signingFunction.Value, StringComparison.Ordinal);
+        Assert.Contains(
+            "$attempt -le $maximumSigningAttempts",
+            signingFunction.Value,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$attempt -ge $maximumSigningAttempts",
+            signingFunction.Value,
+            StringComparison.Ordinal);
+        Assert.Contains("$_.Exception -is [IO.IOException]", signingFunction.Value, StringComparison.Ordinal);
+        Assert.Contains("$_.Exception.HResult -band 0xFFFF", signingFunction.Value, StringComparison.Ordinal);
+        Assert.Contains("$win32ErrorCode -in @(0x20, 0x21)", signingFunction.Value, StringComparison.Ordinal);
+        Assert.Contains("[Threading.Thread]::Sleep", signingFunction.Value, StringComparison.Ordinal);
+        Assert.Contains("throw", signingFunction.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("Exception.Message", signingFunction.Value, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("while (", signingFunction.Value, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReleaseGettingStartedGuide_IsVersionedActionableAndCoveredBySignedHashes()
     {
         var release = File.ReadAllText(Path.Combine(
@@ -589,20 +686,30 @@ public sealed class InstallerScriptContractTests
         Assert.True(guideStart >= 0 && guideEnd > guideStart);
         var guideSource = release[guideStart..guideEnd];
 
-        Assert.Contains("X MCSV $Version 正式發行包 — 開始使用", guideSource, StringComparison.Ordinal);
-        Assert.Contains("這不是可攜式（portable）單一 EXE", guideSource, StringComparison.Ordinal);
-        Assert.Contains("PowerShell 7.4 或更新版本", guideSource, StringComparison.Ordinal);
-        Assert.Contains("以系統管理員身分開啟 PowerShell 7", guideSource, StringComparison.Ordinal);
-        Assert.Contains("Get-AuthenticodeSignature", guideSource, StringComparison.Ordinal);
-        Assert.Contains(
-            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force",
-            guideSource,
-            StringComparison.Ordinal);
-        Assert.Contains("Test-MuhunMcsvRelease.ps1", guideSource, StringComparison.Ordinal);
-        Assert.Contains("Install-MuhunMcsv.ps1", guideSource, StringComparison.Ordinal);
-        Assert.Contains("Muhun MCSV Manager", guideSource, StringComparison.Ordinal);
-        Assert.DoesNotMatch("(?i)\\b[a-z]:[\\\\/]", guideSource);
-        Assert.DoesNotContain("ExecutionPolicy Bypass", guideSource, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("X MCSV $Version 安裝程式 — $releaseStageLabel", guideSource, StringComparison.Ordinal);
+        Assert.Contains("版本狀態：$releaseStageLabel", guideSource, StringComparison.Ordinal);
+        Assert.Contains("可直接安裝的單一 Setup EXE", guideSource, StringComparison.Ordinal);
+        Assert.Contains("Windows 使用者帳戶控制（UAC）", guideSource, StringComparison.Ordinal);
+        Assert.Contains("自由選擇安全的本機安裝位置", guideSource, StringComparison.Ordinal);
+        Assert.Contains("所有程式與永久資料都保存在所選安裝根目錄", guideSource, StringComparison.Ordinal);
+        Assert.Contains("D:\\MCSV 與其所有子目錄", guideSource, StringComparison.Ordinal);
+        Assert.Contains("Windows 開始功能表的「X MCSV」", guideSource, StringComparison.Ordinal);
+        foreach (var forbidden in new[]
+                 {
+                     "PowerShell",
+                     "pwsh",
+                     "certutil",
+                     "Set-ExecutionPolicy",
+                     "Get-AuthenticodeSignature",
+                     "Test-MuhunMcsvRelease.ps1",
+                     "Install-MuhunMcsv.ps1",
+                     "Read-Host",
+                     "publisher.cer"
+                 })
+        {
+            Assert.DoesNotContain(forbidden, guideSource, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.DoesNotContain("new-chat", guideSource, StringComparison.OrdinalIgnoreCase);
 
         var guideWrite = release.IndexOf(
             "Write-AtomicUtf8Text -Path (Join-Path $outputRoot '開始使用.txt')",
@@ -624,7 +731,54 @@ public sealed class InstallerScriptContractTests
             StringComparison.Ordinal);
         Assert.Contains("[Text.UTF8Encoding]::new($false, $true)", verifier, StringComparison.Ordinal);
         Assert.Contains("$gettingStartedText.Contains", verifier, StringComparison.Ordinal);
-        Assert.Contains("contains a fixed build path", verifier, StringComparison.Ordinal);
+        Assert.Contains("unexpected fixed build path", verifier, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MaintenanceScriptsRejectPreservedDMcsvBeforeAnyFilesystemProbe()
+    {
+        foreach (var scriptName in new[] { "Install-MuhunMcsv.ps1", "Uninstall-MuhunMcsv.ps1" })
+        {
+            var source = File.ReadAllText(Path.Combine(RepositoryRoot, "scripts", scriptName));
+            var guard = System.Text.RegularExpressions.Regex.Match(
+                source,
+                @"(?ms)^function Assert-NotPreservedMcsvDataTreePath \{.*?^\}\r?$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            Assert.True(guard.Success, $"Could not locate the pure path guard in {scriptName}.");
+            Assert.Contains("[IO.Path]::GetFullPath", guard.Value, StringComparison.Ordinal);
+            Assert.Contains("TrimEnd", guard.Value, StringComparison.Ordinal);
+            foreach (var forbiddenProbe in new[]
+                     {
+                         "Test-Path",
+                         "Get-Item",
+                         "Resolve-Path",
+                         "Get-Content",
+                         "Get-AuthenticodeSignature",
+                         "Get-Acl",
+                         "[IO.File]",
+                         "[IO.Directory]",
+                     })
+            {
+                Assert.DoesNotContain(forbiddenProbe, guard.Value, StringComparison.OrdinalIgnoreCase);
+            }
+
+            const string mainGuardCall = "Assert-NotPreservedMcsvDataTreePath -Path $InstallRoot";
+            var mainGuardIndex = source.LastIndexOf(mainGuardCall, StringComparison.Ordinal);
+            Assert.True(
+                mainGuardIndex > guard.Index + guard.Length,
+                $"{scriptName} must invoke the guard in its main flow, outside the function body.");
+            var mainFlow = source[mainGuardIndex..];
+            Assert.StartsWith(mainGuardCall, mainFlow, StringComparison.Ordinal);
+            var firstFilesystemProbe = System.Text.RegularExpressions.Regex.Match(
+                mainFlow,
+                @"(?im)\b(?:Test-Path|Get-Item|Resolve-Path|Get-Content|Get-AuthenticodeSignature|Get-Acl)\b|\[IO\.(?:File|Directory)\]",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            Assert.True(
+                !firstFilesystemProbe.Success || firstFilesystemProbe.Index > mainGuardCall.Length,
+                $"{scriptName} probes the filesystem before rejecting the protected path.");
+
+            AssertPowerShellGuardRejectsProtectedPathSpellings(guard.Value, scriptName);
+        }
     }
 
     [Fact]
@@ -641,19 +795,90 @@ public sealed class InstallerScriptContractTests
         Assert.Contains("Muhun MCSV Manager.lnk", source, StringComparison.Ordinal);
         Assert.Contains("FileAttributes]::ReparsePoint", source, StringComparison.Ordinal);
         Assert.Contains("Test-IsUnderRoot", source, StringComparison.Ordinal);
-        Assert.Contains("Resolve-GuardedRoot $install", source, StringComparison.Ordinal);
+        Assert.Contains("Resolve-GuardedRoot $InstallRoot", source, StringComparison.Ordinal);
         Assert.Contains("CloseMainWindow", source, StringComparison.Ordinal);
         Assert.Contains("managedVersionsPrefix", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RemoveUserClientData", source, StringComparison.Ordinal);
         Assert.Contains("[string]$UserClientDataRoot", source, StringComparison.Ordinal);
         Assert.Contains("[string]$UserClientDataOwnerSid", source, StringComparison.Ordinal);
         Assert.Contains("Resolve-GuardedUserClientDataRoot", source, StringComparison.Ordinal);
-        Assert.Contains("ProfileList\\$OwnerSid", source, StringComparison.Ordinal);
-        Assert.Contains("AppData\\Local\\Muhun\\MCSV\\client", source, StringComparison.Ordinal);
+        Assert.Contains("users\\$OwnerSid", source, StringComparison.Ordinal);
+        Assert.Contains("<stable|beta>", source, StringComparison.Ordinal);
         Assert.Contains("Get-Acl -LiteralPath $fullPath", source, StringComparison.Ordinal);
         Assert.Contains("$actualOwnerSid.Value -ne $expectedOwnerSid.Value", source, StringComparison.Ordinal);
-        Assert.Contains("提升權限後不可推測互動使用者的 LocalAppData", source, StringComparison.Ordinal);
+        Assert.Contains("提升權限後不可推測", source, StringComparison.Ordinal);
     }
+
+    private static void AssertPowerShellGuardRejectsProtectedPathSpellings(
+        string guardFunction,
+        string scriptName)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var cases = new (string Path, string BasePath)[]
+        {
+            (@"D:\MCSV", @"C:\safe"),
+            (@"d:\mcsv\", @"C:\safe"),
+            (@"D:\MCSV.", @"C:\safe"),
+            (@"D:\MCSV   ", @"C:\safe"),
+            (@"D:\MCSV...\child", @"C:\safe"),
+            (@"D:/foo/../MCSV", @"C:\safe"),
+            (@"\\?\D:\MCSV", @"C:\safe"),
+            (@"\\.\D:\MCSV", @"C:\safe"),
+            (@"//?/D:/MCSV/child", @"C:\safe"),
+            (@"\??\D:\MCSV", @"C:\safe"),
+            (@"..\MCSV", @"D:\folder"),
+            (@"..\..\MCSV\child", @"D:\one\two"),
+        };
+        var caseTable = string.Join(
+            ",\n",
+            cases.Select(item =>
+                "[pscustomobject]@{ Path = '" + EscapePowerShellLiteral(item.Path) +
+                "'; BasePath = '" + EscapePowerShellLiteral(item.BasePath) + "' }"));
+        var probeScript =
+            "$ErrorActionPreference = 'Stop'\n" +
+            guardFunction + "\n" +
+            "$cases = @(\n" + caseTable + "\n)\n" +
+            "foreach ($case in $cases) {\n" +
+            "    $rejected = $false\n" +
+            "    try { Assert-NotPreservedMcsvDataTreePath -Path $case.Path -BasePath $case.BasePath } " +
+            "catch { $rejected = $true }\n" +
+            "    if (-not $rejected) { Write-Error ('guard accepted: ' + $case.Path); exit 31 }\n" +
+            "}\n" +
+            "try { Assert-NotPreservedMcsvDataTreePath -Path 'C:\\Program Files\\MCSV' " +
+            "-BasePath 'C:\\safe' } catch { Write-Error $_.Exception.Message; exit 32 }\n" +
+            "exit 0\n";
+        var encodedProbe = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(probeScript));
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "pwsh.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-NoLogo");
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(encodedProbe);
+
+        using var process = System.Diagnostics.Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Could not start the pure path probe for {scriptName}.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(
+            process.ExitCode == 0,
+            $"{scriptName} did not reject every protected path spelling. Exit={process.ExitCode}; " +
+            $"stdout={standardOutput}; stderr={standardError}");
+    }
+
+    private static string EscapePowerShellLiteral(string value) =>
+        value.Replace("'", "''", StringComparison.Ordinal);
 
     private static string FindRepositoryRoot()
     {

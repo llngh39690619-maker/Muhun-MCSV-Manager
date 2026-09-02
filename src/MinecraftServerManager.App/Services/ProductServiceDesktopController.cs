@@ -116,7 +116,7 @@ internal sealed class ProductServiceDesktopController :
         string? authorizedImportsRoot = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _imports = new ProductServerImportStagingClient(_client);
+        _imports = new ProductServerImportStagingClient(_client, authorizedImportsRoot);
         _modpackUpdates = new ProductServerModpackUpdateStagingClient(
             _client,
             authorizedImportsRoot);

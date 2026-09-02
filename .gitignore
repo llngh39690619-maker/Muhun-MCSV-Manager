@@ -430,6 +430,8 @@ FodyWeavers.xsd
 
 # Muhun MCSV Manager: generated release and local runtime data
 /artifacts/
+/.test-artifacts/
+/.dotnet-cli-home/
 /publish/
 /formal-release-output/
 /qa/

@@ -134,12 +134,12 @@ public partial class App : Application
                 e.Args,
                 out activationAcknowledgementRequest);
 
-            // Formal installations are immutable below Program Files.  Only diagnostic commands
-            // retain their self-contained working directory so release QA remains isolated; the
-            // interactive product stores preferences/cache below the current user's LocalAppData.
+            // Diagnostic commands remain self-contained for deterministic release QA. Interactive
+            // launches must be the active GUI in an installer-owned A/B slot; all mutable data is
+            // then bound to that selected install root with no LocalAppData/ProgramData fallback.
             var paths = diagnosticMode
                 ? new ApplicationPaths(AppContext.BaseDirectory)
-                : ApplicationPaths.CreateForCurrentUser();
+                : ApplicationPaths.CreateForCurrentInstallation();
             LocalizationService.Current.Initialize(paths.LanguageSettingsFile);
             _singleInstanceGuard = SingleInstanceGuard.TryAcquire(
                 diagnosticMode ? AppContext.BaseDirectory : paths.Root);

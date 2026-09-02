@@ -5,9 +5,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceDirectory,
 
-    [string]$InstallRoot = "$env:ProgramFiles\Muhun\MCSV",
+    [string]$InstallRoot = "$env:ProgramFiles\MCSV",
 
-    [string]$DataRoot = "$env:ProgramData\Muhun\MCSV"
+    [string]$DataRoot,
+
+    [string]$ExchangeRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +21,8 @@ $operatorsGroupName = 'Muhun MCSV Operators'
 $operatorsGroupDescription = 'Accounts authorized to control Muhun MCSV.'
 $installMarker = '.muhun-mcsv-install-root'
 $dataMarker = '.muhun-mcsv-data-root'
+$exchangeMarker = '.muhun-mcsv-exchange-root'
+$userDataMarker = '.muhun-mcsv-user-data-root'
 $expectedMarker = 'muhun.mcsv.manager:1'
 $manifestName = 'release-manifest.json'
 $checksumName = 'SHA256SUMS.txt'
@@ -34,6 +38,78 @@ $startupShortcutName = 'Muhun MCSV GUI Activation Broker.lnk'
 $installedUninstallerRelativePath = 'tools\Uninstall-MuhunMcsv.ps1'
 $arpRegistrySubKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuhunMCSV'
 $serviceStopTimeoutSeconds = 120
+
+function Assert-NotPreservedMcsvDataTreePath {
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Path,
+        [string]$BasePath = [Environment]::CurrentDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $rawPath = $Path.Trim()
+    $windowsPath = $rawPath.Replace('/', '\')
+    if ($windowsPath.StartsWith('\\', [StringComparison]::Ordinal) -or
+        $windowsPath.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase) -or
+        $windowsPath.StartsWith('\Device\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw '程式安裝目錄不可使用 UNC 或 Windows 裝置路徑。'
+    }
+
+    try {
+        if ([IO.Path]::IsPathFullyQualified($rawPath)) {
+            $fullPath = [IO.Path]::GetFullPath($rawPath)
+        } else {
+            $lexicalBase = if ([string]::IsNullOrWhiteSpace($BasePath)) {
+                [Environment]::CurrentDirectory
+            } else { $BasePath.Trim() }
+            $windowsBase = $lexicalBase.Replace('/', '\')
+            if ($windowsBase.StartsWith('\\', [StringComparison]::Ordinal) -or
+                $windowsBase.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase) -or
+                $windowsBase.StartsWith('\Device\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw '程式安裝目錄的基準位置不可使用 UNC 或 Windows 裝置路徑。'
+            }
+            $fullPath = [IO.Path]::GetFullPath(
+                $rawPath,
+                [IO.Path]::GetFullPath($lexicalBase))
+        }
+    } catch {
+        throw "程式安裝目錄不是可安全正規化的 Windows 路徑：$($_.Exception.Message)"
+    }
+
+    $windowsFullPath = $fullPath.Replace('/', '\')
+    if ($windowsFullPath.StartsWith('\\', [StringComparison]::Ordinal) -or
+        $windowsFullPath.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase) -or
+        $windowsFullPath.StartsWith('\Device\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw '程式安裝目錄不可使用 UNC 或 Windows 裝置路徑。'
+    }
+    $pathRoot = [IO.Path]::GetPathRoot($windowsFullPath)
+    if ([string]::IsNullOrWhiteSpace($pathRoot)) {
+        throw '程式安裝目錄沒有可安全辨識的磁碟區。'
+    }
+    $relativePath = $windowsFullPath.Substring($pathRoot.Length)
+    $segments = @($relativePath.Split(
+            [char[]]@('\', '/'),
+            [StringSplitOptions]::RemoveEmptyEntries) |
+        ForEach-Object { $_.TrimEnd([char[]]@(' ', '.')) })
+    if (@($segments | Where-Object {
+                [string]::IsNullOrEmpty($_) -or $_.Contains(':')
+            }).Count -ne 0) {
+        throw '程式安裝目錄含有不安全的 Windows 路徑片段。'
+    }
+    $protectionIdentity = $pathRoot.TrimEnd([char[]]@('\', '/'))
+    if ($segments.Count -gt 0) {
+        $protectionIdentity += '\' + ($segments -join '\')
+    }
+    $preservedDataRoot = 'D:\MCSV'
+    if ([string]::Equals(
+            $protectionIdentity,
+            $preservedDataRoot,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $protectionIdentity.StartsWith(
+            $preservedDataRoot + '\',
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'D:\MCSV 與其所有子目錄是受保護的舊版資料；安裝流程不會讀取、寫入、移動或刪除它。'
+    }
+}
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -685,6 +761,7 @@ function Set-AndAssertInstallExecutableTreeAcl {
         [Parameter(Mandatory = $true)][string]$ActivationStateRoot,
         [Parameter(Mandatory = $true)][string]$StableLauncherRoot,
         [Parameter(Mandatory = $true)][string]$ActivePointerPath,
+        [string[]]$ExcludedRoots = @(),
         [Parameter(Mandatory = $true)]
         [Security.Principal.SecurityIdentifier]$InstallerSid,
         [AllowNull()]
@@ -697,7 +774,26 @@ function Set-AndAssertInstallExecutableTreeAcl {
     $rootGrants = @(New-InstallAclGrants $InstallerSid $ServiceSid $rootRights)
     Set-ExactProtectedPathAcl $InstallRoot $rootGrants '程式安裝根目錄'
 
-    $items = @(Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop)
+    $normalizedExcludedRoots = @($ExcludedRoots | ForEach-Object {
+        [IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+    })
+    $items = @(
+        $pendingDirectories = [Collections.Generic.Stack[string]]::new()
+        $pendingDirectories.Push($InstallRoot)
+        while ($pendingDirectories.Count -gt 0) {
+            $currentDirectory = $pendingDirectories.Pop()
+            foreach ($item in @(Get-ChildItem -LiteralPath $currentDirectory -Force -ErrorAction Stop)) {
+                $itemPath = [IO.Path]::GetFullPath($item.FullName).TrimEnd('\', '/')
+                $isExcluded = @($normalizedExcludedRoots | Where-Object {
+                    [string]::Equals($itemPath, $_, [StringComparison]::OrdinalIgnoreCase) -or
+                    (Test-IsUnderRoot $itemPath $_)
+                }).Count -gt 0
+                if ($isExcluded) { continue }
+                $item
+                if ($item -is [IO.DirectoryInfo]) { $pendingDirectories.Push($item.FullName) }
+            }
+        }
+    )
     if (@($items | Where-Object {
         ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
     }).Count -ne 0) {
@@ -714,7 +810,21 @@ function Set-AndAssertInstallExecutableTreeAcl {
     # cannot escape the final fail-closed ACL and reparse validation.
     $verifiedItems = @(
         Get-Item -LiteralPath $InstallRoot -Force -ErrorAction Stop
-        Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+        $pendingDirectories = [Collections.Generic.Stack[string]]::new()
+        $pendingDirectories.Push($InstallRoot)
+        while ($pendingDirectories.Count -gt 0) {
+            $currentDirectory = $pendingDirectories.Pop()
+            foreach ($item in @(Get-ChildItem -LiteralPath $currentDirectory -Force -ErrorAction Stop)) {
+                $itemPath = [IO.Path]::GetFullPath($item.FullName).TrimEnd('\', '/')
+                $isExcluded = @($normalizedExcludedRoots | Where-Object {
+                    [string]::Equals($itemPath, $_, [StringComparison]::OrdinalIgnoreCase) -or
+                    (Test-IsUnderRoot $itemPath $_)
+                }).Count -gt 0
+                if ($isExcluded) { continue }
+                $item
+                if ($item -is [IO.DirectoryInfo]) { $pendingDirectories.Push($item.FullName) }
+            }
+        }
     )
     foreach ($item in $verifiedItems) {
         $rights = Get-InstallTreeServiceRights $item.FullName $VersionsRoot `
@@ -1776,6 +1886,7 @@ function Set-ArpRegistrationTransactionally {
         [Parameter(Mandatory = $true)][string]$Version,
         [Parameter(Mandatory = $true)][string]$InstallRoot,
         [Parameter(Mandatory = $true)][string]$DataRoot,
+        [Parameter(Mandatory = $true)][string]$ExchangeRoot,
         [Parameter(Mandatory = $true)][string]$UninstallerPath,
         [Parameter(Mandatory = $true)][string]$PowerShellPath
     )
@@ -1792,7 +1903,8 @@ function Set-ArpRegistrationTransactionally {
             $expectedPublisherCertificateSha256) {
         throw '安裝版本的解除安裝器未通過固定正式發布者 Authenticode 與時間戳驗證。'
     }
-    foreach ($commandPath in @($PowerShellPath, $UninstallerPath, $InstallRoot, $DataRoot)) {
+    foreach ($commandPath in @(
+        $PowerShellPath, $UninstallerPath, $InstallRoot, $DataRoot, $ExchangeRoot)) {
         if ($commandPath.IndexOf('"') -ge 0 -or $commandPath.IndexOf("`r") -ge 0 -or
             $commandPath.IndexOf("`n") -ge 0) {
             throw '解除安裝命令含有不安全的路徑字元。'
@@ -1801,6 +1913,7 @@ function Set-ArpRegistrationTransactionally {
     $uninstallString = '"' + $PowerShellPath +
         '" -NoProfile -ExecutionPolicy AllSigned -File "' +
         $UninstallerPath + '" -InstallRoot "' + $InstallRoot + '" -DataRoot "' + $DataRoot + '"'
+    $uninstallString += ' -ExchangeRoot "' + $ExchangeRoot + '"'
 
     $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
         [Microsoft.Win32.RegistryHive]::LocalMachine,
@@ -1845,6 +1958,8 @@ function Set-ArpRegistrationTransactionally {
         $key.SetValue('DisplayVersion', $Version, [Microsoft.Win32.RegistryValueKind]::String)
         $key.SetValue('Publisher', 'Muhun', [Microsoft.Win32.RegistryValueKind]::String)
         $key.SetValue('InstallLocation', $InstallRoot, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('ServiceDataLocation', $DataRoot, [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('ExchangeLocation', $ExchangeRoot, [Microsoft.Win32.RegistryValueKind]::String)
         $key.SetValue('UninstallString', $uninstallString, [Microsoft.Win32.RegistryValueKind]::String)
         $key.SetValue('NoModify', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
         $key.SetValue('NoRepair', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
@@ -1899,6 +2014,7 @@ function Restore-ArpRegistrationTransaction {
             $knownNewValues = @(
                 'ProductId', 'PublisherCertificateSha256', 'DisplayName', 'DisplayVersion',
                 'Publisher', 'InstallLocation', 'UninstallString',
+                'ServiceDataLocation', 'ExchangeLocation',
                 'NoModify', 'NoRepair', 'WindowsInstaller'
             )
             foreach ($valueName in @($key.GetValueNames())) {
@@ -2447,21 +2563,16 @@ function Move-ProvisionedVersionToQuarantine {
     return $quarantine
 }
 
+Assert-NotPreservedMcsvDataTreePath -Path $InstallRoot
 Assert-Administrator
 Assert-LocalGroupDescriptionSupported
 $source = Resolve-SafeLocalDirectory $SourceDirectory '安裝來源'
 $install = Resolve-SafeLocalDirectory $InstallRoot '程式安裝目錄'
-$data = Resolve-SafeLocalDirectory $DataRoot '資料目錄'
 if (-not (Test-Path -LiteralPath $source -PathType Container)) {
     throw '找不到正式安裝來源目錄。'
 }
 Assert-NoExistingReparsePoints $source '安裝來源'
 Assert-NoExistingReparsePoints $install '程式安裝目錄'
-Assert-NoExistingReparsePoints $data '資料目錄'
-if ((Test-IsUnderRoot $data $install) -or (Test-IsUnderRoot $install $data) -or
-    (Test-IsUnderRoot $source $install) -or (Test-IsUnderRoot $install $source)) {
-    throw '安裝來源、程式目錄與資料目錄不可互相包含。'
-}
 $scriptDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $PSCommandPath)).TrimEnd('\', '/')
 if (-not [string]::Equals($scriptDirectory, $source, [StringComparison]::OrdinalIgnoreCase)) {
     throw '必須執行正式發行目錄內已簽署的 Install-MuhunMcsv.ps1。'
@@ -2469,10 +2580,34 @@ if (-not [string]::Equals($scriptDirectory, $source, [StringComparison]::Ordinal
 
 $verifiedRelease = Assert-ReleasePayload $source
 $manifest = $verifiedRelease.Manifest
+$channel = [string]$manifest.channel
+if ($channel -notin @('stable', 'beta')) {
+    throw '已驗證 release channel 不是 stable 或 beta。'
+}
+$canonicalDataRoot = Join-Path $install "service\$channel"
+$canonicalExchangeRoot = Join-Path $install "exchange\$channel"
+$data = Resolve-SafeLocalDirectory `
+    $(if ([string]::IsNullOrWhiteSpace($DataRoot)) { $canonicalDataRoot } else { $DataRoot }) `
+    '資料目錄'
+$exchange = Resolve-SafeLocalDirectory `
+    $(if ([string]::IsNullOrWhiteSpace($ExchangeRoot)) { $canonicalExchangeRoot } else { $ExchangeRoot }) `
+    '交換目錄'
+Assert-NoExistingReparsePoints $data '資料目錄'
+Assert-NoExistingReparsePoints $exchange '交換目錄'
+if (-not [string]::Equals($data, $canonicalDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals($exchange, $canonicalExchangeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Service 資料與交換目錄必須固定為安裝根目錄下的 service\$channel 與 exchange\$channel。"
+}
+if ((Test-IsUnderRoot $source $install) -or (Test-IsUnderRoot $install $source) -or
+    (Test-IsUnderRoot $data $exchange) -or (Test-IsUnderRoot $exchange $data)) {
+    throw '安裝來源不得與產品根目錄重疊，Service 資料與交換目錄也必須分離。'
+}
 $installExistedBefore = Test-Path -LiteralPath $install -PathType Container
 $dataExistedBefore = Test-Path -LiteralPath $data -PathType Container
+$exchangeExistedBefore = Test-Path -LiteralPath $exchange -PathType Container
 Assert-ManagedRootOrEmpty $install $installMarker
 Assert-ManagedRootOrEmpty $data $dataMarker
+Assert-ManagedRootOrEmpty $exchange $exchangeMarker
 $versionsRoot = Join-Path $install 'versions'
 $versionRoot = Join-Path $versionsRoot $manifest.version
 $stagingRoot = Join-Path $install ".staging-$([guid]::NewGuid().ToString('N'))"
@@ -2533,6 +2668,9 @@ if ($null -eq $installerIdentity.User -or
 }
 $installerSidValue = $installerIdentity.User.Value
 $installerSid = $installerIdentity.User
+$userDataRoot = Join-Path $install "users\$installerSidValue\$channel"
+$userDataExistedBefore = Test-Path -LiteralPath $userDataRoot -PathType Container
+Assert-ManagedRootOrEmpty $userDataRoot $userDataMarker
 $trustedPowerShellPath = Assert-TrustedPowerShellHost
 $arpSnapshot = Get-ArpRegistrationSnapshot -InstallRoot $install
 $installTreeServiceSid = Get-OptionalProductServiceSid
@@ -2607,6 +2745,7 @@ try {
     if ($PSCmdlet.ShouldProcess($install, "安裝 X MCSV $($manifest.version)")) {
         Add-OwnedImmediateParentDirectory $install $ownedParentDirectories
         Add-OwnedImmediateParentDirectory $data $ownedParentDirectories
+        Add-OwnedImmediateParentDirectory $exchange $ownedParentDirectories
         New-Item -ItemType Directory -Path $install -Force | Out-Null
         New-Item -ItemType Directory -Path $versionsRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $activationStateRoot -Force | Out-Null
@@ -2620,6 +2759,7 @@ try {
             -ActivationStateRoot $activationStateRoot `
             -StableLauncherRoot $stableLauncherRoot `
             -ActivePointerPath $activePointerPath `
+            -ExcludedRoots @($data, $exchange, $userDataRoot) `
             -InstallerSid $installerSid `
             -ServiceSid $installTreeServiceSid
         # The independently signed verifier runs only from this administrator-owned staging.
@@ -2631,8 +2771,10 @@ try {
             -StagingRoot $verifierStagingRoot `
             -InstallRoot $install
         New-Item -ItemType Directory -Path $data -Force | Out-Null
+        New-Item -ItemType Directory -Path $exchange -Force | Out-Null
+        New-Item -ItemType Directory -Path $userDataRoot -Force | Out-Null
         $serviceDataDirectories = @(
-            'data', 'secrets', 'operations', 'imports', 'servers', 'runtimes',
+            'data', 'secrets', 'operations', 'servers', 'runtimes',
             'backups', 'updates', 'plugins', 'logs'
         )
         foreach ($directoryName in $serviceDataDirectories) {
@@ -2640,6 +2782,8 @@ try {
         }
         Write-AtomicText (Join-Path $install $installMarker) $expectedMarker
         Write-AtomicText (Join-Path $data $dataMarker) $expectedMarker
+        Write-AtomicText (Join-Path $exchange $exchangeMarker) $expectedMarker
+        Write-AtomicText (Join-Path $userDataRoot $userDataMarker) $expectedMarker
         Write-AtomicText (Join-Path $data $installerOperatorSidRelativePath) $installerSidValue
         $existingVersionState = Get-ExistingVersionPayloadState `
             -VersionRoot $versionRoot `
@@ -2700,8 +2844,9 @@ try {
             -DestinationPath $stableLauncherPath `
             -PublisherCertificateSha256 $manifest.publisherCertificateSha256 `
             -Mutation $stableLauncherMutation
-        $serviceArguments = '--Mcsv:Service:DataRoot=' + $data
-        $binaryPath = '"' + $serviceExecutable + '" "' + $serviceArguments + '"'
+        $serviceArguments = '"--Mcsv:Service:DataRoot=' + $data + '" ' +
+            '"--Mcsv:Service:ExchangeRoot=' + $exchange + '"'
+        $binaryPath = '"' + $serviceExecutable + '" ' + $serviceArguments
         if ($null -eq $existing) {
             Invoke-Sc create $serviceName `
                 'binPath=' $binaryPath `
@@ -2775,13 +2920,26 @@ try {
         }
         $operatorsImportAcl = $operatorsPrincipal + ':(OI)(CI)M'
         $installerImportAcl = '*' + $installerSidValue + ':(OI)(CI)M'
-        $importsDirectory = Join-Path $data 'imports'
+        $importsDirectory = $exchange
         $importsAclOutput = & "$env:SystemRoot\System32\icacls.exe" $importsDirectory `
             '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' `
             'BUILTIN\Administrators:(OI)(CI)F' 'NT SERVICE\MuhunMCSV:(OI)(CI)M' `
             $operatorsImportAcl $installerImportAcl 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "匯入暫存目錄 ACL 建立失敗：$($importsAclOutput -join ' ')"
+        }
+
+        $userDataAclOutput = & "$env:SystemRoot\System32\icacls.exe" $userDataRoot `
+            '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' `
+            'BUILTIN\Administrators:(OI)(CI)F' `
+            ('*' + $installerSidValue + ':(OI)(CI)M') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "目前使用者資料目錄 ACL 建立失敗：$($userDataAclOutput -join ' ')"
+        }
+        $userDataOwnerOutput = & "$env:SystemRoot\System32\icacls.exe" $userDataRoot `
+            '/setowner' ('*' + $installerSidValue) '/T' '/C' '/Q' '/L' 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "目前使用者資料目錄擁有者設定失敗：$($userDataOwnerOutput -join ' ')"
         }
 
 
@@ -2794,6 +2952,7 @@ try {
             -ActivationStateRoot $activationStateRoot `
             -StableLauncherRoot $stableLauncherRoot `
             -ActivePointerPath $activePointerPath `
+            -ExcludedRoots @($data, $exchange, $userDataRoot) `
             -InstallerSid $installerSid `
             -ServiceSid $installTreeServiceSid
 
@@ -2824,6 +2983,7 @@ try {
             -Version $manifest.version `
             -InstallRoot $install `
             -DataRoot $data `
+            -ExchangeRoot $exchange `
             -UninstallerPath $installedUninstallerPath `
             -PowerShellPath $trustedPowerShellPath
         $postInstallBootstrapperPath = $sourceStableLauncher
@@ -2977,6 +3137,7 @@ try {
                 -ActivationStateRoot $activationStateRoot `
                 -StableLauncherRoot $stableLauncherRoot `
                 -ActivePointerPath $activePointerPath `
+                -ExcludedRoots @($data, $exchange, $userDataRoot) `
                 -InstallerSid $installerSid `
                 -ServiceSid $installTreeServiceSid
         } catch { $rollbackErrors.Add($_.Exception.Message) }
@@ -3003,6 +3164,33 @@ try {
             }
             Remove-Item -LiteralPath $data -Recurse -Force
         } catch { $rollbackErrors.Add($_.Exception.Message) }
+    }
+    foreach ($newManagedRoot in @(
+        [pscustomobject]@{
+            Existed = $exchangeExistedBefore
+            Path = $exchange
+            Marker = $exchangeMarker
+            Label = '交換'
+        },
+        [pscustomobject]@{
+            Existed = $userDataExistedBefore
+            Path = $userDataRoot
+            Marker = $userDataMarker
+            Label = '使用者資料'
+        })) {
+        if (-not $newManagedRoot.Existed -and
+            (Test-Path -LiteralPath $newManagedRoot.Path -PathType Container)) {
+            try {
+                Assert-NoExistingReparsePoints $newManagedRoot.Path `
+                    ("new " + $newManagedRoot.Label + " rollback root")
+                $managedMarkerPath = Join-Path $newManagedRoot.Path $newManagedRoot.Marker
+                if (-not (Test-Path -LiteralPath $managedMarkerPath -PathType Leaf) -or
+                    (Get-Content -LiteralPath $managedMarkerPath -Raw).Trim() -cne $expectedMarker) {
+                    throw "新$($newManagedRoot.Label)目錄缺少受管理標記，拒絕在回復時刪除。"
+                }
+                Remove-Item -LiteralPath $newManagedRoot.Path -Recurse -Force
+            } catch { $rollbackErrors.Add($_.Exception.Message) }
+        }
     }
     foreach ($ownedParent in @($ownedParentDirectories.Values)) {
         try {

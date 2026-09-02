@@ -76,7 +76,9 @@ public sealed class InstallerP1HardeningContractTests
         Assert.Contains("-not $expected.ContainsKey($sidValue)", verifier, StringComparison.Ordinal);
         Assert.Contains("$rule.FileSystemRights -ne", verifier, StringComparison.Ordinal);
 
-        Assert.Contains("Get-ChildItem -LiteralPath $InstallRoot -Recurse -Force", tree, StringComparison.Ordinal);
+        Assert.Contains("[Collections.Generic.Stack[string]]::new()", tree, StringComparison.Ordinal);
+        Assert.Contains("Get-ChildItem -LiteralPath $currentDirectory -Force", tree, StringComparison.Ordinal);
+        Assert.Contains("$normalizedExcludedRoots", tree, StringComparison.Ordinal);
         Assert.Contains("程式安裝可執行樹含有 reparse point", tree, StringComparison.Ordinal);
         Assert.Contains("# Re-enumerate after the writes", tree, StringComparison.Ordinal);
         Assert.Contains("Assert-ExactProtectedPathAcl", tree, StringComparison.Ordinal);

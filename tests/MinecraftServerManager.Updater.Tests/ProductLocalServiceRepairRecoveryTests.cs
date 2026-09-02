@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MinecraftServerManager.Contracts;
 
 namespace MinecraftServerManager.Updater.Tests;
 
@@ -21,7 +22,7 @@ public sealed class ProductLocalServiceRepairRecoveryTests : IDisposable
         const string targetVersion = "1.2.9-beta.4";
         var installRoot = Path.Combine(_root, "install");
         var releaseRoot = Path.Combine(_root, "release");
-        var dataRoot = Path.Combine(_root, "data");
+        var dataRoot = Path.Combine(installRoot, "service", "beta");
         Directory.CreateDirectory(installRoot);
         Directory.CreateDirectory(releaseRoot);
         File.WriteAllText(Path.Combine(installRoot, ".muhun-mcsv-install-root"), "muhun.mcsv.manager:1\n");
@@ -76,6 +77,7 @@ public sealed class ProductLocalServiceRepairRecoveryTests : IDisposable
             return new ProductManagedInstallation(
                 installRoot,
                 dataRoot,
+                ProductManagedStorageLayout.ResolveExchangeRootFromServiceDataRoot(dataRoot),
                 active,
                 serviceVersion,
                 Path.Combine(

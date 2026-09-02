@@ -9,6 +9,15 @@ param(
     [string]$BuiltinProviderDirectory,
 
     [Parameter(Mandatory = $true)]
+    [string]$InstallerHostDirectory,
+
+    [Parameter(Mandatory = $true)]
+    [string]$InstallerVerifierAssemblyPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DotNetHostPath,
+
+    [Parameter(Mandatory = $true)]
     [string]$MobileArtifactDirectory,
 
     [Parameter(Mandatory = $true)]
@@ -53,6 +62,9 @@ if (-not $IsWindows) {
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\', '/')
 $payloadRoot = [IO.Path]::GetFullPath($PayloadDirectory).TrimEnd('\', '/')
 $builtinProviderRoot = [IO.Path]::GetFullPath($BuiltinProviderDirectory).TrimEnd('\', '/')
+$installerHostRoot = [IO.Path]::GetFullPath($InstallerHostDirectory).TrimEnd('\', '/')
+$installerVerifierAssembly = [IO.Path]::GetFullPath($InstallerVerifierAssemblyPath)
+$dotNetHost = [IO.Path]::GetFullPath($DotNetHostPath)
 $mobileArtifactRoot = [IO.Path]::GetFullPath($MobileArtifactDirectory).TrimEnd('\', '/')
 $androidApkSigner = [IO.Path]::GetFullPath($AndroidApkSignerPath)
 $androidAapt2 = [IO.Path]::GetFullPath($AndroidAapt2Path)
@@ -242,14 +254,34 @@ function Assert-FormalProductVersion {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
-    $productVersion = ([string]$versionInfo.ProductVersion).Trim()
     $versionParts = $ExpectedVersion.Split('-', 2)[0].Split('.')
     $expectedNumericVersion = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).0"
+    $maximumVersionInfoReadAttempts = 4
+    $versionInfo = $null
+    $productVersion = ''
+    $fileVersion = ''
+    for ($attempt = 1; $attempt -le $maximumVersionInfoReadAttempts; $attempt++) {
+        # Path-length safety is enforced before staged executables reach this helper. Keep a small,
+        # bounded retry only for a genuinely transient double-empty metadata read.
+        $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+        $productVersion = ([string]$versionInfo.ProductVersion).Trim()
+        $fileVersion = ([string]$versionInfo.FileVersion).Trim()
+        if ($productVersion -ceq $ExpectedVersion -and
+            $fileVersion -ceq $expectedNumericVersion) {
+            break
+        }
+        if (-not ([string]::IsNullOrWhiteSpace($productVersion) -and
+                [string]::IsNullOrWhiteSpace($fileVersion))) {
+            break
+        }
+        if ($attempt -lt $maximumVersionInfoReadAttempts) {
+            [Threading.Thread]::Sleep(100)
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($productVersion) -or
         $productVersion -cne $ExpectedVersion -or
-        ([string]$versionInfo.FileVersion).Trim() -cne $expectedNumericVersion) {
-        throw "$Label ProductVersion/FileVersion must exactly equal '$ExpectedVersion' / '$expectedNumericVersion'; actual '$productVersion' / '$($versionInfo.FileVersion)'."
+        $fileVersion -cne $expectedNumericVersion) {
+        throw "$Label ProductVersion/FileVersion must exactly equal '$ExpectedVersion' / '$expectedNumericVersion'; actual '$productVersion' / '$fileVersion'."
     }
 
     $visibleIdentity = @(
@@ -567,8 +599,31 @@ function Assert-CodeSigningCertificate {
 
 function Set-ProductAuthenticodeSignature {
     param([string]$Path, $Certificate)
-    $result = Set-AuthenticodeSignature -LiteralPath $Path -Certificate $Certificate `
-        -HashAlgorithm SHA256 -TimestampServer $TimestampServerUrl.AbsoluteUri -IncludeChain All
+
+    $result = $null
+    $maximumSigningAttempts = 6
+    for ($attempt = 1; $attempt -le $maximumSigningAttempts; $attempt++) {
+        try {
+            $result = Set-AuthenticodeSignature -LiteralPath $Path -Certificate $Certificate `
+                -HashAlgorithm SHA256 -TimestampServer $TimestampServerUrl.AbsoluteUri -IncludeChain All
+            break
+        } catch {
+            # Fresh executables can be held briefly by Defender or an indexer. Retry only the two
+            # native file-lock HRESULTs; permission failures, timestamp failures and every other
+            # signing error remain immediately fatal.
+            $win32ErrorCode = $_.Exception.HResult -band 0xFFFF
+            $isTransientFileLock = $_.Exception -is [IO.IOException] -and
+                $win32ErrorCode -in @(0x20, 0x21)
+            if (-not $isTransientFileLock -or $attempt -ge $maximumSigningAttempts) {
+                throw
+            }
+            $retryDelayMilliseconds = 100 * [Math]::Pow(2, $attempt - 1)
+            [Threading.Thread]::Sleep([int]$retryDelayMilliseconds)
+        }
+    }
+    if ($null -eq $result) {
+        throw "Authenticode signing did not produce a result: $Path"
+    }
     if ($null -eq $result.SignerCertificate -or $null -eq $result.TimeStamperCertificate) {
         throw "Authenticode signing or trusted timestamping failed: $Path"
     }
@@ -587,7 +642,7 @@ function Set-ProductAuthenticodeSignature {
     }
 }
 
-foreach ($inputRoot in @($payloadRoot, $builtinProviderRoot, $mobileArtifactRoot)) {
+foreach ($inputRoot in @($payloadRoot, $builtinProviderRoot, $installerHostRoot, $mobileArtifactRoot)) {
     if (-not (Test-Path -LiteralPath $inputRoot -PathType Container) -or
         ((Get-Item -LiteralPath $inputRoot -Force).Attributes -band
             [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -598,10 +653,37 @@ $pinnedAndroidTools = @(Get-PinnedAndroidBuildTools)
 if (-not (Test-Path -LiteralPath $identityRoot -PathType Container)) {
     throw 'SigningIdentityDirectory does not exist.'
 }
-foreach ($inputRoot in @($payloadRoot, $builtinProviderRoot, $mobileArtifactRoot, $identityRoot)) {
+foreach ($inputRoot in @(
+        $payloadRoot,
+        $builtinProviderRoot,
+        $installerHostRoot,
+        $mobileArtifactRoot,
+        $identityRoot)) {
     if ((Test-IsUnderRoot $outputRoot $inputRoot) -or (Test-IsUnderRoot $inputRoot $outputRoot)) {
         throw 'Release inputs, output and signing identity directories must not contain one another.'
     }
+}
+$installerHostFiles = @(Get-ChildItem -LiteralPath $installerHostRoot -File -Force)
+$installerHostPath = Join-Path $installerHostRoot 'Muhun MCSV Setup.exe'
+if ($installerHostFiles.Count -ne 1 -or
+    $installerHostFiles[0].FullName -cne $installerHostPath -or
+    $installerHostFiles[0].Length -lt 1 -or
+    $installerHostFiles[0].Length -gt 512MB) {
+    throw 'Installer host publish must contain exactly one bounded Muhun MCSV Setup.exe.'
+}
+foreach ($verifierInput in @(
+        [pscustomobject]@{ Path = $installerVerifierAssembly; Label = 'Installer verifier assembly'; Maximum = 32MB },
+        [pscustomobject]@{ Path = $dotNetHost; Label = 'Installer verifier .NET host'; Maximum = 32MB }
+    )) {
+    if (-not [IO.File]::Exists($verifierInput.Path)) {
+        throw "$($verifierInput.Label) is missing: $($verifierInput.Path)"
+    }
+    $verifierItem = Get-Item -LiteralPath $verifierInput.Path -Force
+    if ($verifierItem.Length -lt 1 -or $verifierItem.Length -gt $verifierInput.Maximum -or
+        ($verifierItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$($verifierInput.Label) is invalid."
+    }
+    Assert-NoReparseAncestors -Path $verifierInput.Path -Label $verifierInput.Label
 }
 if (Test-IsUnderRoot $identityRoot $projectRoot) {
     throw 'Private signing material must remain outside the source repository.'
@@ -878,7 +960,7 @@ try {
         # signs the immutable .mcsvp archive using the host's domain-separated protocol.
         $providerDeploymentRoot = Join-Path $outputRoot 'providers\muhun.catalog'
         [IO.Directory]::CreateDirectory($providerDeploymentRoot) | Out-Null
-        $providerStagingRoot = Join-Path $outputRoot ".provider-staging-$([guid]::NewGuid().ToString('N'))"
+        $providerStagingRoot = Join-Path $outputRoot ".p-$([guid]::NewGuid().ToString('N'))"
         try {
             [IO.Directory]::CreateDirectory($providerStagingRoot) | Out-Null
             $providerInputFiles = @(Get-ChildItem -LiteralPath $builtinProviderRoot -Recurse -File -Force |
@@ -901,7 +983,13 @@ try {
             }
 
             $providerEntryPoint = 'Muhun.MCSV.BuiltinProvider.exe'
-            $providerExecutable = Join-Path $providerStagingRoot $providerEntryPoint
+            $providerExecutable = [IO.Path]::GetFullPath(
+                (Join-Path $providerStagingRoot $providerEntryPoint))
+            # MAX_PATH includes its terminating null, so the managed path string must be < 260.
+            # FileVersionInfo can otherwise return empty fields even when VERSIONINFO is present.
+            if ($providerExecutable.Length -ge 260) {
+                throw 'Builtin provider staging entry point exceeds the classic Windows path limit.'
+            }
             if (-not (Test-Path -LiteralPath $providerExecutable -PathType Leaf)) {
                 throw 'Builtin provider publish output is missing its fixed entry point.'
             }
@@ -1229,48 +1317,48 @@ try {
         Write-AtomicBytes -Path (Join-Path $outputRoot 'update-manifest.json') -Bytes $updateManifestBytes
         Write-AtomicBytes -Path (Join-Path $outputRoot 'update-manifest.json.sig') -Bytes $updateSignature
 
-        # This is an installable release directory, not a portable single-EXE bundle. Keep the
-        # first-run instructions at release-root level (outside the updater payload), then bind
-        # them into the signed release manifest and SHA256SUMS below like every other release file.
+        $installerFileName = "Muhun-MCSV-$Version-Setup.exe"
+        $installerPath = Join-Path $outputRoot $installerFileName
+        & (Join-Path $PSScriptRoot 'New-MuhunMcsvInstallerBundle.ps1') `
+            -InstallerHostPath $installerHostPath `
+            -ReleaseDirectory $outputRoot `
+            -OutputPath $installerPath `
+            -Version $Version `
+            -Channel $Channel
+        Assert-FormalProductVersion `
+            -Path $installerPath `
+            -ExpectedVersion $Version `
+            -Label $installerFileName
+        Set-ProductAuthenticodeSignature -Path $installerPath -Certificate $certificate
+        $bundleVerificationOutput = @(
+            & $dotNetHost $installerVerifierAssembly '--verify-bundle' $installerPath 2>&1 |
+                ForEach-Object { $_.ToString() })
+        if ($LASTEXITCODE -ne 0) {
+            throw "Signed installer bundle verification failed: $($bundleVerificationOutput -join [Environment]::NewLine)"
+        }
+        $bundleVerificationOutput | Out-Host
+        $requiredExecutables += $installerFileName
+
+        # Keep a signed, version-specific first-run summary at release-root level for audit and
+        # support. End users receive one Setup EXE and never need to invoke the release scripts.
+        $releaseStageLabel = if ($Channel -eq 'beta') { '研發中' } else { '正式版' }
         $gettingStartedLines = @(
-            "X MCSV $Version 正式發行包 — 開始使用",
+            "X MCSV $Version 安裝程式 — $releaseStageLabel",
             '',
-            '重要：這不是可攜式（portable）單一 EXE。請勿直接從發行資料夾執行 GUI EXE；必須先完成安裝。',
-            '',
-            '安裝需求：',
-            '1. Windows x64。',
-            '2. PowerShell 7.4 或更新版本（命令為 pwsh，不是 Windows PowerShell 5.1）。',
-            '3. 以系統管理員身分開啟 PowerShell 7。',
+            "版本狀態：$releaseStageLabel。",
+            '這是可直接安裝的單一 Setup EXE。',
             '',
             '安裝步驟：',
-            '1. 將完整發行包解壓縮到一般本機資料夾，並在該資料夾開啟 PowerShell 7。',
-            '2. 先將下方顯示的 publisher.cer SHA-256 與 X MCSV GitHub Release 的獨立正式公告核對；只有完全一致才能輸入 YES。',
-            '3. 再依序匯入本機電腦 Root 與 TrustedPublisher、啟用 Process AllSigned、驗證腳本並安裝；請勿改用 Bypass 執行政策：',
+            "1. 雙擊「Muhun-MCSV-$Version-Setup.exe」。",
+            '2. Windows 使用者帳戶控制（UAC）出現時，確認允許安裝程式執行。',
+            '3. 保留預設位置，或自由選擇安全的本機安裝位置。',
+            '4. 按下「安裝」，等待安裝與啟動檢查完成。',
             '',
-            '$release = (Get-Location).Path',
-            '$expectedPublisherCertificateSha256 = ''1a67e65dc9c367ac3247d0483edbe94dab38c5494859a43210c1ad4719e80b71''',
-            '$publisherCertificatePath = Join-Path $release ''publisher.cer''',
-            '$publisherCertificateSha256 = (Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256).Hash.ToLowerInvariant()',
-            'Write-Host "publisher.cer SHA-256: $publisherCertificateSha256"',
-            'Write-Host ''請與 X MCSV GitHub Release 的獨立正式公告核對上方 SHA-256。''',
-            'if ($publisherCertificateSha256 -cne $expectedPublisherCertificateSha256) { throw ''publisher.cer SHA-256 與 X MCSV 固定正式發布者指紋不符。'' }',
-            '$publisherConfirmation = Read-Host ''完成獨立公告核對且完全一致後輸入 YES''',
-            'if ($publisherConfirmation -cne ''YES'') { throw ''尚未確認獨立正式公告中的發布者指紋，停止安裝。'' }',
-            '& "$env:SystemRoot\System32\certutil.exe" -addstore -f Root $publisherCertificatePath',
-            'if ($LASTEXITCODE -ne 0) { throw ''publisher.cer 匯入 LocalMachine Root 失敗。'' }',
-            '& "$env:SystemRoot\System32\certutil.exe" -addstore -f TrustedPublisher $publisherCertificatePath',
-            'if ($LASTEXITCODE -ne 0) { throw ''publisher.cer 匯入 LocalMachine TrustedPublisher 失敗。'' }',
-            'Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force',
-            'foreach ($scriptName in @(''Test-MuhunMcsvRelease.ps1'', ''Install-MuhunMcsv.ps1'', ''Uninstall-MuhunMcsv.ps1'')) {',
-            '    $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $release $scriptName)',
-            '    $signatureSha256 = if ($null -eq $signature.SignerCertificate) { '''' } else { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData)).ToLowerInvariant() }',
-            '    if ($signature.Status -ne ''Valid'' -or $signatureSha256 -cne $expectedPublisherCertificateSha256) { throw "$scriptName 的 Authenticode 或發布者指紋無效。" }',
-            '}',
-            '& (Join-Path $release ''Test-MuhunMcsvRelease.ps1'') -ReleaseDirectory $release',
-            '& (Join-Path $release ''Install-MuhunMcsv.ps1'') -SourceDirectory $release',
+            '資料位置：',
+            '所有程式與永久資料都保存在所選安裝根目錄；伺服器、客戶端、快取、紀錄與備份不會分散到其他資料根。',
+            'D:\MCSV 與其所有子目錄屬於受保護的舊版資料樹；安裝程式不會讀取、寫入、移動或刪除其中任何內容。',
             '',
-            '驗證與安裝都成功後，請從 Windows 開始功能表的「X MCSV」捷徑啟動 GUI。',
-            '日後不需要再從本發行資料夾直接執行 EXE。'
+            '安裝完成後，請從 Windows 開始功能表的「X MCSV」捷徑啟動 GUI。'
         )
         # Migration note only; this legacy product name is intentionally not emitted into the
         # guide. Existing releases called the Start Menu entry Muhun MCSV Manager.

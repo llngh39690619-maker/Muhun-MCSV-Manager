@@ -192,7 +192,10 @@
                         <Button Content="{DynamicResource L10n.main.remoteManagement}" Command="{Binding OpenRemoteManagementCommand}" Margin="0,0,8,0"
                                 ToolTip="{DynamicResource L10n.main.remoteManagement.tooltip}"
                                 AutomationProperties.Name="{DynamicResource L10n.main.remoteManagement.automation}" />
-                        <Button Content="{DynamicResource L10n.main.openDataDirectory}" Command="{Binding OpenDataFolderCommand}" Margin="0,0,8,0" />
+                        <Button Content="{DynamicResource L10n.main.openDataDirectory}"
+                                Command="{Binding OpenDataFolderCommand}"
+                                ToolTip="{Binding UserDataRootPath}"
+                                Margin="0,0,8,0" />
                         <Button Content="⚙" Command="{Binding OpenSettingsCommand}"
                                 Width="40" MinWidth="40" Padding="8" FontSize="17"
                                 ToolTip="{DynamicResource L10n.main.settingsTooltip}" AutomationProperties.Name="{DynamicResource L10n.main.settingsTooltip}" />

@@ -2,10 +2,12 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Contracts.Security;
 using MinecraftServerManager.Service;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace MinecraftServerManager.Service.Tests;
 
@@ -19,6 +21,7 @@ public sealed class ProductRestRouteContractTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port=39051",
             UniqueIpcPipeArgument(),
         ]);
@@ -73,6 +76,7 @@ public sealed class ProductRestRouteContractTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port={port}",
             UniqueIpcPipeArgument(),
         ]);
@@ -86,9 +90,11 @@ public sealed class ProductRestRouteContractTests
             rejectedRequest.Headers.Add(ProductLocalApiAuthentication.HeaderName, new string('0', 64));
             using var rejected = await client.SendAsync(rejectedRequest);
             using var acceptedRequest = new HttpRequestMessage(HttpMethod.Get, route);
+            var serviceToken = File.ReadAllText(
+                Path.Combine(layout.Secrets, ProductLocalApiAuthenticator.FileName)).Trim();
             acceptedRequest.Headers.Add(
                 ProductLocalApiAuthentication.HeaderName,
-                File.ReadAllText(Path.Combine(layout.Secrets, ProductLocalApiAuthenticator.FileName)).Trim());
+                serviceToken);
             using var accepted = await client.SendAsync(acceptedRequest);
             var ready = await accepted.Content.ReadFromJsonAsync<ProductActivationReadyResponse>();
             var storedIdentity = Guid.Parse(File.ReadAllText(Path.Combine(
@@ -105,6 +111,30 @@ public sealed class ProductRestRouteContractTests
             Assert.Equal(ProductServiceApplication.ProductVersion, ready.Version);
             Assert.Equal(storedIdentity, ready.InstallationId);
             Assert.NotEqual(default, ready.StartedAtUtc);
+            Assert.Null(ready.StartupFailure);
+            var readyJson = JsonSerializer.Serialize(
+                ready,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            Assert.DoesNotContain("startupFailure", readyJson, StringComparison.Ordinal);
+
+            const string secret = "DO-NOT-EXPOSE C:\\private\\installer-token";
+            var state = application.Services.GetRequiredService<ProductServiceState>();
+            state.MarkIpcFailure(new UnauthorizedAccessException(secret));
+            using var failedRequest = new HttpRequestMessage(HttpMethod.Get, route);
+            failedRequest.Headers.Add(ProductLocalApiAuthentication.HeaderName, serviceToken);
+            using var failed = await client.SendAsync(failedRequest);
+            var failedJson = await failed.Content.ReadAsStringAsync();
+            var starting = JsonSerializer.Deserialize<ProductActivationReadyResponse>(
+                failedJson,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            Assert.Equal(HttpStatusCode.OK, failed.StatusCode);
+            Assert.NotNull(starting);
+            Assert.False(starting.Ready);
+            Assert.Equal("starting", starting.Status);
+            Assert.Equal("ipc.access_denied", starting.StartupFailure?.Code);
+            Assert.DoesNotContain(secret, failedJson, StringComparison.Ordinal);
+            state.MarkIpcReady();
         }
         finally
         {
@@ -120,6 +150,7 @@ public sealed class ProductRestRouteContractTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port={port}",
             UniqueIpcPipeArgument(),
         ]);
@@ -224,6 +255,7 @@ public sealed class ProductRestRouteContractTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port={port}",
             UniqueIpcPipeArgument(),
         ]);

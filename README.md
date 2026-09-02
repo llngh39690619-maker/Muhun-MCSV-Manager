@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.8**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.9**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.8 原始碼與技術文件，不提供 Windows 安裝包、可執行檔、APK、簽章或其他二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。
+> **發行狀態：Beta，研發中。** repository 目前只透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布 1.2.9-beta.9 原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證仍會產生一個單一 installer EXE，但該檔案只用於本機安裝與驗收，不是 GitHub Release 下載項目。
 
 ## English summary
 
@@ -23,6 +23,7 @@ The server-side CurseForge catalog uses the official API with a user-supplied, i
 - 官方 Skin／披風管理；Skin 支援經典／苗條體型、本機 PNG 上傳、即時 3D 走路預覽與滑鼠 360 度旋轉，保存後同步至 Minecraft 官方服務。
 - Minecraft 客戶端在背景啟動 Java，不顯示黑色主控台；啟動後可縮小 X MCSV，遊戲關閉時自動還原主視窗。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
+- 單一 Windows installer EXE 預設安裝至 `C:\Program Files\MCSV`，也可在安裝時選擇其他安全的本機位置；程式、Service、交換區與逐使用者資料都綁定同一個所選安裝根目錄，不再分散至 AppData 或 ProgramData。
 - 新 GUI 遇到舊版不相容 Service 時會保持唯讀，並可從完整正式發行資料夾以已簽署 Updater 將相同版本背景服務安全更新至受保護的 `Program Files`；驗證或健康檢查失敗時自動回復。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時以各實例保存的 Port 作為起點選擇第一個可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
@@ -58,6 +59,18 @@ Windows WPF GUI
 
 Service 名稱為 `MuhunMCSV`，使用最小權限虛擬服務帳號 `NT SERVICE\MuhunMCSV`，不是 LocalSystem。Service 離線或 IPC 版本不相容時，GUI 會 fail closed，不會改成直接控制 Java 或繞過權限。
 
+安裝根目錄是所有正式產品資料的唯一上層邊界。Beta 版的主要配置如下；正式版會使用獨立的 `stable` 通道資料，不與 Beta 工作資料混用：
+
+```text
+<InstallRoot>/
+├─ versions/                         不可變的程式版本與 A/B 回復槽
+├─ service/beta/                     Service、Server、世界、備份與受保護狀態
+├─ exchange/beta/                    GUI 與 Service 的受控交換／暫存區
+└─ users/<Windows SID>/beta/         GUI 設定、帳號 Vault、客戶端、Runtime 與快取
+```
+
+正式 GUI 只會從安裝器建立且目前啟用的版本解析這個根目錄。根目錄缺失、權限不符或安裝身分驗證失敗時會要求修復，不會退回 `%LocalAppData%`、`%ProgramData%`、目前工作目錄或 EXE 所在目錄建立另一份資料。既有 `D:\MCSV` 是受保護資料，安裝、更新、測試及清理流程不得搬移、覆寫、刪除或當作暫存位置。
+
 Web Host 只監聽 loopback，不開放 `0.0.0.0`、UPnP 或路由器 Port Forward。公開遠端存取必須經過已核准的 HTTPS Tunnel。
 
 ## 專案結構
@@ -65,6 +78,7 @@ Web Host 只監聽 loopback，不開放 `0.0.0.0`、UPnP 或路由器 Port Forwa
 ```text
 src/
 ├─ MinecraftServerManager.App/              Windows WPF GUI
+├─ MinecraftServerManager.Installer/        單一 Windows EXE 安裝器
 ├─ MinecraftServerManager.Service/          Windows Service
 ├─ MinecraftServerManager.Remote/           Web／PWA 與遠端 API
 ├─ MinecraftServerManager.Core/             Server、Java、備份與更新核心
@@ -93,11 +107,13 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用既有正式發行包（不適用於 1.2.9-beta.8 原始碼快照）
+### 使用單一 Windows 安裝 EXE（不由 1.2.9-beta.9 GitHub Release 提供）
 
-- 安裝／升級 Windows Service 時需要系統管理員權限。
-- 正式 Windows 執行檔為 self-contained，不需另行安裝 .NET Runtime。
-- 正式發行目錄不是 portable 版；必須執行其中已簽署的 `Install-MuhunMcsv.ps1`，不能把 ZIP 解壓後只雙擊某一個 EXE 當成完整安裝。
+- 啟動 installer EXE 後會顯示 Windows UAC 系統管理員確認，用來建立受保護的程式、Service 及資料 ACL；日常 GUI 不需要以系統管理員身分執行。
+- 預設位置為 `C:\Program Files\MCSV`；安裝畫面可選擇其他安全的本機非磁碟根目錄。選定後所有正式產品資料都留在該安裝根目錄，不使用 AppData／ProgramData fallback。
+- 安裝 EXE 會完成程式展開、Service 註冊、資料目錄建立、啟用版本指標、捷徑與健康檢查；不需要使用者執行 PowerShell，也不能把 GitHub Source code ZIP 當成安裝包。
+- Windows 成品為 self-contained，不需另行安裝 .NET Runtime。Minecraft Server 及客戶端仍會依遊戲版本準備並驗證相符 Java。
+- `D:\MCSV` 不屬於本次自動遷移或清理範圍；即使它包含舊版測試或正在執行的資料，安裝器也不會自行讀寫或接管。
 - Minecraft Server 仍須使用符合其版本與 Loader 要求的 Java。
 - Minecraft 客戶端可由 X MCSV 按遊戲版本自動下載並驗證 Eclipse Adoptium Java；也可在實例設定中指定既有 Java。
 
@@ -120,7 +136,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、封裝及獨立磁碟驗證。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；研發中的 1.2.9-beta.9 GitHub Release 仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -128,7 +144,7 @@ dotnet test .\MinecraftServerManager.sln `
 2. 為每個帳號設定全域及逐 Server 權限。
 3. 設定 Tailscale Funnel，或使用 Cloudflare Named／Quick Tunnel 相容模式。
 4. 從 HTTPS 網址登入 Web 面板。
-5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.8 的 GitHub 發布不提供 APK）。
+5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.9 的 GitHub 發布不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 

@@ -98,7 +98,10 @@ public sealed class ProductServerImportService : IAsyncDisposable
         }
 
         _layout.EnsureCreated();
-        EnsureSafeDirectory(_layout.Root, _layout.Imports);
+        // Imports is a separately ACL'd sibling exchange root in managed installations, not a
+        // child of the secret-bearing Service data root. Validate it against its own boundary.
+        Directory.CreateDirectory(_layout.Imports);
+        SafePath.EnsureNoReparsePointsUnderRoot(_layout.Imports, _layout.Imports);
         EnsureSafeDirectory(_layout.Root, JournalDirectory);
         EnsureSafeDirectory(_layout.Root, ReceiptDirectory);
 

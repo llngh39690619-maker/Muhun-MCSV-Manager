@@ -76,7 +76,7 @@
     "main.remoteManagement": "遠端管理",
     "main.mobileRemote": "手機遠端",
     "main.webConsole": "Web 控制台",
-    "main.openDataDirectory": "開啟資料目錄",
+    "main.openDataDirectory": "開啟 GUI／客戶端資料",
     "main.onlineModpack": "線上安裝模組包",
     "main.importServer": "＋ 匯入現有 Server",
     "main.createCore": "建立核心啟動器 Server",

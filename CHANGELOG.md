@@ -2,6 +2,21 @@
 
 ## 未發布
 
+## 1.2.9-beta.9 — 單一安裝器與安裝根目錄整合版（研發中）
+
+- Windows 發行流程改為建立單一安裝 EXE；安裝器會顯示 UAC 系統管理員確認，預設安裝至 `C:\Program Files\MCSV`，也可在安裝畫面選擇其他安全的本機位置，不再要求使用者以 PowerShell 手動展開或安裝正式產品。
+- 修正安裝工作經過非同步 I/O 後在不同執行緒釋放 Windows Mutex、導致安裝失敗訊息被同步例外覆蓋的問題；全域安裝鎖改由專用背景執行緒持有及釋放，保留程序異常結束後的 abandoned-mutex 復原，並僅允許 Administrators 與 SYSTEM 控制。
+- 修正安裝器持有安裝目錄或既有 `active-version.v1` 的安全 handle 時阻擋自身原子搬移、造成 3% 進度出現檔案使用中錯誤的問題；新建目錄與既有目錄採相符的 lease 分享模式，版本指標替換前會驗證後釋放檔案 handle，若後續 ACL 步驟失敗仍會回復舊版本指標與權限。
+- 新解壓的程式若正被 Windows Defender 或其他防毒軟體短暫掃描，啟用版本目錄會在保留安全 lease、逐次重驗來源與目的地身分的前提下做有限且可取消的原子搬移重試；不會停用防護、建立排除項目或退回非原子的複製覆寫。
+- 修正全新電腦安裝後 Windows Service 雖顯示執行中，卻因缺少 `Muhun MCSV Operators` 與安裝者 SID 綁定而永遠無法通過 activation-ready、最終被安裝器回復的問題；單一 EXE 現在會以原生 Windows API 建立受管理群組、精確加入目前使用者、原子寫入 IPC 綁定，並直接套用及驗證僅允許 SYSTEM／Administrators 完全控制與 Service 讀取的受保護 ACL；任一步失敗都會保守還原既有內容、ACL、會員與群組，不需呼叫 PowerShell。
+- activation-ready 現在可透過既有本機權杖驗證端點回傳白名單化的 IPC 啟動診斷代碼、例外型別與 HRESULT，安裝器不再只留下無法判讀的通用逾時；診斷不包含例外訊息、路徑、SID、權杖或堆疊，IPC 恢復後也會立即清除舊失敗狀態。
+- 修正 Windows 將受保護 DACL 正規化為 `PAI` 後，被安裝器誤判成 SID 綁定檔 ACL 遭竄改、導致安裝與回復同時失敗的問題；驗證只容許系統加入 `DACL Auto-Inherited` 旗標，其餘控制旗標、Owner、Group 與原始 ACL 位元組仍須完全一致，也會拒絕額外 Object ACE。上一輪失敗若只留下預設位置的空白管理員專用目錄，新安裝器會在雙重驗證預設路徑、空目錄、非 reparse point 與精確 ACL 後安全接續，其他未標記目錄仍一律拒絕。
+- 程式版本、Windows Service 資料、GUI／Service 交換區與每位 Windows 使用者的 GUI／Minecraft 客戶端資料，統一綁定在同一個已選安裝根目錄下；Beta 版分別使用 `versions`、`service\beta`、`exchange\beta` 與 `users\<Windows SID>\beta`，更新及回復不會把資料分散到其他磁碟位置。
+- 正式 GUI 只接受安裝器建立、具有產品 ownership marker、有效 `active-version.v1` 及相符 installed-version metadata 的目前啟用版本；複製出來的單獨 EXE、未啟用的舊版本或不完整發行目錄都會安全停止並要求修復，不會自行建立另一套資料。
+- 移除正式執行模式對 `%LocalAppData%` 與 `%ProgramData%` 的資料根 fallback；已選安裝根目錄缺失、權限不符或路徑身分驗證失敗時會 fail closed，避免再次產生重複的伺服器、客戶端、Runtime、快取與備份。
+- 現有 `D:\MCSV` 視為受保護的既有資料，安裝、修復、測試、清理與更新流程都不得掃描後刪除、搬移、覆寫或拿來當暫存目錄；本機測試及建置輸出只保留在 Codex／repository 工作流程目錄內。
+- 本機 Android 驗證建置使用 `versionCode 28`；本版仍為 Beta／研發中。完整本機發行驗證會產生單一 installer EXE 供安裝流程測試，但 GitHub Release 只發布原始碼與文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品，避免不知情使用者下載研發版本。
+
 ## 1.2.9-beta.8 — Service 已知玩家顯示修正版（研發中）
 
 - 修正 Windows Service 管理實例只能取得目前線上玩家、勾選「顯示已知玩家（含離線）」後仍無法顯示 `usercache.json`、OP、白名單與封禁名單中已知玩家的問題。

@@ -77,8 +77,39 @@ public sealed class CloudflaredInstallationReceiptTests
             await verified.DisposeAsync();
         }
 
-        File.Move(replacementPath, fixture.ExecutablePath, overwrite: true);
+        await MoveReplacingWithBoundedSharingRetryAsync(
+            replacementPath,
+            fixture.ExecutablePath);
         Assert.Equal(replacementBytes, File.ReadAllBytes(fixture.ExecutablePath));
+    }
+
+    private static async Task MoveReplacingWithBoundedSharingRetryAsync(
+        string sourcePath,
+        string destinationPath)
+    {
+        const int maximumAttempts = 12;
+        var retryDelay = TimeSpan.FromMilliseconds(10);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(sourcePath, destinationPath, overwrite: true);
+                return;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException &&
+                attempt < maximumAttempts)
+            {
+                // FileStream.DisposeAsync has completed, so MCSV no longer owns a handle.
+                // Windows security/indexing software may still briefly inspect a newly-created
+                // .exe under load. Keep this platform-tolerance bounded (~1.8 seconds total),
+                // so a real lease-release regression continues to fail deterministically.
+                await Task.Delay(retryDelay);
+                retryDelay = TimeSpan.FromMilliseconds(
+                    Math.Min(retryDelay.TotalMilliseconds * 2, 250));
+            }
+        }
     }
 
     [Fact]

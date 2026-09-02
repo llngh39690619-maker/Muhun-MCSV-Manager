@@ -59,6 +59,12 @@ internal static class WpfStaTestHost
                         ShutdownMode = ShutdownMode.OnExplicitShutdown
                     };
                     application.InitializeComponent();
+                    // Production startup projects the versioned localization catalog into the
+                    // application dictionary before any dialog can open.  The test host skips
+                    // App.OnStartup deliberately, so reproduce that prerequisite here instead
+                    // of relying on another test to initialize process-global resources first.
+                    MinecraftServerManager.App.Services.LocalizationService.Current
+                        .ApplyResources(application.Resources);
                 }
                 catch (Exception exception)
                 {

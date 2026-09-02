@@ -130,6 +130,7 @@ public sealed class ProductLocalServiceRepairPreflightTests : IDisposable
                 return new ProductManagedInstallation(
                     _directory,
                     Path.Combine(_directory, "data"),
+                    Path.Combine(_directory, "exchange"),
                     "1.0.8",
                     "1.0.8",
                     Path.Combine(_directory, "service.exe"));

@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using MinecraftServerManager.Contracts;
 using Microsoft.Win32;
 
 namespace MinecraftServerManager.Updater;
@@ -6,6 +7,7 @@ namespace MinecraftServerManager.Updater;
 internal sealed record ProductManagedInstallation(
     string InstallRoot,
     string DataRoot,
+    string ExchangeRoot,
     string ActiveVersion,
     string ServiceVersion,
     string ActiveServicePath);
@@ -53,11 +55,11 @@ internal static class ProductManagedInstallationResolver
                 null,
                 RegistryValueOptions.DoNotExpandEnvironmentNames) as string
             ?? throw new InvalidDataException("The installed Service image path is missing.");
-        var (servicePath, dataRoot) = ParseServiceImagePath(imagePath);
+        var (servicePath, dataRoot, exchangeRoot) = ParseServiceImagePath(imagePath);
         var formalLayout = ResolveInstalledLayoutFromService(servicePath);
         var installRoot = Directory.GetParent(Directory.GetParent(formalLayout.VersionRoot)!.FullName)!.FullName;
         installRoot = ProductGuiActivationBroker.ValidateInstallRoot(installRoot);
-        ValidateProgramFilesLocation(installRoot);
+        ValidateSafeLocalInstallRoot(installRoot);
 
         var activeVersion = ProductUpdateActivator.ReadActiveVersion(installRoot);
         var metadata = ProductInstalledVersionMetadataStore.Read(formalLayout.VersionRoot);
@@ -76,12 +78,14 @@ internal static class ProductManagedInstallationResolver
         return new ProductManagedInstallation(
             installRoot,
             normalizedDataRoot,
+            Path.GetFullPath(exchangeRoot),
             activeVersion,
             formalLayout.Version,
             formalLayout.ServicePath);
     }
 
-    internal static (string ServicePath, string DataRoot) ParseServiceImagePath(string imagePath)
+    internal static (string ServicePath, string DataRoot, string ExchangeRoot) ParseServiceImagePath(
+        string imagePath)
     {
         if (string.IsNullOrWhiteSpace(imagePath) || imagePath.Length > 4_096 || imagePath[0] != '"')
         {
@@ -96,23 +100,35 @@ internal static class ProductManagedInstallationResolver
 
         var executable = imagePath[1..executableEnd];
         var arguments = imagePath[(executableEnd + 1)..].Trim();
-        const string prefix = "\"--Mcsv:Service:DataRoot=";
-        if (!arguments.StartsWith(prefix, StringComparison.Ordinal) ||
-            !arguments.EndsWith('"') ||
-            arguments.Length <= prefix.Length + 1)
+        const string dataPrefix = "\"--Mcsv:Service:DataRoot=";
+        const string separator = "\" \"--Mcsv:Service:ExchangeRoot=";
+        if (!arguments.StartsWith(dataPrefix, StringComparison.Ordinal) ||
+            !arguments.EndsWith('"'))
         {
-            throw new InvalidDataException("The installed Service data-root binding is invalid.");
+            throw new InvalidDataException("The installed Service storage-root binding is invalid.");
         }
 
-        var dataRoot = arguments[prefix.Length..^1];
-        if (dataRoot.IndexOf('"') >= 0 || dataRoot.Any(char.IsControl))
+        var separatorIndex = arguments.IndexOf(separator, dataPrefix.Length, StringComparison.Ordinal);
+        if (separatorIndex <= dataPrefix.Length ||
+            separatorIndex + separator.Length >= arguments.Length - 1)
         {
-            throw new InvalidDataException("The installed Service data-root binding is unsafe.");
+            throw new InvalidDataException("The installed Service exchange-root binding is missing.");
         }
+
+        var dataRoot = arguments[dataPrefix.Length..separatorIndex];
+        var exchangeRoot = arguments[(separatorIndex + separator.Length)..^1];
+        if (dataRoot.IndexOf('"') >= 0 || dataRoot.Any(char.IsControl) ||
+            exchangeRoot.IndexOf('"') >= 0 || exchangeRoot.Any(char.IsControl))
+        {
+            throw new InvalidDataException("The installed Service storage-root binding is unsafe.");
+        }
+
+        ProductManagedStorageLayout.ValidateCanonicalSiblingRoots(dataRoot, exchangeRoot);
 
         return (
             ProductActivationPathPolicy.ValidateExecutable(executable, "Muhun MCSV Service.exe"),
-            dataRoot);
+            dataRoot,
+            exchangeRoot);
     }
 
     private static ProductFormalActivationLayout ResolveInstalledLayoutFromService(string servicePath)
@@ -144,24 +160,34 @@ internal static class ProductManagedInstallationResolver
         return new ProductFormalActivationLayout(versionRoot, version, guiPath, servicePath, updaterPath);
     }
 
-    private static void ValidateProgramFilesLocation(string installRoot)
+    internal static string ValidateSafeLocalInstallRoot(string installRoot)
     {
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (string.IsNullOrWhiteSpace(programFiles))
+        var candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+        if (candidate.StartsWith(@"\\", StringComparison.Ordinal) ||
+            !Directory.Exists(candidate))
         {
-            throw new InvalidOperationException("Windows Program Files is unavailable.");
+            throw new InvalidDataException("The managed install root must be an existing local directory.");
         }
 
-        var prefix = Path.GetFullPath(programFiles).TrimEnd(
-                         Path.DirectorySeparatorChar,
-                         Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var candidate = Path.GetFullPath(installRoot).TrimEnd(
-                            Path.DirectorySeparatorChar,
-                            Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        var volumeRoot = Path.GetPathRoot(candidate)
+            ?? throw new InvalidDataException("The managed install root has no local volume.");
+        if (string.Equals(
+                candidate,
+                Path.TrimEndingDirectorySeparator(volumeRoot),
+                StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The managed product is not installed below Program Files.");
+            throw new InvalidDataException("The managed product cannot use a volume root directly.");
         }
+
+        var drive = new DriveInfo(volumeRoot);
+        if (!drive.IsReady || drive.DriveType != DriveType.Fixed ||
+            !string.Equals(drive.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The managed install root must use a local fixed NTFS volume.");
+        }
+
+        ProductActivationPathPolicy.RejectExistingReparsePoints(candidate);
+        return candidate;
     }
 
     private static void ValidateOptionalArpRegistration(

@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Security.Principal;
+using System.Text.Json;
 using MinecraftServerManager.Contracts;
 using MinecraftServerManager.Data;
 using MinecraftServerManager.Service;
@@ -18,6 +20,7 @@ public sealed class ProductServiceFoundationTests
         await using var application = ProductServiceApplication.Build(
         [
             $"--{ProductServiceOptions.SectionName}:DataRoot={layout.Root}",
+            $"--{ProductServiceOptions.SectionName}:ExchangeRoot={layout.Root}.exchange",
             $"--{ProductServiceOptions.SectionName}:Port=39058",
             $"--{ProductServiceOptions.SectionName}:IpcPipeName=muhun.mcsv.shutdown.{Guid.NewGuid():N}",
         ]);
@@ -82,11 +85,17 @@ public sealed class ProductServiceFoundationTests
     [Fact]
     public void ExplicitDataRoot_ProducesSeparatedProductDirectories()
     {
-        var root = Path.Combine(Path.GetTempPath(), "muhun-mcsv-layout-test", Guid.NewGuid().ToString("N"));
+        var installRoot = Path.Combine(
+            Path.GetTempPath(),
+            "muhun-mcsv-layout-test",
+            Guid.NewGuid().ToString("N"));
+        var root = ProductManagedStorageLayout.ResolveServiceDataRoot(installRoot);
+        var exchange = ProductManagedStorageLayout.ResolveExchangeRoot(installRoot);
         var layout = ProductDataLayout.FromOptions(new ProductServiceOptions
         {
             Port = ProductServiceOptions.DefaultPort,
             DataRoot = root,
+            ExchangeRoot = exchange,
         });
 
         Assert.Equal(Path.GetFullPath(root), layout.Root);
@@ -95,6 +104,20 @@ public sealed class ProductServiceFoundationTests
         Assert.Equal(Path.Combine(layout.Root, "operations"), layout.Operations);
         Assert.Equal(Path.Combine(layout.Root, "plugins"), layout.Plugins);
         Assert.Equal(Path.Combine(layout.Root, "updates"), layout.Updates);
+        Assert.Equal(Path.GetFullPath(exchange), layout.Imports);
+    }
+
+    [Fact]
+    public void OverlappingDataAndExchangeRoots_AreRejected()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "muhun-mcsv-layout-test", Guid.NewGuid().ToString("N"));
+        var errors = ProductServiceOptionsValidator.Validate(new ProductServiceOptions
+        {
+            DataRoot = root,
+            ExchangeRoot = Path.Combine(root, "imports"),
+        });
+
+        Assert.Contains(errors, error => error.Contains("non-overlapping", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -142,6 +165,30 @@ public sealed class ProductServiceFoundationTests
     }
 
     [Fact]
+    public void IpcFailureDiagnostic_ProjectsOnlySafeIdentityAndClearsAfterRecovery()
+    {
+        const string secret = "DO-NOT-EXPOSE C:\\private\\operator-token";
+        var state = new ProductServiceState(TimeProvider.System);
+        state.Initialize(Guid.NewGuid());
+        state.MarkFoundationReady();
+
+        var diagnostic = state.MarkIpcFailure(
+            new InvalidOperationException(secret, new IdentityNotMappedException(secret)));
+
+        Assert.False(state.IsReady);
+        Assert.Equal("ipc.operator_group_missing", diagnostic.Code);
+        Assert.Equal(nameof(InvalidOperationException), diagnostic.ExceptionType);
+        Assert.Equal(nameof(IdentityNotMappedException), diagnostic.InnerExceptionType);
+        Assert.Equal(diagnostic, state.StartupFailure);
+        Assert.DoesNotContain(secret, JsonSerializer.Serialize(diagnostic), StringComparison.Ordinal);
+
+        state.MarkIpcReady();
+
+        Assert.True(state.IsReady);
+        Assert.Null(state.StartupFailure);
+    }
+
+    [Fact]
     public async Task IpcHost_ReadinessRecoversOnlyAfterListenerIsBoundAndClearsOnStop()
     {
         var root = Path.Combine(
@@ -160,6 +207,7 @@ public sealed class ProductServiceFoundationTests
             state.Initialize(Guid.NewGuid());
             state.MarkFoundationReady();
             var attempts = 0;
+            using var allowRecovery = new ManualResetEventSlim(initialState: false);
             var pipeName = $"muhun.mcsv.readiness.{Guid.NewGuid():N}";
             using var service = new ProductIpcHostedService(
                 (request, _) => Task.FromResult(new ProductIpcResponse(
@@ -174,9 +222,11 @@ public sealed class ProductServiceFoundationTests
                 {
                     if (Interlocked.Increment(ref attempts) == 1)
                     {
-                        throw new UnauthorizedAccessException("simulated listener collision");
+                        throw new InvalidDataException(
+                            "DO-NOT-EXPOSE C:\\private\\installer-operator-sid.v1");
                     }
 
+                    _ = allowRecovery.Wait(TimeSpan.FromSeconds(3));
                     return new NamedPipeServerStream(
                         pipeName,
                         PipeDirection.InOut,
@@ -192,12 +242,22 @@ public sealed class ProductServiceFoundationTests
             {
                 Assert.False(state.IsReady);
                 await WaitUntilAsync(
+                    () => state.StartupFailure?.Code == "ipc.binding_invalid",
+                    TimeSpan.FromSeconds(3));
+                Assert.Equal(nameof(InvalidDataException), state.StartupFailure?.ExceptionType);
+                Assert.DoesNotContain(
+                    "DO-NOT-EXPOSE",
+                    JsonSerializer.Serialize(state.StartupFailure),
+                    StringComparison.Ordinal);
+                allowRecovery.Set();
+                await WaitUntilAsync(
                     () => state.IsReady && Volatile.Read(ref attempts) >= 2,
                     TimeSpan.FromSeconds(3));
                 Assert.True(state.IsReady);
             }
             finally
             {
+                allowRecovery.Set();
                 using var stopDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 await service.StopAsync(stopDeadline.Token);
             }

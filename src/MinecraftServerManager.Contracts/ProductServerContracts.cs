@@ -527,6 +527,19 @@ public static class ProductLocalIpcAccess
 }
 
 /// <summary>
+/// Bounded, non-secret projection of an activation-blocking Service exception. Raw exception
+/// messages, paths, stack traces, account identifiers and credentials never cross the health
+/// endpoint. The signed installer still treats every string as untrusted and allowlists it before
+/// showing a diagnostic.
+/// </summary>
+public sealed record ProductActivationFailureDiagnostic(
+    string Code,
+    string ExceptionType,
+    int HResult,
+    string? InnerExceptionType,
+    int? InnerHResult);
+
+/// <summary>
 /// Authenticated, exact activation boundary used by the installer and signed A/B updater. A
 /// process being alive is intentionally insufficient: callers bind readiness to the immutable
 /// installation identity and the exact product version they are activating.
@@ -537,4 +550,7 @@ public sealed record ProductActivationReadyResponse(
     string Version,
     Guid InstallationId,
     DateTimeOffset StartedAtUtc,
-    bool Ready);
+    bool Ready,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    ProductActivationFailureDiagnostic? StartupFailure = null);

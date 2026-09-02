@@ -22,6 +22,7 @@ internal sealed class ProductServiceRepairHealthController : IProductUpdateHealt
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     };
     private readonly string _dataRoot;
+    private readonly string _exchangeRoot;
     private readonly IProductWindowsServicePlatform _platform;
     private readonly HttpClient _httpClient;
     private readonly byte[] _serviceToken;
@@ -39,6 +40,8 @@ internal sealed class ProductServiceRepairHealthController : IProductUpdateHealt
     {
         ProductUpdateManifestParser.ValidateVersion(requiredTargetVersion);
         _dataRoot = ProductActivationCredentialReader.ValidateDataRoot(dataRoot);
+        _exchangeRoot = ProductManagedStorageLayout.ResolveExchangeRootFromServiceDataRoot(
+            _dataRoot);
         _requiredTargetVersion = requiredTargetVersion;
         (_serviceToken, _installationId) = ProductActivationCredentialReader.Read(_dataRoot);
         _platform = platform ?? new ProductWindowsServicePlatform();
@@ -61,7 +64,11 @@ internal sealed class ProductServiceRepairHealthController : IProductUpdateHealt
         ProductActivationPathPolicy.ValidateMatchingProductVersions(layout);
         _servicePort = ReadServicePort(layout.VersionRoot);
         _launchedVersion = layout.Version;
-        await _platform.ConfigureAndRestartAsync(layout.ServicePath, _dataRoot, cancellationToken)
+        await _platform.ConfigureAndRestartAsync(
+                layout.ServicePath,
+                _dataRoot,
+                _exchangeRoot,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

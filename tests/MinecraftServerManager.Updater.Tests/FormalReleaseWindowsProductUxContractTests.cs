@@ -9,7 +9,7 @@ public sealed class FormalReleaseWindowsProductUxContractTests
     private static readonly string RepositoryRoot = FindRepositoryRoot();
 
     [Fact]
-    public void FirstRunGuideBootstrapsTrustInPinnedFailClosedOrder()
+    public void FirstRunGuideUsesSingleSetupExeWithoutManualTrustBootstrap()
     {
         var release = ReadScript("New-MuhunMcsvRelease.ps1");
         var verifier = ReadScript("Test-MuhunMcsvRelease.ps1");
@@ -18,28 +18,44 @@ public sealed class FormalReleaseWindowsProductUxContractTests
         Assert.True(start >= 0 && end > start);
         var guide = release[start..end];
 
-        Assert.Contains(PublisherSha256, guide, StringComparison.Ordinal);
-        Assert.Contains("GitHub Release 的獨立正式公告核對", guide, StringComparison.Ordinal);
-        Assert.Contains("Read-Host", guide, StringComparison.Ordinal);
+        Assert.Contains("安裝程式 — $releaseStageLabel", guide, StringComparison.Ordinal);
+        Assert.Contains("版本狀態：$releaseStageLabel", guide, StringComparison.Ordinal);
+        Assert.Contains("單一 Setup EXE", guide, StringComparison.Ordinal);
+        Assert.Contains("Windows 使用者帳戶控制（UAC）", guide, StringComparison.Ordinal);
+        Assert.Contains("自由選擇安全的本機安裝位置", guide, StringComparison.Ordinal);
+        Assert.Contains("所有程式與永久資料都保存在所選安裝根目錄", guide, StringComparison.Ordinal);
+        Assert.Contains("D:\\MCSV 與其所有子目錄", guide, StringComparison.Ordinal);
         Assert.Contains("Windows 開始功能表的「X MCSV」", guide, StringComparison.Ordinal);
-        Assert.DoesNotContain("-ExecutionPolicy Bypass", guide, StringComparison.OrdinalIgnoreCase);
+        foreach (var forbidden in new[]
+                 {
+                     PublisherSha256,
+                     "PowerShell",
+                     "pwsh",
+                     "certutil",
+                     "Set-ExecutionPolicy",
+                     "Get-AuthenticodeSignature",
+                     "Install-MuhunMcsv.ps1",
+                     "Test-MuhunMcsvRelease.ps1",
+                     "Read-Host",
+                     "publisher.cer"
+                 })
+        {
+            Assert.DoesNotContain(forbidden, guide, StringComparison.OrdinalIgnoreCase);
+        }
 
         AssertOrdered(
             guide,
-            "Get-FileHash -LiteralPath $publisherCertificatePath -Algorithm SHA256",
-            "Write-Host \"publisher.cer SHA-256:",
-            "Read-Host",
-            "certutil.exe\" -addstore -f Root",
-            "if ($LASTEXITCODE -ne 0)",
-            "certutil.exe\" -addstore -f TrustedPublisher",
-            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy AllSigned -Force",
-            "Get-AuthenticodeSignature",
-            "Test-MuhunMcsvRelease.ps1",
-            "Install-MuhunMcsv.ps1");
+            "雙擊「Muhun-MCSV-$Version-Setup.exe」",
+            "Windows 使用者帳戶控制（UAC）",
+            "自由選擇安全的本機安裝位置",
+            "按下「安裝」",
+            "所有程式與永久資料都保存在所選安裝根目錄",
+            "D:\\MCSV 與其所有子目錄",
+            "Windows 開始功能表的「X MCSV」");
 
         Assert.Contains(PublisherSha256, verifier, StringComparison.Ordinal);
-        Assert.Contains("does not preserve the required trust-bootstrap execution order", verifier, StringComparison.Ordinal);
-        Assert.Contains("(?i)-ExecutionPolicy\\s+Bypass", verifier, StringComparison.Ordinal);
+        Assert.Contains("required single-EXE installation order", verifier, StringComparison.Ordinal);
+        Assert.Contains("$forbiddenGettingStartedPattern", verifier, StringComparison.Ordinal);
         Assert.Contains(
             "$manifest.publisherCertificateSha256 -cne $expectedPublisherCertificateSha256",
             verifier,

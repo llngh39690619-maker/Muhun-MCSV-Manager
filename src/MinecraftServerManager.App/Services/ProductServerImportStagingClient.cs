@@ -15,7 +15,7 @@ internal sealed class ProductServerImportStagingClient
     private static readonly TimeSpan DefaultNoProgressTimeout = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DefaultResumeRequiredTimeout = TimeSpan.FromSeconds(30);
     private readonly IProductServiceClient _client;
-    private readonly string _authorizedImportsRoot;
+    private readonly string? _authorizedImportsRoot;
     private readonly TimeSpan _noProgressTimeout;
     private readonly TimeSpan _resumeRequiredTimeout;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
@@ -30,12 +30,9 @@ internal sealed class ProductServerImportStagingClient
         Func<DateTimeOffset>? utcNow = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _authorizedImportsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
-            authorizedImportsRoot ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "Muhun",
-                "MCSV",
-                "imports")));
+        _authorizedImportsRoot = string.IsNullOrWhiteSpace(authorizedImportsRoot)
+            ? null
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(authorizedImportsRoot));
         _noProgressTimeout = noProgressTimeout ?? DefaultNoProgressTimeout;
         _resumeRequiredTimeout = resumeRequiredTimeout ?? DefaultResumeRequiredTimeout;
         if (_noProgressTimeout <= TimeSpan.Zero)
@@ -376,6 +373,12 @@ internal sealed class ProductServerImportStagingClient
 
     private string ValidateServiceStaging(ProductServerImportStatus status)
     {
+        if (_authorizedImportsRoot is null)
+        {
+            throw new InvalidOperationException(
+                "The managed product exchange root was not bound during GUI startup.");
+        }
+
         var staging = Path.GetFullPath(status.StagingDirectory!);
         var parent = Path.GetDirectoryName(staging);
         if (!Path.GetFileName(staging).Equals(status.ImportId.ToString("N"), StringComparison.OrdinalIgnoreCase) ||

@@ -155,7 +155,7 @@ public sealed class ProductServiceRepairHealthControllerTests : IDisposable
 
     private (string DataRoot, Guid InstallationId) CreateDataRoot()
     {
-        var root = Path.Combine(_root, "data");
+        var root = Path.Combine(_root, "service", "beta");
         Directory.CreateDirectory(Path.Combine(root, "secrets"));
         Directory.CreateDirectory(Path.Combine(root, "data"));
         File.WriteAllText(Path.Combine(root, ".muhun-mcsv-data-root"), "muhun.mcsv.manager:1\n");
@@ -203,14 +203,17 @@ public sealed class ProductServiceRepairHealthControllerTests : IDisposable
         public string? ServicePath { get; private set; }
 
         public string? DataRoot { get; private set; }
+        public string? ExchangeRoot { get; private set; }
 
         public Task ConfigureAndRestartAsync(
             string serviceExecutablePath,
             string dataRoot,
+            string exchangeRoot,
             CancellationToken cancellationToken)
         {
             ServicePath = serviceExecutablePath;
             DataRoot = dataRoot;
+            ExchangeRoot = exchangeRoot;
             return Task.CompletedTask;
         }
 

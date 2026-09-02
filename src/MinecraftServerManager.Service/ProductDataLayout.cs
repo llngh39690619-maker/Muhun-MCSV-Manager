@@ -1,19 +1,27 @@
+using MinecraftServerManager.Contracts;
+
 namespace MinecraftServerManager.Service;
 
 public sealed class ProductDataLayout
 {
-    public ProductDataLayout(string root)
+    public ProductDataLayout(string root, string? exchangeRoot = null)
     {
         if (!Path.IsPathFullyQualified(root))
         {
             throw new ArgumentException("Product data root must be an absolute path.", nameof(root));
+        }
+        if (!string.IsNullOrWhiteSpace(exchangeRoot))
+        {
+            ProductManagedStorageLayout.ValidateSeparatedRoots(root, exchangeRoot);
         }
 
         Root = Path.GetFullPath(root);
         Data = Path.Combine(Root, "data");
         Secrets = Path.Combine(Root, "secrets");
         Operations = Path.Combine(Root, "operations");
-        Imports = Path.Combine(Root, "imports");
+        Imports = string.IsNullOrWhiteSpace(exchangeRoot)
+            ? Path.Combine(Root, "imports")
+            : Path.GetFullPath(exchangeRoot);
         Servers = Path.Combine(Root, "servers");
         Runtimes = Path.Combine(Root, "runtimes");
         Backups = Path.Combine(Root, "backups");
@@ -37,13 +45,13 @@ public sealed class ProductDataLayout
     public static ProductDataLayout FromOptions(ProductServiceOptions options)
     {
         ProductServiceOptionsValidator.ValidateAndThrow(options);
-        var root = string.IsNullOrWhiteSpace(options.DataRoot)
-            ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "Muhun",
-                "MCSV")
-            : options.DataRoot;
-        return new ProductDataLayout(root);
+        if (string.IsNullOrWhiteSpace(options.DataRoot))
+        {
+            throw new InvalidOperationException(
+                "Mcsv:Service:DataRoot must be explicitly provisioned by the installer.");
+        }
+
+        return new ProductDataLayout(options.DataRoot, options.ExchangeRoot);
     }
 
     public void EnsureCreated()

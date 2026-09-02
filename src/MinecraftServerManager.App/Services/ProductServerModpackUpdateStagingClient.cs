@@ -21,7 +21,7 @@ internal sealed class ProductServerModpackUpdateStagingClient
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan CancellationAttemptTimeout = TimeSpan.FromSeconds(5);
     private readonly IProductServiceClient _client;
-    private readonly string _authorizedImportsRoot;
+    private readonly string? _authorizedImportsRoot;
     private readonly TimeSpan _pollInterval;
 
     public ProductServerModpackUpdateStagingClient(
@@ -30,12 +30,9 @@ internal sealed class ProductServerModpackUpdateStagingClient
         TimeSpan? pollInterval = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _authorizedImportsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
-            authorizedImportsRoot ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "Muhun",
-                "MCSV",
-                "imports")));
+        _authorizedImportsRoot = string.IsNullOrWhiteSpace(authorizedImportsRoot)
+            ? null
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(authorizedImportsRoot));
         _pollInterval = pollInterval ?? DefaultPollInterval;
         if (_pollInterval <= TimeSpan.Zero || _pollInterval > TimeSpan.FromSeconds(10))
         {
@@ -206,6 +203,12 @@ internal sealed class ProductServerModpackUpdateStagingClient
 
     private string ValidateServiceStaging(ProductServerModpackUpdateStatus status)
     {
+        if (_authorizedImportsRoot is null)
+        {
+            throw new InvalidOperationException(
+                "The managed product exchange root was not bound during GUI startup.");
+        }
+
         if (status.State != ProductServerModpackUpdateState.Staging ||
             string.IsNullOrWhiteSpace(status.StagingDirectory))
         {
