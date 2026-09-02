@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using MinecraftServerManager.Core.Providers;
+using MinecraftServerManager.Core.Services;
 
 namespace MinecraftServerManager.Core.Tests;
 
@@ -227,6 +228,87 @@ public sealed class AdoptiumRuntimeArchiveTests
                 Directory.Delete(source, recursive: false);
             }
         }
+    }
+
+    [Fact]
+    public async Task MoveDirectoryWithRetryAsync_RejectsOrdinarySourceReplacementDuringDelay()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        using var temporaryDirectory = new TemporaryDirectory();
+        var source = Path.Combine(temporaryDirectory.Path, "verified-jdk");
+        var destination = Path.Combine(temporaryDirectory.Path, "committed-jdk");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "release"), "verified");
+        var expectedIdentity = SafePath.GetExistingObjectIdentity(source);
+        var attempts = 0;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            AdoptiumRuntimeProvider.MoveDirectoryWithRetryAsync(
+                source,
+                destination,
+                CancellationToken.None,
+                (from, to) =>
+                {
+                    attempts++;
+                    if (attempts == 1)
+                    {
+                        throw new IOException(
+                            "The just-executed image is still locked.",
+                            unchecked((int)0x80070005));
+                    }
+
+                    Directory.Move(from, to);
+                },
+                (_, _) =>
+                {
+                    Directory.Delete(source, recursive: true);
+                    Directory.CreateDirectory(source);
+                    File.WriteAllText(Path.Combine(source, "replacement.txt"), "preserve");
+                    return Task.CompletedTask;
+                },
+                expectedIdentity));
+
+        Assert.Equal(1, attempts);
+        Assert.False(Directory.Exists(destination));
+        Assert.Equal(
+            "preserve",
+            await File.ReadAllTextAsync(Path.Combine(source, "replacement.txt")));
+    }
+
+    [Fact]
+    public async Task MoveDirectoryWithRetryAsync_RejectsDestinationIdentityChangedInsideMove()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        using var temporaryDirectory = new TemporaryDirectory();
+        var source = Path.Combine(temporaryDirectory.Path, "verified-jdk");
+        var destination = Path.Combine(temporaryDirectory.Path, "committed-jdk");
+        var preservedOriginal = Path.Combine(temporaryDirectory.Path, "preserved-original");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "release"), "verified");
+        var expectedIdentity = SafePath.GetExistingObjectIdentity(source);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            AdoptiumRuntimeProvider.MoveDirectoryWithRetryAsync(
+                source,
+                destination,
+                CancellationToken.None,
+                (from, to) =>
+                {
+                    Directory.Move(from, preservedOriginal);
+                    Directory.CreateDirectory(from);
+                    File.WriteAllText(Path.Combine(from, "replacement.txt"), "preserve");
+                    Directory.Move(from, to);
+                },
+                expectedSourceIdentity: expectedIdentity));
+
+        Assert.Equal(
+            "verified",
+            await File.ReadAllTextAsync(Path.Combine(preservedOriginal, "release")));
+        Assert.Equal(
+            "preserve",
+            await File.ReadAllTextAsync(Path.Combine(destination, "replacement.txt")));
     }
 
     private static void CreateZip(

@@ -135,7 +135,7 @@ public sealed class ModrinthLoaderBootstrapProcessTests
 
         Assert.Equal(Path.GetFullPath(java), startInfo.FileName);
         Assert.Equal(Path.GetFullPath(javaBin), startInfo.WorkingDirectory);
-        Assert.Equal(["-version"], startInfo.ArgumentList);
+        Assert.Equal(["-XshowSettings:locale", "-version"], startInfo.ArgumentList);
         Assert.False(startInfo.UseShellExecute);
         Assert.True(startInfo.CreateNoWindow);
         Assert.True(startInfo.RedirectStandardOutput);

@@ -2,6 +2,17 @@
 
 ## 未發布
 
+## 1.2.9-beta.14 — Java Runtime 損壞自動修復版（研發中）
+
+- 修正受管理 Java 只靠 `java -version` 判定可用，導致下載或系統中斷後 `java.exe` 仍能回報版本、但 `lib/modules` 內 CLDR 類別已損壞，最終讓 NeoForge 官方安裝器於 `install-game` 階段以 exit code 1 結束的問題。
+- Java 健康探測現在同時執行受限且有界的 locale 初始化；新安裝的 Temurin runtime 會在原子啟用前寫入與官方套件版本、檔名、大小及 SHA-256 完整綁定的 X MCSV ownership receipt，只有憑證有效的受管 runtime 才能在損壞時以先前擷取的檔案系統 identity 安全淘汰並重新安裝。缺少或竄改憑證、取消操作、reparse point、搬移來源或目的地 identity 被替換時一律 fail closed，不會刪除替代目標或手動放入的 Java。
+- beta.13 尚未建立 ownership receipt 的舊 Runtime 若損壞，必須先由有界 `release` metadata 精確確認為相同 Adoptium Temurin／Java major／image type／Windows x64 HotSpot；通過後只會以 identity-bound 原子搬移保留至 `.legacy-runtime-quarantine`，再下載新的受管 Runtime，不會直接刪除舊內容。缺檔、metadata 不符或無法確認來源時維持原位並停止。
+- 客戶端 runtime 掃描只接受 runtime 根目錄下一層的 `temurin-*\\bin\\java.exe`，不再把中斷安裝留下的 `.staging` Java 當成可用正式 runtime。
+- 本機 Android 驗證建置使用 `versionCode 33`；Windows 正式發行流程共 `3,238 / 3,238` 項測試通過且沒有建置警告、錯誤或已知 NuGet 弱點。單一 EXE 安裝器 SHA-256 為 `7251BC43F3D16A950412809732E9E77A22E5CA48285425BCCD6305A7FAD4E89E`，Authenticode 與 DigiCert 時間戳記驗證有效。
+- beta.13 → beta.14 實機升級通過，active version、GUI、Windows Service 與穩定 launcher 均已切換成功。以原先產生 CLDR `ClassFormatError` 的同一份 FTB Skies 2: Aero 重新驗收時，舊 Java 21 Runtime 已安全隔離、新 Runtime 已完成 locale/CLDR 健康檢查及 ownership receipt 建立，NeoForge `21.1.248` 與 483 個模組完整下載、驗證並原子啟用，正式客戶端 Registry 已建立且沒有新增失敗診斷。
+- 1.2.9-beta.14 本輪只進行 local verification，未發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，本機建置、升級、Java 自動修復與 FTB 實機安裝驗收通過，尚未發布；研發中。**
+
 ## 1.2.9-beta.13 — Explorer 啟動器權限修正版（研發中）
 
 - 修正安裝器只替 `launcher` 資料夾設定 current-user／Service 讀取與執行權，卻讓其中的 `Muhun MCSV Updater.exe` 保留建置階段 administrative-only protected ACL，導致開始功能表捷徑目標與參數雖正確，Explorer 仍顯示「Windows 無法存取指定的裝置、路徑或檔案」的問題。

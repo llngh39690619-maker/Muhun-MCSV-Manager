@@ -457,14 +457,14 @@
       "minecraftservermanager.core": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.14, )"
         }
       },
       "minecraftservermanager.data": {
         "type": "Project",
         "dependencies": {
           "Microsoft.Data.Sqlite": "[10.0.11, )",
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )",
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
         }
       },
@@ -474,39 +474,39 @@
       "minecraftservermanager.notifications": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.Data": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.Data": "[1.2.9-beta.14, )"
         }
       },
       "minecraftservermanager.providerhost": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )"
         }
       },
       "minecraftservermanager.remote": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )"
         }
       },
       "Muhun MCSV Service": {
         "type": "Project",
         "dependencies": {
           "Microsoft.Extensions.Hosting.WindowsServices": "[10.0.11, )",
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.Core": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.Data": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.Notifications": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.ProviderHost": "[1.2.9-beta.13, )",
-          "MinecraftServerManager.Remote": "[1.2.9-beta.13, )",
-          "Muhun MCSV Updater": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.Core": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.Data": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.Notifications": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.ProviderHost": "[1.2.9-beta.14, )",
+          "MinecraftServerManager.Remote": "[1.2.9-beta.14, )",
+          "Muhun MCSV Updater": "[1.2.9-beta.14, )"
         }
       },
       "Muhun MCSV Updater": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.13, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.14, )"
         }
       }
     }

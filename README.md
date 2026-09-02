@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.13**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.14**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta，研發中。** 1.2.9-beta.13 本輪只進行本機驗證（local verification），未發布（not published）。若日後透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布，仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證仍會產生一個單一 installer EXE，但該檔案只用於本機安裝與驗收，不是 GitHub Release 下載項目。
+> **發行狀態：Beta，研發中。** 1.2.9-beta.14 本輪只進行本機驗證（local verification），未發布（not published）。若日後透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布，仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證仍會產生一個單一 installer EXE，但該檔案只用於本機安裝與驗收，不是 GitHub Release 下載項目。
 
 ## English summary
 
@@ -29,7 +29,7 @@ The server-side CurseForge catalog uses the official API with a user-supplied, i
 - 啟動時以各實例保存的 Port 作為起點選擇第一個可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
 - Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
-- Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載與完整性驗證。
+- Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載、SHA-256 完整性驗證、locale／CLDR 健康檢查，以及 ownership receipt 綁定的損壞 Runtime 自動修復。
 - 多帳號、角色、全域與逐 Server 權限、記住裝置、最後 Owner 防護及 SQLite 稽核。
 - Responsive Web／PWA；iOS 可加入主畫面，Android 提供只允許 HTTPS 固定來源的 WebView shell。
 - SQLite 通知 outbox、重試與去重，以及 Discord Webhook 通知。
@@ -107,7 +107,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用單一 Windows 安裝 EXE（1.2.9-beta.13 尚未由 GitHub Release 提供）
+### 使用單一 Windows 安裝 EXE（1.2.9-beta.14 尚未由 GitHub Release 提供）
 
 - 啟動 installer EXE 後會顯示 Windows UAC 系統管理員確認，用來建立受保護的程式、Service 及資料 ACL；日常 GUI 不需要以系統管理員身分執行。
 - 預設位置為 `C:\Program Files\MCSV`；安裝畫面可選擇其他安全的本機非磁碟根目錄。選定後所有正式產品資料都留在該安裝根目錄，不使用 AppData／ProgramData fallback。
@@ -136,7 +136,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；研發中的 1.2.9-beta.13 本輪尚未發布，若日後建立 GitHub Release，仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；研發中的 1.2.9-beta.14 本輪尚未發布，若日後建立 GitHub Release，仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -144,7 +144,7 @@ dotnet test .\MinecraftServerManager.sln `
 2. 為每個帳號設定全域及逐 Server 權限。
 3. 設定 Tailscale Funnel，或使用 Cloudflare Named／Quick Tunnel 相容模式。
 4. 從 HTTPS 網址登入 Web 面板。
-5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.13 尚未發布，日後的 GitHub 發布仍不提供 APK）。
+5. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.14 尚未發布，日後的 GitHub 發布仍不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 

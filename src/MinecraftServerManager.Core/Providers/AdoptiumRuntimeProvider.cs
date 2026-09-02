@@ -54,6 +54,11 @@ public sealed partial class AdoptiumRuntimeProvider
     private const int UnixSymbolicLinkType = 0xA000;
     private const int MaximumJavaVersionOutputLines = 1_024;
     private const int MaximumJavaVersionOutputCharacters = 256 * 1024;
+    private const int RuntimeOwnershipReceiptSchemaVersion = 1;
+    private const int MaximumRuntimeOwnershipReceiptBytes = 16 * 1024;
+    private const string RuntimeOwnershipReceiptFileName = ".muhun-mcsv-runtime.v1.json";
+    private const int MaximumLegacyReleaseFileBytes = 64 * 1024;
+    private const string LegacyRuntimeQuarantineDirectoryName = ".legacy-runtime-quarantine";
     private static readonly TimeSpan JavaVersionTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan JavaVersionDrainTimeout = TimeSpan.FromSeconds(5);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RuntimeInstallGates =
@@ -66,10 +71,30 @@ public sealed partial class AdoptiumRuntimeProvider
     };
     private readonly HttpClient _httpClient;
     private readonly VerifiedDownloadClient _downloadClient;
+    private readonly Func<string, CancellationToken, Task<int>> _readJavaMajorVersionAsync;
+    private readonly Func<string, CancellationToken, Task<int>> _readJavacMajorVersionAsync;
 
     public AdoptiumRuntimeProvider(HttpClient httpClient, string userAgent)
+        : this(
+            httpClient,
+            userAgent,
+            ReadJavaMajorVersionAsync,
+            ReadJavacMajorVersionAsync)
     {
-        _httpClient = httpClient;
+    }
+
+    internal AdoptiumRuntimeProvider(
+        HttpClient httpClient,
+        string userAgent,
+        Func<string, CancellationToken, Task<int>> readJavaMajorVersionAsync,
+        Func<string, CancellationToken, Task<int>> readJavacMajorVersionAsync)
+    {
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        ArgumentException.ThrowIfNullOrWhiteSpace(userAgent);
+        _readJavaMajorVersionAsync = readJavaMajorVersionAsync
+            ?? throw new ArgumentNullException(nameof(readJavaMajorVersionAsync));
+        _readJavacMajorVersionAsync = readJavacMajorVersionAsync
+            ?? throw new ArgumentNullException(nameof(readJavacMajorVersionAsync));
         _httpClient.BaseAddress ??= BaseUri;
         // Runtime ZIPs are large; keep a generous bound while still allowing caller cancellation.
         _httpClient.Timeout = TimeSpan.FromMinutes(10);
@@ -183,46 +208,104 @@ public sealed partial class AdoptiumRuntimeProvider
         }
 
         var existingJava = Path.Combine(destination, "bin", "java.exe");
-        if (File.Exists(existingJava))
+        string? preservedLegacyRuntime = null;
+        if (Directory.Exists(destination))
         {
-            SafePath.EnsureNoReparsePointsUnderRoot(fullRuntimeRoot, existingJava);
-            EnsureRegularExecutable(existingJava, "既有 Java");
-            var existingJavac = Path.Combine(destination, "bin", "javac.exe");
-            if (requireJdk)
+            SafePath.EnsureTreeContainsNoReparsePoints(destination);
+            var existingIdentity = SafePath.GetExistingObjectIdentity(destination);
+            var hasOwnershipReceipt = HasValidRuntimeOwnershipReceipt(
+                destination,
+                package,
+                Path.GetFileName(destination));
+            try
             {
-                if (!File.Exists(existingJavac))
+                SafePath.EnsureNoReparsePointsUnderRoot(fullRuntimeRoot, existingJava);
+                EnsureRegularExecutable(existingJava, "既有 Java");
+                var existingJavac = Path.Combine(destination, "bin", "javac.exe");
+                if (requireJdk)
                 {
-                    throw new InvalidDataException(
-                        $"既有 Java Runtime 缺少 JDK javac：{destination}");
+                    if (!File.Exists(existingJavac))
+                    {
+                        throw new InvalidDataException(
+                            $"既有 Java Runtime 缺少 JDK javac：{destination}");
+                    }
+
+                    SafePath.EnsureNoReparsePointsUnderRoot(fullRuntimeRoot, existingJavac);
+                    EnsureRegularExecutable(existingJavac, "既有 JDK javac");
                 }
 
-                SafePath.EnsureNoReparsePointsUnderRoot(fullRuntimeRoot, existingJavac);
-                EnsureRegularExecutable(existingJavac, "既有 JDK javac");
-            }
-
-            var existingMajor = await ReadJavaMajorVersionAsync(existingJava, cancellationToken)
-                .ConfigureAwait(false);
-            if (existingMajor != majorVersion)
-            {
-                throw new InvalidDataException(
-                    $"既有 Java Runtime 版本不符，預期 {majorVersion}，實際 {existingMajor}：{destination}");
-            }
-
-            if (requireJdk)
-            {
-                var existingJavacMajor = await ReadJavacMajorVersionAsync(
-                        existingJavac,
-                        cancellationToken)
+                // The locale settings probe inside the managed Java reader exercises the CLDR
+                // module in addition to parsing `java -version`. A power loss can leave the
+                // executable readable while lib/modules contains zeroed class data; such a tree
+                // must never be returned merely because the version banner still works.
+                var existingMajor = await _readJavaMajorVersionAsync(existingJava, cancellationToken)
                     .ConfigureAwait(false);
-                if (existingJavacMajor != majorVersion)
+                if (existingMajor != majorVersion)
                 {
                     throw new InvalidDataException(
-                        $"既有 javac 版本不符，預期 {majorVersion}，"
-                        + $"實際 {existingJavacMajor}：{destination}");
+                        $"既有 Java Runtime 版本不符，預期 {majorVersion}，實際 {existingMajor}：{destination}");
+                }
+
+                if (requireJdk)
+                {
+                    var existingJavacMajor = await _readJavacMajorVersionAsync(
+                            existingJavac,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    if (existingJavacMajor != majorVersion)
+                    {
+                        throw new InvalidDataException(
+                            $"既有 javac 版本不符，預期 {majorVersion}，"
+                            + $"實際 {existingJavacMajor}：{destination}");
+                    }
+                }
+
+                return new InstalledJavaRuntime(
+                    majorVersion,
+                    package.ReleaseName,
+                    package.ImageType,
+                    package.Vendor,
+                    destination,
+                    existingJava);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (IsRepairableExistingRuntimeFailure(exception))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!hasOwnershipReceipt)
+                {
+                    if (!IsEligibleLegacyAdoptiumRuntime(
+                            destination,
+                            package,
+                            requireJdk))
+                    {
+                        throw new InvalidDataException(
+                            "既有 Java Runtime 已損壞，但缺少 X MCSV 所有權憑證，"
+                            + "且無法確認為舊版受管 Temurin；為避免移動手動放入的 Java，"
+                            + "已停止自動修復。",
+                            exception);
+                    }
+
+                    preservedLegacyRuntime = await QuarantineLegacyRuntimeAsync(
+                            fullRuntimeRoot,
+                            destination,
+                            existingIdentity,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await DeleteInvalidRuntimeAsync(
+                            fullRuntimeRoot,
+                            destination,
+                            existingIdentity,
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
-
-            return new InstalledJavaRuntime(majorVersion, package.ReleaseName, package.ImageType, package.Vendor, destination, existingJava);
         }
 
         var operationId = Guid.NewGuid().ToString("N");
@@ -270,7 +353,8 @@ public sealed partial class AdoptiumRuntimeProvider
                 SafePath.EnsureNoReparsePointsUnderRoot(extraction, discoveredJavac);
             }
 
-            var actualMajor = await ReadJavaMajorVersionAsync(discoveredJava, cancellationToken).ConfigureAwait(false);
+            var actualMajor = await _readJavaMajorVersionAsync(discoveredJava, cancellationToken)
+                .ConfigureAwait(false);
             if (actualMajor != majorVersion)
             {
                 throw new InvalidDataException($"Java 版本驗證失敗，預期 {majorVersion}，實際 {actualMajor}。");
@@ -278,7 +362,7 @@ public sealed partial class AdoptiumRuntimeProvider
 
             if (requireJdk)
             {
-                var actualJavacMajor = await ReadJavacMajorVersionAsync(
+                var actualJavacMajor = await _readJavacMajorVersionAsync(
                         discoveredJavac,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -289,18 +373,34 @@ public sealed partial class AdoptiumRuntimeProvider
                 }
             }
 
+            await WriteRuntimeOwnershipReceiptAsync(
+                    packageRoot,
+                    package,
+                    Path.GetFileName(destination),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             if (Directory.Exists(destination))
             {
                 throw new IOException($"Runtime 目的資料夾已存在但不完整：{destination}");
             }
 
-            await MoveDirectoryWithRetryAsync(
-                    packageRoot,
-                    destination,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            var promotedIdentity = SafePath.GetExistingObjectIdentity(packageRoot);
             try
             {
+                await MoveDirectoryWithRetryAsync(
+                        packageRoot,
+                        destination,
+                        cancellationToken,
+                        expectedSourceIdentity: promotedIdentity)
+                    .ConfigureAwait(false);
+                var destinationIdentity = SafePath.GetExistingObjectIdentity(destination);
+                if (destinationIdentity != promotedIdentity)
+                {
+                    throw new UnauthorizedAccessException(
+                        "Java Runtime promotion 期間資料夾 identity 已變更。");
+                }
+
                 SafePath.EnsureTreeContainsNoReparsePoints(destination);
                 var javaExecutable = Path.Combine(destination, "bin", "java.exe");
                 if (!File.Exists(javaExecutable))
@@ -316,6 +416,14 @@ public sealed partial class AdoptiumRuntimeProvider
                     SafePath.EnsureNoReparsePointsUnderRoot(fullRuntimeRoot, javacExecutable);
                 }
 
+                if (!HasValidRuntimeOwnershipReceipt(
+                        destination,
+                        package,
+                        Path.GetFileName(destination)))
+                {
+                    throw new InvalidDataException("Java 安裝完成後的 X MCSV 所有權憑證無效。");
+                }
+
                 return new InstalledJavaRuntime(
                     majorVersion,
                     package.ReleaseName,
@@ -326,9 +434,26 @@ public sealed partial class AdoptiumRuntimeProvider
             }
             catch
             {
-                await DeleteOwnedPathAsync(fullRuntimeRoot, destination).ConfigureAwait(false);
+                if (Directory.Exists(destination))
+                {
+                    await DeleteInvalidRuntimeAsync(
+                            fullRuntimeRoot,
+                            destination,
+                            promotedIdentity,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+
                 throw;
             }
+        }
+        catch (Exception exception) when (
+            preservedLegacyRuntime is not null
+            && exception is not OperationCanceledException)
+        {
+            throw new InvalidDataException(
+                $"新 Java Runtime 安裝失敗；舊版 Runtime 已完整保留於：{preservedLegacyRuntime}",
+                exception);
         }
         finally
         {
@@ -391,7 +516,9 @@ public sealed partial class AdoptiumRuntimeProvider
 
         using var process = new Process
         {
-            StartInfo = BuildJavaToolVersionStartInfo(executable)
+            StartInfo = BuildJavaToolVersionStartInfo(
+                executable,
+                probeLocale: string.Equals(toolName, "java", StringComparison.Ordinal))
         };
         process.Start();
 
@@ -452,7 +579,9 @@ public sealed partial class AdoptiumRuntimeProvider
         return int.Parse(match.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    internal static ProcessStartInfo BuildJavaToolVersionStartInfo(string executable)
+    internal static ProcessStartInfo BuildJavaToolVersionStartInfo(
+        string executable,
+        bool probeLocale = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         var fullExecutable = Path.GetFullPath(executable);
@@ -468,6 +597,13 @@ public sealed partial class AdoptiumRuntimeProvider
             RedirectStandardError = true
         };
         ManagedJavaProcessEnvironment.Configure(startInfo, fullExecutable);
+        if (probeLocale)
+        {
+            // `java -version` can succeed even when a power interruption has corrupted the CLDR
+            // data inside lib/modules. Asking the VM to materialize its locale settings catches
+            // that unusable runtime before Minecraft or an official loader installer receives it.
+            startInfo.ArgumentList.Add("-XshowSettings:locale");
+        }
         startInfo.ArgumentList.Add("-version");
         return startInfo;
     }
@@ -980,7 +1116,8 @@ public sealed partial class AdoptiumRuntimeProvider
         string destination,
         CancellationToken cancellationToken,
         Action<string, string>? moveDirectory = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        SafePathObjectIdentity? expectedSourceIdentity = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
@@ -992,9 +1129,23 @@ public sealed partial class AdoptiumRuntimeProvider
         {
             cancellationToken.ThrowIfCancellationRequested();
             SafePath.EnsureTreeContainsNoReparsePoints(source);
+            if (expectedSourceIdentity is { } expected
+                && SafePath.GetExistingObjectIdentity(source) != expected)
+            {
+                throw new UnauthorizedAccessException(
+                    "Refused Java Runtime promotion because the verified source identity changed.");
+            }
+
             try
             {
                 moveDirectory(source, destination);
+                if (expectedSourceIdentity is { } expectedDestinationIdentity
+                    && SafePath.GetExistingObjectIdentity(destination) != expectedDestinationIdentity)
+                {
+                    throw new UnauthorizedAccessException(
+                        "Refused Java Runtime promotion because the destination identity changed.");
+                }
+
                 return;
             }
             catch (Exception exception) when (
@@ -1049,6 +1200,395 @@ public sealed partial class AdoptiumRuntimeProvider
         var invalid = Path.GetInvalidFileNameChars();
         var cleaned = new string(value.Select(character => invalid.Contains(character) ? '-' : character).ToArray()).Trim();
         return string.IsNullOrWhiteSpace(cleaned) ? "java" : cleaned;
+    }
+
+    private static bool IsRepairableExistingRuntimeFailure(Exception exception)
+        => exception is InvalidDataException or FileNotFoundException or DirectoryNotFoundException;
+
+    private static bool IsEligibleLegacyAdoptiumRuntime(
+        string destination,
+        JavaRuntimePackage package,
+        bool requireJdk)
+    {
+        var java = Path.Combine(destination, "bin", "java.exe");
+        var javac = Path.Combine(destination, "bin", "javac.exe");
+        var releasePath = Path.Combine(destination, "release");
+        if (!File.Exists(java)
+            || (requireJdk && !File.Exists(javac))
+            || !File.Exists(releasePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            EnsureRegularExecutable(java, "舊版 Java");
+            if (requireJdk)
+            {
+                EnsureRegularExecutable(javac, "舊版 javac");
+            }
+
+            SafePath.EnsureNoReparsePointsUnderRoot(destination, releasePath);
+            var attributes = File.GetAttributes(releasePath);
+            var length = new FileInfo(releasePath).Length;
+            if (attributes.HasFlag(FileAttributes.Directory)
+                || attributes.HasFlag(FileAttributes.ReparsePoint)
+                || length is < 1 or > MaximumLegacyReleaseFileBytes)
+            {
+                return false;
+            }
+
+            var content = File.ReadAllText(releasePath, Encoding.UTF8);
+            if (Encoding.UTF8.GetByteCount(content) > MaximumLegacyReleaseFileBytes)
+            {
+                return false;
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var rawLine in content.ReplaceLineEndings("\n").Split('\n'))
+            {
+                var line = rawLine.Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                var separator = line.IndexOf('=');
+                if (separator <= 0 || !values.TryAdd(
+                        line[..separator],
+                        UnquoteReleaseValue(line[(separator + 1)..])))
+                {
+                    return false;
+                }
+            }
+
+            var releaseVersion = package.ReleaseName.StartsWith("jdk-", StringComparison.Ordinal)
+                ? package.ReleaseName[4..]
+                : package.ReleaseName;
+            return ReadReleaseValue(values, "IMPLEMENTOR") is "Eclipse Adoptium"
+                   && string.Equals(
+                       ReadReleaseValue(values, "IMPLEMENTOR_VERSION"),
+                       $"Temurin-{releaseVersion}",
+                       StringComparison.Ordinal)
+                   && HasMatchingJavaMajor(
+                       ReadReleaseValue(values, "JAVA_VERSION"),
+                       package.MajorVersion)
+                   && string.Equals(
+                       ReadReleaseValue(values, "IMAGE_TYPE"),
+                       package.ImageType,
+                       StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(
+                       ReadReleaseValue(values, "OS_NAME"),
+                       "Windows",
+                       StringComparison.Ordinal)
+                   && ReadReleaseValue(values, "OS_ARCH") is { } architecture
+                   && (architecture.Equals("x86_64", StringComparison.OrdinalIgnoreCase)
+                       || architecture.Equals("amd64", StringComparison.OrdinalIgnoreCase))
+                   && string.Equals(
+                       ReadReleaseValue(values, "JVM_VARIANT"),
+                       "Hotspot",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is IOException
+                                           or InvalidDataException
+                                           or UnauthorizedAccessException
+                                           or DecoderFallbackException)
+        {
+            return false;
+        }
+
+        static string UnquoteReleaseValue(string value)
+        {
+            var trimmed = value.Trim();
+            return trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"'
+                ? trimmed[1..^1]
+                : trimmed;
+        }
+
+        static string? ReadReleaseValue(IReadOnlyDictionary<string, string> values, string key)
+            => values.TryGetValue(key, out var value) ? value : null;
+
+        static bool HasMatchingJavaMajor(string? version, int expectedMajor)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                return false;
+            }
+
+            var separator = version.IndexOfAny(['.', '-', '+']);
+            var majorText = separator < 0 ? version : version[..separator];
+            return int.TryParse(
+                       majorText,
+                       System.Globalization.NumberStyles.None,
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       out var actualMajor)
+                   && actualMajor == expectedMajor;
+        }
+    }
+
+    private static async Task<string> QuarantineLegacyRuntimeAsync(
+        string runtimeRoot,
+        string destination,
+        SafePathObjectIdentity expectedIdentity,
+        CancellationToken cancellationToken)
+    {
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(runtimeRoot));
+        var fullDestination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
+        if (!string.Equals(
+                Path.GetDirectoryName(fullDestination),
+                fullRoot,
+                StringComparison.OrdinalIgnoreCase)
+            || !Path.GetFileName(fullDestination).StartsWith(
+                "temurin-",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException(
+                "Only a direct, manager-named legacy Temurin runtime may be quarantined.");
+        }
+
+        var quarantineRoot = Path.Combine(fullRoot, LegacyRuntimeQuarantineDirectoryName);
+        Directory.CreateDirectory(quarantineRoot);
+        SafePath.EnsureNoReparsePointsUnderRoot(fullRoot, quarantineRoot);
+        var quarantinePath = Path.Combine(
+            quarantineRoot,
+            $"{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}");
+        if (Directory.Exists(quarantinePath) || File.Exists(quarantinePath))
+        {
+            throw new IOException("Legacy Java Runtime quarantine path already exists.");
+        }
+
+        await MoveDirectoryWithRetryAsync(
+                fullDestination,
+                quarantinePath,
+                cancellationToken,
+                expectedSourceIdentity: expectedIdentity)
+            .ConfigureAwait(false);
+        if (SafePath.GetExistingObjectIdentity(quarantinePath) != expectedIdentity)
+        {
+            throw new UnauthorizedAccessException(
+                "Legacy Java Runtime quarantine identity verification failed.");
+        }
+
+        return quarantinePath;
+    }
+
+    private static async Task WriteRuntimeOwnershipReceiptAsync(
+        string packageRoot,
+        JavaRuntimePackage package,
+        string destinationLeaf,
+        CancellationToken cancellationToken)
+    {
+        var receiptPath = Path.Combine(packageRoot, RuntimeOwnershipReceiptFileName);
+        if (File.Exists(receiptPath) || Directory.Exists(receiptPath))
+        {
+            throw new InvalidDataException(
+                $"Java 封裝不可預先包含 X MCSV 所有權憑證：{receiptPath}");
+        }
+
+        var receipt = new RuntimeOwnershipReceipt(
+            RuntimeOwnershipReceiptSchemaVersion,
+            "adoptium",
+            package.MajorVersion,
+            package.ReleaseName,
+            package.ImageType,
+            package.FileName,
+            package.Sha256.ToLowerInvariant(),
+            package.Size,
+            destinationLeaf);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt);
+        if (bytes.Length is < 1 or > MaximumRuntimeOwnershipReceiptBytes)
+        {
+            throw new InvalidDataException("Java Runtime 所有權憑證大小無效。");
+        }
+
+        await using var stream = new FileStream(
+            receiptPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4 * 1024,
+            FileOptions.Asynchronous | FileOptions.WriteThrough);
+        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+    }
+
+    private static bool HasValidRuntimeOwnershipReceipt(
+        string runtimeDirectory,
+        JavaRuntimePackage package,
+        string destinationLeaf)
+    {
+        var receiptPath = Path.Combine(runtimeDirectory, RuntimeOwnershipReceiptFileName);
+        if (!File.Exists(receiptPath))
+        {
+            if (Directory.Exists(receiptPath))
+            {
+                throw new InvalidDataException("Java Runtime 所有權憑證不可是資料夾。");
+            }
+
+            return false;
+        }
+
+        SafePath.EnsureNoReparsePointsUnderRoot(runtimeDirectory, receiptPath);
+        var attributes = File.GetAttributes(receiptPath);
+        if (attributes.HasFlag(FileAttributes.Directory)
+            || attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidDataException("Java Runtime 所有權憑證必須是非連結的一般檔案。");
+        }
+
+        var length = new FileInfo(receiptPath).Length;
+        if (length is < 1 or > MaximumRuntimeOwnershipReceiptBytes)
+        {
+            throw new InvalidDataException("Java Runtime 所有權憑證大小無效。");
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(receiptPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException("無法安全讀取 Java Runtime 所有權憑證。", exception);
+        }
+
+        if (bytes.Length is < 1 or > MaximumRuntimeOwnershipReceiptBytes)
+        {
+            throw new InvalidDataException("Java Runtime 所有權憑證大小無效。");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                bytes,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 8
+                });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Java Runtime 所有權憑證根節點無效。");
+            }
+
+            string[] expectedNames =
+            [
+                nameof(RuntimeOwnershipReceipt.SchemaVersion),
+                nameof(RuntimeOwnershipReceipt.Provider),
+                nameof(RuntimeOwnershipReceipt.MajorVersion),
+                nameof(RuntimeOwnershipReceipt.ReleaseName),
+                nameof(RuntimeOwnershipReceipt.ImageType),
+                nameof(RuntimeOwnershipReceipt.FileName),
+                nameof(RuntimeOwnershipReceipt.ArchiveSha256),
+                nameof(RuntimeOwnershipReceipt.ArchiveSize),
+                nameof(RuntimeOwnershipReceipt.DestinationLeaf)
+            ];
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in root.EnumerateObject())
+            {
+                if (!expectedNames.Contains(property.Name, StringComparer.Ordinal)
+                    || !seen.Add(property.Name))
+                {
+                    throw new InvalidDataException("Java Runtime 所有權憑證包含未知或重複欄位。");
+                }
+            }
+
+            if (seen.Count != expectedNames.Length
+                || !TryReadInt32(root, nameof(RuntimeOwnershipReceipt.SchemaVersion), out var schemaVersion)
+                || schemaVersion != RuntimeOwnershipReceiptSchemaVersion
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.Provider), out var provider)
+                || !string.Equals(provider, "adoptium", StringComparison.Ordinal)
+                || !TryReadInt32(root, nameof(RuntimeOwnershipReceipt.MajorVersion), out var majorVersion)
+                || majorVersion != package.MajorVersion
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.ReleaseName), out var releaseName)
+                || !string.Equals(releaseName, package.ReleaseName, StringComparison.Ordinal)
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.ImageType), out var imageType)
+                || !string.Equals(imageType, package.ImageType, StringComparison.Ordinal)
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.FileName), out var fileName)
+                || !string.Equals(fileName, package.FileName, StringComparison.Ordinal)
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.ArchiveSha256), out var archiveSha256)
+                || !string.Equals(archiveSha256, package.Sha256, StringComparison.OrdinalIgnoreCase)
+                || !TryReadInt64(root, nameof(RuntimeOwnershipReceipt.ArchiveSize), out var archiveSize)
+                || archiveSize != package.Size
+                || !TryReadString(root, nameof(RuntimeOwnershipReceipt.DestinationLeaf), out var recordedLeaf)
+                || !string.Equals(recordedLeaf, destinationLeaf, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Java Runtime 所有權憑證與官方套件不相符。");
+            }
+
+            return true;
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("Java Runtime 所有權憑證不是有效 JSON。", exception);
+        }
+
+        static bool TryReadString(JsonElement root, string name, out string? value)
+        {
+            value = null;
+            return root.TryGetProperty(name, out var element)
+                   && element.ValueKind == JsonValueKind.String
+                   && (value = element.GetString()) is not null;
+        }
+
+        static bool TryReadInt32(JsonElement root, string name, out int value)
+        {
+            value = default;
+            return root.TryGetProperty(name, out var element)
+                   && element.ValueKind == JsonValueKind.Number
+                   && element.TryGetInt32(out value);
+        }
+
+        static bool TryReadInt64(JsonElement root, string name, out long value)
+        {
+            value = default;
+            return root.TryGetProperty(name, out var element)
+                   && element.ValueKind == JsonValueKind.Number
+                   && element.TryGetInt64(out value);
+        }
+    }
+
+    private sealed record RuntimeOwnershipReceipt(
+        int SchemaVersion,
+        string Provider,
+        int MajorVersion,
+        string ReleaseName,
+        string ImageType,
+        string FileName,
+        string ArchiveSha256,
+        long ArchiveSize,
+        string DestinationLeaf);
+
+    internal static Task DeleteInvalidRuntimeAsync(
+        string runtimeRoot,
+        string destination,
+        SafePathObjectIdentity expectedIdentity,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtimeRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destination);
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(runtimeRoot));
+        var fullDestination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
+        if (!string.Equals(
+                Path.GetDirectoryName(fullDestination),
+                fullRoot,
+                StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFileName(fullDestination).StartsWith("temurin-", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException(
+                "Only a direct, manager-named Temurin runtime may be repaired automatically.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return SafePath.DeleteTreeWithoutFollowingReparsePointsWithRetryAsync(
+            fullRoot,
+            fullDestination,
+            expectedIdentity,
+            protectedObjectIdentities: null,
+            cancellationToken);
     }
 
     private static Task DeleteOwnedPathAsync(string trustedParent, string path)

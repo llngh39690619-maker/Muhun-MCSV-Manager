@@ -3432,14 +3432,25 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     {
         if (Directory.Exists(_paths.ClientRuntimes))
         {
-            foreach (var candidate in Directory.EnumerateFiles(
+            foreach (var directory in Directory.EnumerateDirectories(
                          _paths.ClientRuntimes,
-                         "java.exe",
-                         SearchOption.AllDirectories).Take(64))
+                         "temurin-*",
+                         SearchOption.TopDirectoryOnly)
+                     .OrderByDescending(static path => path, StringComparer.OrdinalIgnoreCase)
+                     .Take(64))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var candidate = Path.Combine(directory, "bin", "java.exe");
+                if (!File.Exists(candidate))
+                {
+                    continue;
+                }
+
                 try
                 {
+                    candidate = SafePath.EnsureNoReparsePointsUnderRoot(
+                        _paths.ClientRuntimes,
+                        candidate);
                     if (await AdoptiumRuntimeProvider.ReadJavaMajorVersionAsync(candidate, cancellationToken) == majorVersion)
                     {
                         ProgressValue = 0.2;
