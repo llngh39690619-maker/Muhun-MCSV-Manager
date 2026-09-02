@@ -63,6 +63,23 @@ internal static class InstallerSecurityDescriptorComparer
     public static bool EqualsAllowingDaclAutoInherited(
         string actualDescriptor,
         string expectedDescriptor)
+        => EqualsCore(
+            actualDescriptor,
+            expectedDescriptor,
+            requireProtectedDacl: true);
+
+    internal static bool EqualsCapturedDescriptorAllowingDaclAutoInherited(
+        string actualDescriptor,
+        string expectedDescriptor)
+        => EqualsCore(
+            actualDescriptor,
+            expectedDescriptor,
+            requireProtectedDacl: false);
+
+    private static bool EqualsCore(
+        string actualDescriptor,
+        string expectedDescriptor,
+        bool requireProtectedDacl)
     {
         try
         {
@@ -72,7 +89,8 @@ internal static class InstallerSecurityDescriptorComparer
                 ControlFlags.DiscretionaryAclAutoInherited;
             return (actual.ControlFlags & ~allowedWindowsNormalization) ==
                        (expected.ControlFlags & ~allowedWindowsNormalization) &&
-                   actual.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected) &&
+                   (!requireProtectedDacl ||
+                    actual.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected)) &&
                    Equals(actual.Owner, expected.Owner) &&
                    Equals(actual.Group, expected.Group) &&
                    AclBinaryEquals(actual.DiscretionaryAcl, expected.DiscretionaryAcl) &&

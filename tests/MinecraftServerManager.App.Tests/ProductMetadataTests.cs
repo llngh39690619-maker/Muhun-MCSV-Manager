@@ -8,7 +8,7 @@ namespace MinecraftServerManager.App.Tests;
 
 public sealed class ProductMetadataTests
 {
-    private const string CurrentVersion = "1.2.9-beta.10";
+    private const string CurrentVersion = "1.2.9-beta.12";
     private const string CurrentAssemblyVersion = "1.2.9.0";
     private static readonly string[] VersionedSourceProjects =
     [
@@ -20,6 +20,7 @@ public sealed class ProductMetadataTests
         "MinecraftServerManager.Data/MinecraftServerManager.Data.csproj",
         "MinecraftServerManager.GameClient.Contracts/MinecraftServerManager.GameClient.Contracts.csproj",
         "MinecraftServerManager.GameClient/MinecraftServerManager.GameClient.csproj",
+        "MinecraftServerManager.Installer/MinecraftServerManager.Installer.csproj",
         "MinecraftServerManager.Notifications/MinecraftServerManager.Notifications.csproj",
         "MinecraftServerManager.ProviderHost/MinecraftServerManager.ProviderHost.csproj",
         "MinecraftServerManager.Remote/MinecraftServerManager.Remote.csproj",

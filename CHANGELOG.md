@@ -2,6 +2,20 @@
 
 ## 未發布
 
+## 1.2.9-beta.12 — 繼承 ACL 快照驗證與服務復原修正版（研發中）
+
+- 修正安裝器把合法的 inherited／unprotected 子項目安全描述元與自身快照比較時，錯誤要求 DACL 必須為 protected、因而安全中止安裝的問題；專用修復快照仍會精確驗證 owner、group、DACL 與控制旗標，只容許 Windows 自動維護的 `DiscretionaryAclAutoInherited` 差異。SACL 不屬於 beta.9 current-user ACL 所授予的可修改範圍，且讀取需額外的 `SeSecurityPrivilege`，因此不納入這條相容性修復路徑。
+- 已因安全修復重試而處於 `Start=4` 的既有受管理 Service，即使 Registry 的 `DelayedAutoStart=0`，後續一般安裝階段失敗時仍會按產品原本的 delayed-auto 模式恢復並重新啟動；秘密修復尚未提交時維持 fail closed，不會提早恢復 Service。
+- 本機 Android 驗證建置使用 `versionCode 31`。1.2.9-beta.12 本輪只進行 local verification，未發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，local verification，尚未發布；研發中。**
+
+## 1.2.9-beta.11 — 安裝秘密 ACL 與權杖輪替安全修正版（研發中）
+
+- 安裝器只會在 `service\<channel>\secrets` 命中已知且精確的 current-user Allow ACE 漂移時，自動收斂為受保護的產品 ACL；若出現未知 ACE、Deny、非預期 SID、權限或繼承狀態，會 fail closed 並停止安裝，不猜測也不放寬存取權。
+- Service 必須先完成停止與程序退出驗證，安裝器才會以原子替換輪替 `service-rest-token.v1`；安全修復一旦提交，後續一般安裝回復不會重新帶回舊 ACL 或舊權杖。
+- 本機 Android 驗證建置使用 `versionCode 30`；Windows 正式建置與自動測試通過，但實機安裝因快照比較器將合法的 inherited／unprotected 子項目誤判為變更而安全中止，因此未通過安裝驗收，也未發布。
+- **狀態：Beta，建置通過、實機安裝安全中止，未發布；研發中。**
+
 ## 1.2.9-beta.10 — 客戶端下載穩定性與安裝狀態修正版（研發中）
 
 - 修正 FTB 客戶端安裝的子階段進度直接被當成整體進度、失敗後又收到延遲 100% 回報的問題；基礎遊戲、Loader、模組包內容與安全啟用改用分段權重，只有完整驗證並啟用成功才顯示 100%，失敗工作會保留實際失敗階段、紅色狀態與診斷資料夾入口。

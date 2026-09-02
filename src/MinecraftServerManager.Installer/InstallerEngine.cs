@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -56,7 +57,8 @@ internal sealed record InstallerServiceSnapshot(
     string? ImagePath,
     bool WasRunning,
     string? SecurityDescriptor,
-    bool DelayedAutoStart);
+    bool DelayedAutoStart,
+    bool WasDisabledForSecurityRemediationRetry = false);
 
 internal sealed record InstallerLauncherRollback(
     string DestinationPath,
@@ -129,11 +131,16 @@ internal sealed record InstallerAclGrant(
 internal interface IInstallerRootLease : IDisposable
 {
     bool RootCreated { get; }
+    bool HasPendingSecretsSecurityRemediation { get; }
+    bool SecretsSecurityRemediationFailedClosed { get; }
     void ValidateAndPinExistingManagedInstallation(
         InstallerLayout layout,
         string targetVersion,
         string currentUserSid,
         string serviceName);
+    bool BeginRecoverableSecretsAclRemediation(
+        bool forceTokenRotationForDisabledServiceRetry = false);
+    void RepairRecoverableSecretsAclDriftAfterServiceStopped();
     void ProtectOwnedRootAndPinExistingDirectories(IReadOnlyList<string> directories);
     void CreateAndProtectMissingDirectories();
     void ProtectOwnedRootAndDirectories(IReadOnlyList<string> directories);
@@ -471,9 +478,25 @@ internal sealed class InstallerEngine
             serviceSnapshot = await _platform.CaptureAndStopServiceAsync(
                     ServiceName,
                     layout.Root,
+                    rootLease.HasPendingSecretsSecurityRemediation,
                     snapshot => serviceSnapshot = snapshot,
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (rootLease.BeginRecoverableSecretsAclRemediation(
+                    serviceSnapshot.WasDisabledForSecurityRemediationRetry))
+            {
+                failureStage = "停用服務以修復敏感資料安全性";
+                failurePath = Path.Combine(layout.ServiceRoot, "secrets");
+                if (serviceSnapshot.Existed)
+                {
+                    await _platform.DisableServiceForSecurityRemediationAsync(
+                            ServiceName,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                failureStage = "修復既有敏感資料目錄權限";
+                rootLease.RepairRecoverableSecretsAclDriftAfterServiceStopped();
+            }
             failureStage = "準備受管理安裝根目錄";
             installMarkerCreated = PrepareOwnedRoot(layout, rootLease);
             previousActiveVersion = ReadOptionalActiveVersion(activePointer);
@@ -649,8 +672,26 @@ internal sealed class InstallerEngine
         catch (Exception installationError)
         {
             var rollbackErrors = new List<Exception>();
-            var serviceQuiesced = serviceSnapshot is null;
-            if (serviceSnapshot is not null)
+            var remediationFailedClosed =
+                rootLease?.SecretsSecurityRemediationFailedClosed == true ||
+                (serviceSnapshot?.WasDisabledForSecurityRemediationRetry == true &&
+                 rootLease?.HasPendingSecretsSecurityRemediation == true);
+            var serviceQuiesced = serviceSnapshot is null || remediationFailedClosed;
+            if (remediationFailedClosed && serviceSnapshot?.Existed == true)
+            {
+                try
+                {
+                    await _platform.DisableServiceForSecurityRemediationAsync(
+                            ServiceName,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception rollbackError)
+                {
+                    rollbackErrors.Add(rollbackError);
+                }
+            }
+            else if (serviceSnapshot is not null)
             {
                 try
                 {
@@ -755,7 +796,9 @@ internal sealed class InstallerEngine
                     }
                 }
             }
-            if (serviceSnapshot is not null && serviceQuiesced && rollbackErrors.Count == 0)
+            if (serviceQuiesced && rollbackErrors.Count == 0 &&
+                !remediationFailedClosed &&
+                serviceSnapshot is not null)
             {
                 try
                 {
@@ -1404,7 +1447,11 @@ internal interface IInstallerPlatform : IInstallerShellIntegrationPlatform
     Task<InstallerServiceSnapshot> CaptureAndStopServiceAsync(
         string name,
         string installRoot,
+        bool allowDisabledSecurityRemediationRetry,
         Action<InstallerServiceSnapshot> snapshotCaptured,
+        CancellationToken cancellationToken);
+    Task DisableServiceForSecurityRemediationAsync(
+        string name,
         CancellationToken cancellationToken);
     Task ConfigureServiceAsync(
         string name,
@@ -1901,6 +1948,29 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         bool rootCreated,
         string normalizedRoot) : IInstallerRootLease
     {
+        private const int MaximumSecretsEntries = 4_096;
+        private const int MaximumSecretsDepth = 16;
+        private const int MaximumServiceTokenBytes = 128;
+
+        private sealed record PendingSecretsAclRepair(
+            string DirectoryPath,
+            SecurityIdentifier CurrentUserSid,
+            SecurityIdentifier ServiceSid,
+            IReadOnlyList<InstallerAclGrant> DirectoryGrants,
+            IReadOnlyList<InstallerAclGrant> FileGrants,
+            IReadOnlyDictionary<string, bool> Namespace,
+            IReadOnlyDictionary<string, string> SecurityDescriptors,
+            string TokenPath,
+            byte[] OriginalTokenHash,
+            bool RepairRequired);
+
+        private enum SecretsEntryAclState
+        {
+            Invalid,
+            Strict,
+            Recoverable,
+        }
+
         private List<SafeFileHandle>? _handles = [.. handles];
         private readonly int _rootHandleIndex = handles.Count - 1;
         private readonly string _normalizedRoot = NormalizeFinalHandlePath(normalizedRoot);
@@ -1918,6 +1988,9 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _createdDirectories = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _missingDirectories = [];
+        private PendingSecretsAclRepair? _pendingSecretsAclRepair;
+        private bool _secretsRemediationStarted;
+        private bool _secretsRemediationCommitted;
         private bool _initialProtectionPrepared;
         private bool _canonicalDirectoriesReady;
         private bool _protectionMutated;
@@ -1926,6 +1999,10 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         private bool _rootDeletePending;
 
         public bool RootCreated { get; } = rootCreated;
+        public bool HasPendingSecretsSecurityRemediation =>
+            _pendingSecretsAclRepair?.OriginalTokenHash.Length == SHA256.HashSizeInBytes;
+        public bool SecretsSecurityRemediationFailedClosed =>
+            _secretsRemediationStarted && !_secretsRemediationCommitted;
 
         public void ValidateAndPinExistingManagedInstallation(
             InstallerLayout layout,
@@ -1953,6 +2030,7 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                 userSid,
                 serviceSid,
                 operatorsSid);
+            var secretsPath = NormalizeFinalHandlePath(Path.Combine(layout.ServiceRoot, "secrets"));
             foreach (var pair in expectedDirectories.OrderBy(pair => pair.Key.Length))
             {
                 if (_prevalidatedMissingDirectories.Any(missing => pair.Key.StartsWith(
@@ -1986,7 +2064,54 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                     _directoryHandles.Add(pair.Key, handle);
                 }
                 ValidateLockedDirectoryHandle(handle, pair.Key);
-                ValidateExactDirectoryAcl(pair.Key, pair.Value);
+                var isSecretsPath = string.Equals(
+                    pair.Key,
+                    secretsPath,
+                    StringComparison.OrdinalIgnoreCase);
+                try
+                {
+                    ValidateExactDirectoryAcl(pair.Key, pair.Value);
+                }
+                catch (UnauthorizedAccessException) when (isSecretsPath)
+                {
+                    // Only the released beta.9 Explorer/UAC-style current-user ACE drift on the
+                    // Service secrets root is eligible. All other paths and descriptors remain
+                    // subject to the original exact, fail-closed validation below.
+                }
+
+                if (!isSecretsPath)
+                {
+                    continue;
+                }
+
+                var actual = ReadDirectorySecurity(pair.Key);
+                var rootAclState = ClassifySecretsEntryAcl(
+                    actual,
+                    isDirectory: true,
+                    pair.Value,
+                    userSid,
+                    serviceSid);
+                if (rootAclState == SecretsEntryAclState.Invalid)
+                {
+                    throw new UnauthorizedAccessException(
+                        $"既有 X MCSV 目錄不是受信任且受保護的產品 ACL：{pair.Key}");
+                }
+
+                _pendingSecretsAclRepair = new PendingSecretsAclRepair(
+                    pair.Key,
+                    userSid,
+                    serviceSid,
+                    pair.Value,
+                    [
+                        new InstallerAclGrant(LocalSystemSid, FileSystemRights.FullControl),
+                        new InstallerAclGrant(AdministratorsSid, FileSystemRights.FullControl),
+                        new InstallerAclGrant(serviceSid, FileSystemRights.Modify),
+                    ],
+                    new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase),
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    string.Empty,
+                    [],
+                    rootAclState == SecretsEntryAclState.Recoverable);
             }
 
             var marker = Path.Combine(layout.Root, InstallerLayout.InstallMarkerName);
@@ -2059,7 +2184,518 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                         maximumEntries: 100_000,
                         maximumDepth: 64));
             }
+
+            if (_pendingSecretsAclRepair is not null)
+            {
+                _pendingSecretsAclRepair = PinAndValidateRecoverableSecretsNamespace(
+                    _pendingSecretsAclRepair);
+            }
         }
+
+        public bool BeginRecoverableSecretsAclRemediation(
+            bool forceTokenRotationForDisabledServiceRetry = false)
+        {
+            var repair = _pendingSecretsAclRepair;
+            if (repair is null ||
+                (!repair.RepairRequired && !forceTokenRotationForDisabledServiceRetry))
+            {
+                return false;
+            }
+            if (forceTokenRotationForDisabledServiceRetry &&
+                repair.OriginalTokenHash.Length != SHA256.HashSizeInBytes)
+            {
+                throw new InvalidDataException(
+                    "停用 Service 的安全修復重試缺少已驗證的 REST token 狀態。");
+            }
+            if (_initialProtectionPrepared || _committed || _rolledBack ||
+                _secretsRemediationStarted)
+            {
+                throw new InvalidOperationException("敏感資料 ACL 修復階段順序無效。");
+            }
+
+            if (!repair.RepairRequired)
+            {
+                _pendingSecretsAclRepair = repair with { RepairRequired = true };
+            }
+            _secretsRemediationStarted = true;
+            return true;
+        }
+
+        public void RepairRecoverableSecretsAclDriftAfterServiceStopped()
+        {
+            var repair = _pendingSecretsAclRepair;
+            if (repair is null || !repair.RepairRequired)
+            {
+                return;
+            }
+            if (!_secretsRemediationStarted || _secretsRemediationCommitted ||
+                _initialProtectionPrepared || _committed || _rolledBack)
+            {
+                throw new InvalidOperationException("敏感資料 ACL 修復階段順序無效。");
+            }
+            if (!_directoryHandles.TryGetValue(repair.DirectoryPath, out var secretsHandle))
+            {
+                throw new InvalidOperationException("敏感資料目錄的既有 lease 遺失。");
+            }
+
+            ValidatePinnedSecretsEntryUnchanged(
+                repair.DirectoryPath,
+                isDirectory: true,
+                secretsHandle,
+                repair);
+
+            var replacementBytes = CreateServiceTokenContentForRepair();
+            var replacementHash = SHA256.HashData(replacementBytes);
+            try
+            {
+                _protectionMutated = true;
+                ValidateOriginalServiceTokenContent(repair.TokenPath, repair.OriginalTokenHash);
+                HardenAndValidateSecretsNamespace(repair);
+                ReleaseFileForReplacement(repair.TokenPath);
+                WriteAtomicServiceToken(repair.TokenPath, replacementBytes, repair.FileGrants);
+                ValidateServiceTokenContent(repair.TokenPath, replacementHash);
+                CommitSecretsSecurityRemediation(repair);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(replacementBytes);
+                CryptographicOperations.ZeroMemory(replacementHash);
+            }
+        }
+
+        private PendingSecretsAclRepair PinAndValidateRecoverableSecretsNamespace(
+            PendingSecretsAclRepair repair)
+        {
+            var owned = GetHandles();
+            var discovered = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                [repair.DirectoryPath] = true,
+            };
+            var pending = new Stack<(string Path, int Depth)>();
+            pending.Push((repair.DirectoryPath, 0));
+            var tokenPath = NormalizeFinalHandlePath(
+                Path.Combine(repair.DirectoryPath, "service-rest-token.v1"));
+            byte[]? originalToken = null;
+            byte[]? originalTokenHash = null;
+            var descriptors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var repairRequired = repair.RepairRequired;
+            var entries = 0;
+            try
+            {
+                CaptureOriginalSecurity(repair.DirectoryPath, created: false);
+                var rootSecurity = ReadDirectorySecurity(repair.DirectoryPath);
+                var rootState = ClassifySecretsEntryAcl(
+                    rootSecurity,
+                    isDirectory: true,
+                    repair.DirectoryGrants,
+                    repair.CurrentUserSid,
+                    repair.ServiceSid);
+                if (rootState == SecretsEntryAclState.Invalid)
+                {
+                    throw new UnauthorizedAccessException(
+                        "敏感資料根目錄 ACL 在完整安全掃描前遭到變更。");
+                }
+                repairRequired |= rootState == SecretsEntryAclState.Recoverable;
+                descriptors.Add(
+                    repair.DirectoryPath,
+                    GetSecurityDescriptor(rootSecurity));
+                while (pending.Count > 0)
+                {
+                    var (parent, parentDepth) = pending.Pop();
+                    foreach (var rawEntry in Directory.EnumerateFileSystemEntries(parent))
+                    {
+                        if (++entries > MaximumSecretsEntries || parentDepth + 1 > MaximumSecretsDepth)
+                        {
+                            throw new InvalidDataException("敏感資料目錄超出安全掃描限制。");
+                        }
+
+                        var path = NormalizeFinalHandlePath(rawEntry);
+                        if (!string.Equals(
+                                NormalizeFinalHandlePath(Path.GetDirectoryName(path)
+                                    ?? throw new InvalidDataException("敏感資料項目缺少父目錄。")),
+                                parent,
+                                StringComparison.OrdinalIgnoreCase) ||
+                            !discovered.TryAdd(path, false))
+                        {
+                            throw new IOException("敏感資料目錄在安全掃描期間出現重複或越界項目。");
+                        }
+
+                        var attributes = File.GetAttributes(path);
+                        if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                        {
+                            throw new IOException($"敏感資料目錄不可包含連結或 reparse point：{path}");
+                        }
+
+                        if (attributes.HasFlag(FileAttributes.Directory))
+                        {
+                            var handle = OpenLockedDirectoryHandle(path);
+                            owned.Add(handle);
+                            _directoryHandles.Add(path, handle);
+                            CaptureOriginalSecurity(path, created: false);
+                            var security = ReadDirectorySecurity(path);
+                            var aclState = ClassifySecretsEntryAcl(
+                                security,
+                                isDirectory: true,
+                                repair.DirectoryGrants,
+                                repair.CurrentUserSid,
+                                repair.ServiceSid);
+                            if (aclState == SecretsEntryAclState.Invalid)
+                            {
+                                throw new UnauthorizedAccessException(
+                                    $"敏感資料子目錄 ACL 含有非預期授權：{path}");
+                            }
+                            repairRequired |= aclState == SecretsEntryAclState.Recoverable;
+                            descriptors.Add(path, GetSecurityDescriptor(security));
+                            discovered[path] = true;
+                            pending.Push((path, parentDepth + 1));
+                            continue;
+                        }
+
+                        var fileHandle = OpenLockedRegularFileHandle(path);
+                        owned.Add(fileHandle);
+                        _fileHandles.Add(path, fileHandle);
+                        CaptureOriginalFileSecurity(path);
+                        var fileSecurity = ReadFileSecurity(path);
+                        var fileAclState = ClassifySecretsEntryAcl(
+                            fileSecurity,
+                            isDirectory: false,
+                            repair.FileGrants,
+                            repair.CurrentUserSid,
+                            repair.ServiceSid);
+                        if (fileAclState == SecretsEntryAclState.Invalid)
+                        {
+                            throw new UnauthorizedAccessException(
+                                $"敏感資料檔案 ACL 含有非預期授權：{path}");
+                        }
+                        repairRequired |= fileAclState == SecretsEntryAclState.Recoverable;
+                        descriptors.Add(path, GetSecurityDescriptor(fileSecurity));
+                        if (string.Equals(path, tokenPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            originalToken = ReadAndValidateServiceToken(path);
+                            originalTokenHash = SHA256.HashData(originalToken);
+                            CryptographicOperations.ZeroMemory(originalToken);
+                            originalToken = null;
+                        }
+                    }
+                }
+
+                if (originalTokenHash is null && repairRequired)
+                {
+                    throw new FileNotFoundException(
+                        "可修復的既有安裝缺少 Service REST token；拒絕將非 ACL 問題視為權限漂移。",
+                        tokenPath);
+                }
+                var verified = EnumerateSecretsNamespace(repair.DirectoryPath);
+                if (!NamespaceEquals(discovered, verified))
+                {
+                    throw new IOException("敏感資料目錄在安全掃描期間遭到變更。");
+                }
+
+                return repair with
+                {
+                    Namespace = discovered,
+                    SecurityDescriptors = descriptors,
+                    TokenPath = tokenPath,
+                    OriginalTokenHash = originalTokenHash ?? [],
+                    RepairRequired = repairRequired,
+                };
+            }
+            catch
+            {
+                if (originalToken is not null)
+                {
+                    CryptographicOperations.ZeroMemory(originalToken);
+                }
+                if (originalTokenHash is not null)
+                {
+                    CryptographicOperations.ZeroMemory(originalTokenHash);
+                }
+                throw;
+            }
+        }
+
+        private void HardenAndValidateSecretsNamespace(PendingSecretsAclRepair repair)
+        {
+            foreach (var path in repair.Namespace.Where(pair => !pair.Value)
+                         .Select(pair => pair.Key))
+            {
+                var handle = _fileHandles[path];
+                ValidatePinnedSecretsEntryUnchanged(path, isDirectory: false, handle, repair);
+                ValidateLockedRegularFileHandle(handle, path);
+                SetExactFileAcl(path, repair.FileGrants);
+                ValidateLockedRegularFileHandle(handle, path);
+                ValidateExactFileAcl(path, repair.FileGrants);
+            }
+            foreach (var path in repair.Namespace.Where(pair => pair.Value)
+                         .Select(pair => pair.Key)
+                         .OrderByDescending(path => path.Length))
+            {
+                var handle = _directoryHandles[path];
+                ValidatePinnedSecretsEntryUnchanged(path, isDirectory: true, handle, repair);
+                ValidateLockedDirectoryHandle(handle, path);
+                SetExactDirectoryAcl(path, repair.DirectoryGrants);
+                ValidateLockedDirectoryHandle(handle, path);
+                ValidateExactDirectoryAcl(path, repair.DirectoryGrants);
+            }
+
+            var verified = EnumerateSecretsNamespace(repair.DirectoryPath);
+            if (!NamespaceEquals(repair.Namespace, verified))
+            {
+                throw new IOException("敏感資料目錄在權限收斂期間遭到變更。");
+            }
+        }
+
+        private void CommitSecretsSecurityRemediation(PendingSecretsAclRepair repair)
+        {
+            foreach (var pair in repair.Namespace)
+            {
+                if (pair.Value)
+                {
+                    _originalSecurity.Remove(pair.Key);
+                }
+                else
+                {
+                    _originalFileSecurity.Remove(pair.Key);
+                }
+            }
+
+            CryptographicOperations.ZeroMemory(repair.OriginalTokenHash);
+            _pendingSecretsAclRepair = null;
+            _secretsRemediationCommitted = true;
+        }
+
+        private static SecretsEntryAclState ClassifySecretsEntryAcl(
+            FileSystemSecurity security,
+            bool isDirectory,
+            IReadOnlyList<InstallerAclGrant> expectedGrants,
+            SecurityIdentifier currentUserSid,
+            SecurityIdentifier serviceSid)
+        {
+            if (isDirectory && security is DirectorySecurity directorySecurity &&
+                HasExactDirectoryAcl(directorySecurity, expectedGrants))
+            {
+                return SecretsEntryAclState.Strict;
+            }
+            if (!isDirectory && security is FileSecurity fileSecurity &&
+                HasExactFileAcl(fileSecurity, expectedGrants))
+            {
+                return SecretsEntryAclState.Strict;
+            }
+            if (HasOnlyRecoverableCurrentUserAclDrift(
+                    security,
+                    expectedGrants,
+                    currentUserSid,
+                    isDirectory))
+            {
+                return SecretsEntryAclState.Recoverable;
+            }
+            if (security.AreAccessRulesProtected || !security.AreAccessRulesCanonical ||
+                security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner ||
+                (!owner.Equals(LocalSystemSid) &&
+                 !owner.Equals(AdministratorsSid) &&
+                 !owner.Equals(serviceSid)))
+            {
+                return SecretsEntryAclState.Invalid;
+            }
+
+            if (HasExactAccessRules(
+                    security,
+                    expectedGrants,
+                    requireInherited: true,
+                    isDirectory))
+            {
+                return SecretsEntryAclState.Strict;
+            }
+
+            var recoverableGrants = new List<InstallerAclGrant>(expectedGrants)
+            {
+                isDirectory
+                    ? DirectoryGrant(currentUserSid, FileSystemRights.FullControl)
+                    : new InstallerAclGrant(currentUserSid, FileSystemRights.FullControl),
+            };
+            return HasExactAccessRules(
+                security,
+                recoverableGrants,
+                requireInherited: true,
+                isDirectory)
+                ? SecretsEntryAclState.Recoverable
+                : SecretsEntryAclState.Invalid;
+        }
+
+        private void ValidatePinnedSecretsEntryUnchanged(
+            string path,
+            bool isDirectory,
+            SafeFileHandle handle,
+            PendingSecretsAclRepair repair)
+        {
+            if (isDirectory)
+            {
+                ValidateLockedDirectoryHandle(handle, path);
+            }
+            else
+            {
+                ValidateLockedRegularFileHandle(handle, path);
+            }
+
+            var security = isDirectory
+                ? (FileSystemSecurity)ReadDirectorySecurity(path)
+                : ReadFileSecurity(path);
+            if (!repair.SecurityDescriptors.TryGetValue(path, out var expectedDescriptor) ||
+                !InstallerSecurityDescriptorComparer.EqualsCapturedDescriptorAllowingDaclAutoInherited(
+                    GetSecurityDescriptor(security),
+                    expectedDescriptor) ||
+                ClassifySecretsEntryAcl(
+                    security,
+                    isDirectory,
+                    isDirectory ? repair.DirectoryGrants : repair.FileGrants,
+                    repair.CurrentUserSid,
+                    repair.ServiceSid) == SecretsEntryAclState.Invalid)
+            {
+                throw new UnauthorizedAccessException(
+                    $"敏感資料項目在安全修復前遭到變更：{path}");
+            }
+        }
+
+        // Audit/SACL is deliberately excluded: it requires SeSecurityPrivilege and
+        // ACCESS_SYSTEM_SECURITY, which the beta.9 current-user recovery ACL does not grant.
+        private static string GetSecurityDescriptor(FileSystemSecurity security)
+            => security.GetSecurityDescriptorSddlForm(
+                AccessControlSections.Access |
+                AccessControlSections.Owner |
+                AccessControlSections.Group);
+
+        private static Dictionary<string, bool> EnumerateSecretsNamespace(string root)
+        {
+            var discovered = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+            {
+                [root] = true,
+            };
+            var pending = new Stack<(string Path, int Depth)>();
+            pending.Push((root, 0));
+            var entries = 0;
+            while (pending.Count > 0)
+            {
+                var (parent, parentDepth) = pending.Pop();
+                foreach (var rawEntry in Directory.EnumerateFileSystemEntries(parent))
+                {
+                    if (++entries > MaximumSecretsEntries || parentDepth + 1 > MaximumSecretsDepth)
+                    {
+                        throw new InvalidDataException("敏感資料目錄超出安全重驗限制。");
+                    }
+                    var path = NormalizeFinalHandlePath(rawEntry);
+                    var attributes = File.GetAttributes(path);
+                    if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        throw new IOException($"敏感資料目錄在安全重驗期間出現連結：{path}");
+                    }
+                    var isDirectory = attributes.HasFlag(FileAttributes.Directory);
+                    if (!discovered.TryAdd(path, isDirectory))
+                    {
+                        throw new IOException("敏感資料目錄在安全重驗期間出現重複項目。");
+                    }
+                    if (isDirectory)
+                    {
+                        pending.Push((path, parentDepth + 1));
+                    }
+                }
+            }
+            return discovered;
+        }
+
+        private static bool NamespaceEquals(
+            IReadOnlyDictionary<string, bool> expected,
+            IReadOnlyDictionary<string, bool> actual)
+            => expected.Count == actual.Count && expected.All(pair =>
+                actual.TryGetValue(pair.Key, out var isDirectory) && isDirectory == pair.Value);
+
+        private static byte[] ReadAndValidateServiceToken(string path)
+        {
+            var length = new FileInfo(path).Length;
+            if (length is not (64 or 65 or 66))
+            {
+                throw new InvalidDataException("既有 Service REST token 長度無效。");
+            }
+            var bytes = File.ReadAllBytes(path);
+            if (!IsValidServiceTokenContent(bytes))
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+                throw new InvalidDataException("既有 Service REST token 格式無效。");
+            }
+            return bytes;
+        }
+
+        private static void WriteAtomicServiceToken(
+            string path,
+            ReadOnlySpan<byte> content,
+            IReadOnlyList<InstallerAclGrant> grants)
+        {
+            var temporary = Path.Combine(
+                Path.GetDirectoryName(path)
+                    ?? throw new InvalidDataException("Service REST token 缺少父目錄。"),
+                $".{Path.GetFileName(path)}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                using (var stream = new FileStream(
+                           temporary,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           256,
+                           FileOptions.WriteThrough))
+                {
+                    stream.Write(content);
+                    stream.Flush(flushToDisk: true);
+                }
+                using (var temporaryHandle = OpenLockedRegularFileHandle(temporary))
+                {
+                    ValidateLockedRegularFileHandle(temporaryHandle, temporary);
+                    SetExactFileAcl(temporary, grants);
+                    ValidateLockedRegularFileHandle(temporaryHandle, temporary);
+                    ValidateExactFileAcl(temporary, grants);
+                }
+                File.Move(temporary, path, overwrite: true);
+                using var installed = OpenLockedRegularFileHandle(path);
+                ValidateLockedRegularFileHandle(installed, path);
+                ValidateExactFileAcl(path, grants);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                {
+                    File.Delete(temporary);
+                }
+            }
+        }
+
+        private static void ValidateServiceTokenContent(string path, ReadOnlySpan<byte> expectedHash)
+        {
+            using var handle = OpenLockedRegularFileHandle(path);
+            var content = ReadAndValidateServiceToken(path);
+            try
+            {
+                var actualHash = SHA256.HashData(content);
+                try
+                {
+                    if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+                    {
+                        throw new IOException("輪替後的 Service REST token 驗證失敗。");
+                    }
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(actualHash);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(content);
+            }
+        }
+
+        private static void ValidateOriginalServiceTokenContent(
+            string path,
+            ReadOnlySpan<byte> expectedHash)
+            => ValidateServiceTokenContent(path, expectedHash);
 
         public void ProtectOwnedRootAndPinExistingDirectories(IReadOnlyList<string> directories)
         {
@@ -2370,6 +3006,7 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             _originalSecurity.Clear();
             _originalFileSecurity.Clear();
             _createdDirectories.Clear();
+            ClearSecretsRepairState();
         }
 
         public void RollbackProtectionChanges()
@@ -2384,14 +3021,20 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                 _createdDirectories.Clear();
                 _originalSecurity.Clear();
                 _originalFileSecurity.Clear();
+                ClearSecretsRepairState();
                 _rolledBack = true;
                 return;
             }
 
             var owned = GetHandles();
             var errors = new List<Exception>();
+            var restoreSecretsAcl = !_secretsRemediationStarted;
             foreach (var pair in _originalFileSecurity.OrderByDescending(pair => pair.Key.Length))
             {
+                if (!restoreSecretsAcl && IsPendingSecretsPath(pair.Key))
+                {
+                    continue;
+                }
                 try
                 {
                     new FileInfo(pair.Key).SetAccessControl(pair.Value);
@@ -2465,6 +3108,10 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             {
                 foreach (var pair in _originalSecurity.OrderByDescending(pair => pair.Key.Length))
                 {
+                    if (!restoreSecretsAcl && IsPendingSecretsPath(pair.Key))
+                    {
+                        continue;
+                    }
                     try
                     {
                         new DirectoryInfo(pair.Key).SetAccessControl(pair.Value);
@@ -2483,6 +3130,7 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             _createdDirectories.Clear();
             _originalSecurity.Clear();
             _originalFileSecurity.Clear();
+            ClearSecretsRepairState();
             _rolledBack = true;
             if (errors.Count > 0)
             {
@@ -2508,6 +3156,7 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
 
         public void Dispose()
         {
+            ClearSecretsRepairState();
             var owned = Interlocked.Exchange(ref _handles, null);
             if (owned is not null)
             {
@@ -2518,6 +3167,19 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             _prevalidatedMissingDirectories.Clear();
             _prevalidatedVersionNamespaces.Clear();
         }
+
+        private void ClearSecretsRepairState()
+        {
+            if (_pendingSecretsAclRepair is not null)
+            {
+                CryptographicOperations.ZeroMemory(
+                    _pendingSecretsAclRepair.OriginalTokenHash);
+            }
+            _pendingSecretsAclRepair = null;
+        }
+
+        private bool IsPendingSecretsPath(string path)
+            => _pendingSecretsAclRepair?.Namespace.ContainsKey(path) == true;
 
         private List<SafeFileHandle> GetHandles()
         {
@@ -2739,9 +3401,60 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         }
     }
 
+    internal static byte[] CreateServiceTokenContentForRepair()
+    {
+        const int entropyLength = 32;
+        const int tokenLength = entropyLength * 2;
+        ReadOnlySpan<byte> hexadecimal = "0123456789ABCDEF"u8;
+        Span<byte> entropy = stackalloc byte[entropyLength];
+        var content = new byte[tokenLength + 2];
+        try
+        {
+            RandomNumberGenerator.Fill(entropy);
+            for (var index = 0; index < entropy.Length; index++)
+            {
+                content[index * 2] = hexadecimal[entropy[index] >> 4];
+                content[(index * 2) + 1] = hexadecimal[entropy[index] & 0x0f];
+            }
+            content[tokenLength] = (byte)'\r';
+            content[tokenLength + 1] = (byte)'\n';
+            return content;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(entropy);
+        }
+    }
+
+    internal static bool IsValidServiceTokenContent(ReadOnlySpan<byte> content)
+    {
+        if (content.Length is not (64 or 65 or 66))
+        {
+            return false;
+        }
+        for (var index = 0; index < 64; index++)
+        {
+            var value = content[index];
+            if (!((value >= (byte)'0' && value <= (byte)'9') ||
+                  (value >= (byte)'A' && value <= (byte)'F') ||
+                  (value >= (byte)'a' && value <= (byte)'f')))
+            {
+                return false;
+            }
+        }
+        return content.Length switch
+        {
+            64 => true,
+            65 => content[64] == (byte)'\n',
+            66 => content[64] == (byte)'\r' && content[65] == (byte)'\n',
+            _ => false,
+        };
+    }
+
     public async Task<InstallerServiceSnapshot> CaptureAndStopServiceAsync(
         string name,
         string installRoot,
+        bool allowDisabledSecurityRemediationRetry,
         Action<InstallerServiceSnapshot> snapshotCaptured,
         CancellationToken cancellationToken)
     {
@@ -2763,7 +3476,8 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
                 name,
                 installRoot,
                 query.Output,
-                ExtractSecurityDescriptor(security.Output));
+                ExtractSecurityDescriptor(security.Output),
+                allowDisabledSecurityRemediationRetry);
         }
         else
         {
@@ -2783,6 +3497,39 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             await WaitForServiceStateAsync(name, "STOPPED", cancellationToken).ConfigureAwait(false);
         }
         return snapshot;
+    }
+
+    public async Task DisableServiceForSecurityRemediationAsync(
+        string name,
+        CancellationToken cancellationToken)
+    {
+        _ = await RunScAsync(
+                ["config", name, "start=", "disabled"],
+                allowMissing: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var service = machine.OpenSubKey(
+            $@"SYSTEM\CurrentControlSet\Services\{name}",
+            writable: false) ?? throw new InvalidDataException("安全修復期間無法確認既有 Service。");
+        if (service.GetValue(
+                "Start",
+                null,
+                RegistryValueOptions.DoNotExpandEnvironmentNames) is not int startValue ||
+            startValue != 4)
+        {
+            throw new IOException("安全修復期間無法確認 Service 已停用。");
+        }
+
+        var query = await RunScAsync(["query", name], allowMissing: false, cancellationToken)
+            .ConfigureAwait(false);
+        if (!IsStopped(query.Output))
+        {
+            _ = await RunScAsync(["stop", name], allowMissing: false, cancellationToken)
+                .ConfigureAwait(false);
+            await WaitForServiceStateAsync(name, "STOPPED", cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task ConfigureServiceAsync(
@@ -2871,7 +3618,8 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             .ConfigureAwait(false);
         _ = await RunScAsync(["sdset", name, snapshot.SecurityDescriptor], false, cancellationToken)
             .ConfigureAwait(false);
-        if (restart && snapshot.WasRunning)
+        if (restart &&
+            (snapshot.WasRunning || snapshot.WasDisabledForSecurityRemediationRetry))
         {
             _ = await RunScAsync(["start", name], false, cancellationToken).ConfigureAwait(false);
             await WaitForServiceStateAsync(name, "RUNNING", cancellationToken).ConfigureAwait(false);
@@ -3464,7 +4212,8 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         string name,
         string installRoot,
         string queryOutput,
-        string securityDescriptor)
+        string securityDescriptor,
+        bool allowDisabledSecurityRemediationRetry)
     {
         using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
         using var service = machine.OpenSubKey(
@@ -3476,22 +4225,35 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
             "ImagePath", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
         if (!string.Equals(objectName, $@"NT SERVICE\{name}", StringComparison.OrdinalIgnoreCase) ||
             service.GetValue("Start", null, RegistryValueOptions.DoNotExpandEnvironmentNames) is not int start ||
-            start != 2 || string.IsNullOrWhiteSpace(imagePath))
+            !IsManagedServiceStartTypeAllowed(start, allowDisabledSecurityRemediationRetry) ||
+            string.IsNullOrWhiteSpace(imagePath))
         {
             throw new InvalidDataException("既有同名 Service 不是 X MCSV 受管理服務。");
         }
 
         ValidateOwnedServiceImagePath(imagePath, installRoot);
-        var delayed = service.GetValue(
+        var registryDelayed = service.GetValue(
             "DelayedAutoStart", 0, RegistryValueOptions.DoNotExpandEnvironmentNames) is int delayedValue &&
-                      delayedValue == 1;
+            delayedValue == 1;
         return new InstallerServiceSnapshot(
             Existed: true,
             ImagePath: imagePath,
             WasRunning: !IsStopped(queryOutput),
             SecurityDescriptor: securityDescriptor,
-            DelayedAutoStart: delayed);
+            DelayedAutoStart: ResolvePreviousDelayedAutoStart(start, registryDelayed),
+            WasDisabledForSecurityRemediationRetry: start == 4);
     }
+
+    internal static bool ResolvePreviousDelayedAutoStart(
+        int startValue,
+        bool registryDelayed)
+        => startValue == 4 || registryDelayed;
+
+    internal static bool IsManagedServiceStartTypeAllowed(
+        int startValue,
+        bool allowDisabledSecurityRemediationRetry)
+        => startValue == 2 ||
+           (startValue == 4 && allowDisabledSecurityRemediationRetry);
 
     private static void ValidateOwnedServiceImagePath(string imagePath, string expectedInstallRoot)
     {
@@ -4035,18 +4797,171 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         return security;
     }
 
+    internal static bool HasOnlyRecoverableCurrentUserDirectoryAclDrift(
+        DirectorySecurity actual,
+        IReadOnlyList<InstallerAclGrant> expectedGrants,
+        SecurityIdentifier currentUserSid)
+        => HasOnlyRecoverableCurrentUserAclDrift(
+            actual,
+            expectedGrants,
+            currentUserSid,
+            isDirectory: true);
+
+    private static bool HasOnlyRecoverableCurrentUserAclDrift(
+        FileSystemSecurity actual,
+        IReadOnlyList<InstallerAclGrant> expectedGrants,
+        SecurityIdentifier currentUserSid,
+        bool isDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(actual);
+        ArgumentNullException.ThrowIfNull(expectedGrants);
+        ArgumentNullException.ThrowIfNull(currentUserSid);
+        if (!actual.AreAccessRulesProtected || !actual.AreAccessRulesCanonical ||
+            actual.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner ||
+            !owner.Equals(AdministratorsSid) ||
+            expectedGrants.Any(grant => grant.Sid.Equals(currentUserSid)))
+        {
+            return false;
+        }
+
+        var recoverableGrants = new List<InstallerAclGrant>(expectedGrants)
+        {
+            isDirectory
+                ? DirectoryGrant(currentUserSid, FileSystemRights.FullControl)
+                : new InstallerAclGrant(currentUserSid, FileSystemRights.FullControl),
+        };
+        return HasExactAccessRules(
+            actual,
+            recoverableGrants,
+            requireInherited: false,
+            isDirectory);
+    }
+
+    private static bool HasExactAccessRules(
+        FileSystemSecurity security,
+        IReadOnlyList<InstallerAclGrant> grants,
+        bool requireInherited,
+        bool isDirectory)
+    {
+        if (!security.AreAccessRulesCanonical)
+        {
+            return false;
+        }
+
+        var descriptor = new RawSecurityDescriptor(
+            security.GetSecurityDescriptorBinaryForm(),
+            offset: 0);
+        var dacl = descriptor.DiscretionaryAcl;
+        if (dacl is null || dacl.Count != grants.Count)
+        {
+            return false;
+        }
+
+        var expected = grants.Select(grant =>
+        {
+            var rule = new FileSystemAccessRule(
+                grant.Sid,
+                grant.Rights,
+                isDirectory ? grant.InheritanceFlags : InheritanceFlags.None,
+                isDirectory ? grant.PropagationFlags : PropagationFlags.None,
+                AccessControlType.Allow);
+            var flags = ToRawAceFlags(
+                isDirectory ? grant.InheritanceFlags : InheritanceFlags.None,
+                isDirectory ? grant.PropagationFlags : PropagationFlags.None,
+                requireInherited);
+            return (grant.Sid, AccessMask: (int)rule.FileSystemRights, Flags: flags);
+        }).ToList();
+
+        for (var aceIndex = 0; aceIndex < dacl.Count; aceIndex++)
+        {
+            if (dacl[aceIndex] is not CommonAce ace ||
+                ace.IsCallback ||
+                ace.OpaqueLength != 0 ||
+                ace.AceQualifier != AceQualifier.AccessAllowed ||
+                ace.SecurityIdentifier is null)
+            {
+                return false;
+            }
+
+            var expectedIndex = expected.FindIndex(candidate =>
+                candidate.Sid.Equals(ace.SecurityIdentifier) &&
+                candidate.AccessMask == ace.AccessMask &&
+                candidate.Flags == ace.AceFlags);
+            if (expectedIndex < 0)
+            {
+                return false;
+            }
+            expected.RemoveAt(expectedIndex);
+        }
+        return expected.Count == 0;
+    }
+
+    private static AceFlags ToRawAceFlags(
+        InheritanceFlags inheritanceFlags,
+        PropagationFlags propagationFlags,
+        bool inherited)
+    {
+        var result = inherited ? AceFlags.Inherited : AceFlags.None;
+        if (inheritanceFlags.HasFlag(InheritanceFlags.ContainerInherit))
+        {
+            result |= AceFlags.ContainerInherit;
+        }
+        if (inheritanceFlags.HasFlag(InheritanceFlags.ObjectInherit))
+        {
+            result |= AceFlags.ObjectInherit;
+        }
+        if (propagationFlags.HasFlag(PropagationFlags.NoPropagateInherit))
+        {
+            result |= AceFlags.NoPropagateInherit;
+        }
+        if (propagationFlags.HasFlag(PropagationFlags.InheritOnly))
+        {
+            result |= AceFlags.InheritOnly;
+        }
+        return result;
+    }
+
+    private static DirectorySecurity ReadDirectorySecurity(string path)
+        => new DirectoryInfo(path).GetAccessControl(
+            AccessControlSections.Access |
+            AccessControlSections.Owner |
+            AccessControlSections.Group);
+
+    private static FileSecurity ReadFileSecurity(string path)
+        => new FileInfo(path).GetAccessControl(
+            AccessControlSections.Access |
+            AccessControlSections.Owner |
+            AccessControlSections.Group);
+
+    private static bool HasExactDirectoryAcl(
+        DirectorySecurity actual,
+        IReadOnlyList<InstallerAclGrant> grants)
+    {
+        var expected = CreateExactDirectorySecurity(grants);
+        return InstallerSecurityDescriptorComparer.EqualsAllowingDaclAutoInherited(
+            actual.GetSecurityDescriptorSddlForm(
+                AccessControlSections.Access | AccessControlSections.Owner),
+            expected.GetSecurityDescriptorSddlForm(
+                AccessControlSections.Access | AccessControlSections.Owner));
+    }
+
+    private static bool HasExactFileAcl(
+        FileSecurity actual,
+        IReadOnlyList<InstallerAclGrant> grants)
+    {
+        var expected = CreateExactFileSecurity(grants);
+        return InstallerSecurityDescriptorComparer.EqualsAllowingDaclAutoInherited(
+            actual.GetSecurityDescriptorSddlForm(
+                AccessControlSections.Access | AccessControlSections.Owner),
+            expected.GetSecurityDescriptorSddlForm(
+                AccessControlSections.Access | AccessControlSections.Owner));
+    }
+
     private static void ValidateExactDirectoryAcl(
         string path,
         IReadOnlyList<InstallerAclGrant> grants)
     {
-        var actual = new DirectoryInfo(path).GetAccessControl(
-            AccessControlSections.Access | AccessControlSections.Owner);
-        var expected = CreateExactDirectorySecurity(grants);
-        if (!InstallerSecurityDescriptorComparer.EqualsAllowingDaclAutoInherited(
-                actual.GetSecurityDescriptorSddlForm(
-                    AccessControlSections.Access | AccessControlSections.Owner),
-                expected.GetSecurityDescriptorSddlForm(
-                    AccessControlSections.Access | AccessControlSections.Owner)))
+        if (!HasExactDirectoryAcl(ReadDirectorySecurity(path), grants))
         {
             throw new UnauthorizedAccessException(
                 $"既有 X MCSV 目錄不是受信任且受保護的產品 ACL：{path}");
@@ -4057,14 +4972,7 @@ internal sealed partial class WindowsInstallerPlatform : IInstallerPlatform
         string path,
         IReadOnlyList<InstallerAclGrant> grants)
     {
-        var actual = new FileInfo(path).GetAccessControl(
-            AccessControlSections.Access | AccessControlSections.Owner);
-        var expected = CreateExactFileSecurity(grants);
-        if (!InstallerSecurityDescriptorComparer.EqualsAllowingDaclAutoInherited(
-                actual.GetSecurityDescriptorSddlForm(
-                    AccessControlSections.Access | AccessControlSections.Owner),
-                expected.GetSecurityDescriptorSddlForm(
-                    AccessControlSections.Access | AccessControlSections.Owner)))
+        if (!HasExactFileAcl(ReadFileSecurity(path), grants))
         {
             throw new UnauthorizedAccessException(
                 $"既有 X MCSV 檔案不是受信任且受保護的產品 ACL：{path}");
