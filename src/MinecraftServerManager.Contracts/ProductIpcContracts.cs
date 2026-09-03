@@ -23,6 +23,7 @@ public static class ProductIpcProtocol
     public const string ServerStopMethod = "server.stop";
     public const string ServerRestartMethod = "server.restart";
     public const string ServerConsoleMethod = "server.console";
+    public const string ServerConsoleWaitMethod = "server.console.wait";
     public const string ServerPlayersMethod = "server.players.list";
     public const string ServerCommandMethod = "server.command";
     public const string ServerBackupListMethod = "server.backup.list";
@@ -80,6 +81,8 @@ public sealed record ProductIpcRequest(
     public long? ConsoleCursor { get; init; }
 
     public int? ConsoleLimit { get; init; }
+
+    public int? ConsoleWaitTimeoutMilliseconds { get; init; }
 
     public string? Command { get; init; }
 
@@ -262,6 +265,7 @@ public static class ProductIpcRequestValidator
             ProductIpcProtocol.ServerStopMethod or
             ProductIpcProtocol.ServerRestartMethod or
             ProductIpcProtocol.ServerConsoleMethod or
+            ProductIpcProtocol.ServerConsoleWaitMethod or
             ProductIpcProtocol.ServerPlayersMethod or
             ProductIpcProtocol.ServerCommandMethod or
             ProductIpcProtocol.ServerBackupListMethod or
@@ -394,9 +398,27 @@ public static class ProductIpcRequestValidator
                 "A valid opaque backup id is required.");
         }
 
-        if (request.ConsoleCursor is < 0 || request.ConsoleLimit is < 1 or > 50)
+        if (request.ConsoleCursor is < 0 ||
+            request.ConsoleLimit is < 1 or > ProductConsoleContract.MaximumPageSize)
         {
             return new ProductIpcError("protocol.console_range_invalid", "Console cursor or limit is invalid.");
+        }
+
+        if (request.ConsoleWaitTimeoutMilliseconds is not null &&
+            request.Method != ProductIpcProtocol.ServerConsoleWaitMethod)
+        {
+            return new ProductIpcError(
+                "protocol.console_wait_unexpected",
+                "A console wait timeout is valid only for the console wait method.");
+        }
+
+        if (request.Method == ProductIpcProtocol.ServerConsoleWaitMethod &&
+            request.ConsoleWaitTimeoutMilliseconds is { } waitTimeout &&
+            !ProductConsoleContract.IsValidWaitTimeout(waitTimeout))
+        {
+            return new ProductIpcError(
+                "protocol.console_wait_invalid",
+                "Console wait timeout is outside the supported bounded range.");
         }
 
         if (request.ListOffset is < 0 || request.ListLimit is < 1 or > 50)
@@ -733,6 +755,7 @@ public static class ProductIpcRequestValidator
         ProductIpcProtocol.ServerStopMethod,
         ProductIpcProtocol.ServerRestartMethod,
         ProductIpcProtocol.ServerConsoleMethod,
+        ProductIpcProtocol.ServerConsoleWaitMethod,
         ProductIpcProtocol.ServerPlayersMethod,
         ProductIpcProtocol.ServerCommandMethod,
         ProductIpcProtocol.ServerBackupListMethod,

@@ -8,6 +8,7 @@ public sealed class ProductServiceClient : IProductServiceClient
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ConsoleWaitRequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan MutationRequestTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan LongMutationRequestTimeout = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan ProviderRequestTimeout = TimeSpan.FromSeconds(20);
@@ -522,9 +523,10 @@ public sealed class ProductServiceClient : IProductServiceClient
     public async Task<ProductConsolePage> ReadConsoleAsync(
         Guid serverId,
         long afterCursor,
-        int limit = 50,
+        int limit = ProductConsoleContract.MaximumPageSize,
         CancellationToken cancellationToken = default)
     {
+        ValidateConsoleRequest(serverId, afterCursor, limit);
         var response = await SendAsync(
             CreateServerRequest(ProductIpcProtocol.ServerConsoleMethod, serverId) with
             {
@@ -532,10 +534,31 @@ public sealed class ProductServiceClient : IProductServiceClient
                 ConsoleLimit = limit,
             },
             cancellationToken).ConfigureAwait(false);
-        return response.Console
-            ?? throw new ProductServiceClientException(
-                "protocol.payload_missing",
-                "Service console response did not include a page.");
+        return RequireConsolePage(response.Console, serverId, afterCursor, limit);
+    }
+
+    public async Task<ProductConsolePage> WaitForConsoleAsync(
+        Guid serverId,
+        long afterCursor,
+        int limit = ProductConsoleContract.MaximumPageSize,
+        int waitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateConsoleRequest(serverId, afterCursor, limit);
+        if (!ProductConsoleContract.IsValidWaitTimeout(waitTimeoutMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(waitTimeoutMilliseconds));
+        }
+
+        var request = CreateServerRequest(ProductIpcProtocol.ServerConsoleWaitMethod, serverId) with
+        {
+            ClientMinimumApiVersion = ProductApiProtocol.ConsoleWaitVersion,
+            ConsoleCursor = afterCursor,
+            ConsoleLimit = limit,
+            ConsoleWaitTimeoutMilliseconds = waitTimeoutMilliseconds,
+        };
+        var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+        return RequireConsolePage(response.Console, serverId, afterCursor, limit);
     }
 
     public async Task<ProductServerPlayerList> ListPlayersAsync(
@@ -1401,6 +1424,11 @@ public sealed class ProductServiceClient : IProductServiceClient
 
     internal static TimeSpan GetRequestTimeout(string method)
     {
+        if (method == ProductIpcProtocol.ServerConsoleWaitMethod)
+        {
+            return ConsoleWaitRequestTimeout;
+        }
+
         if (method is
             ProductIpcProtocol.ServerStopMethod or
             ProductIpcProtocol.ServerRestartMethod or
@@ -1519,6 +1547,69 @@ public sealed class ProductServiceClient : IProductServiceClient
         => new(
             "protocol.page_invalid",
             $"Service returned an invalid or duplicate {resource} page.");
+
+    private static void ValidateConsoleRequest(Guid serverId, long afterCursor, int limit)
+    {
+        if (serverId == Guid.Empty)
+        {
+            throw new ArgumentException("Server id must not be empty.", nameof(serverId));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(afterCursor);
+        if (limit is < 1 or > ProductConsoleContract.MaximumPageSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        }
+    }
+
+    private static ProductConsolePage RequireConsolePage(
+        ProductConsolePage? page,
+        Guid expectedServerId,
+        long expectedAfterCursor,
+        int requestedLimit)
+    {
+        if (page is null)
+        {
+            throw new ProductServiceClientException(
+                "protocol.payload_missing",
+                "Service console response did not include a page.");
+        }
+
+        var previousCursor = 0L;
+        if (page.ServerId != expectedServerId ||
+            page.RequestedAfterCursor != expectedAfterCursor ||
+            page.OldestAvailableCursor < 1 ||
+            page.NextCursor < 0 ||
+            page.Entries is null ||
+            page.Entries.Count > requestedLimit ||
+            page.Entries.Any(entry =>
+            {
+                if (entry is null ||
+                    entry.Cursor <= previousCursor ||
+                    (!page.HistoryGap && entry.Cursor <= expectedAfterCursor) ||
+                    (page.HistoryGap && entry.Cursor < page.OldestAvailableCursor) ||
+                    entry.Cursor > page.NextCursor ||
+                    entry.SessionId == Guid.Empty ||
+                    entry.Text is null ||
+                    entry.Text.Length > ProductConsoleContract.MaximumTextCharacters ||
+                    !Enum.IsDefined(entry.Stream) ||
+                    !Enum.IsDefined(entry.Severity))
+                {
+                    return true;
+                }
+
+                previousCursor = entry.Cursor;
+                return false;
+            }) ||
+            (page.Entries.Count > 0 && page.Entries[^1].Cursor != page.NextCursor))
+        {
+            throw new ProductServiceClientException(
+                "protocol.payload_invalid",
+                "Service returned an invalid console page.");
+        }
+
+        return page;
+    }
 
     private static ProductServerStatus RequireServer(ProductServerStatus? server)
     {

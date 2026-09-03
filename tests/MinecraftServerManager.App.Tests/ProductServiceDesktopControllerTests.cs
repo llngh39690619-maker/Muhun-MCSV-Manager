@@ -1,3 +1,4 @@
+using System.IO;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.Client;
 using MinecraftServerManager.Contracts;
@@ -40,6 +41,200 @@ public sealed class ProductServiceDesktopControllerTests
         Assert.Equal(ProductServiceConnectionState.Unavailable, snapshot.Connection.State);
         Assert.Empty(snapshot.Servers);
         Assert.Equal(0, client.ListCalls);
+    }
+
+    [Fact]
+    public async Task RefreshServer_CanSkipConsoleWithoutChangingLegacyOverload()
+    {
+        var serverId = Guid.NewGuid();
+        var client = new StubClient(serverId, Guid.NewGuid());
+        await using var controller = new ProductServiceDesktopController(client);
+
+        var statusOnly = await controller.RefreshServerAsync(serverId, includeConsole: false);
+
+        var statusOnlyProjection = Assert.Single(statusOnly.Servers);
+        Assert.False(statusOnlyProjection.IncludesConsole);
+        Assert.Empty(statusOnlyProjection.Console.Entries);
+        Assert.Empty(client.ConsoleRequests);
+
+        var legacy = await controller.RefreshServerAsync(serverId);
+
+        var legacyProjection = Assert.Single(legacy.Servers);
+        Assert.True(legacyProjection.IncludesConsole);
+        Assert.Equal("first", legacyProjection.Console.Entries.Single().Text);
+        Assert.Equal([0L], client.ConsoleRequests);
+    }
+
+    [Fact]
+    public void ConsoleWaitCapability_RequiresConnectedNegotiatedApi111()
+    {
+        static ProductLocalHandshakePayload Handshake(ProductApiVersion maximumApiVersion, bool ready)
+            => new(
+                new ProductHandshakeResponse(
+                    "Muhun MCSV Manager",
+                    "1.0.0",
+                    maximumApiVersion,
+                    ProductApiProtocol.MinimumSupportedVersion,
+                    ready),
+                Guid.NewGuid(),
+                DateTimeOffset.UtcNow);
+
+        var currentHandshake = Handshake(ProductApiProtocol.ConsoleWaitVersion, ready: true);
+        var legacyHandshake = Handshake(new ProductApiVersion(1, 10), ready: true);
+        var notReadyHandshake = Handshake(ProductApiProtocol.ConsoleWaitVersion, ready: false);
+
+        Assert.True(ProductServiceDesktopController.SupportsConsoleWait(new(
+            ProductServiceConnectionState.Connected,
+            "service.connected",
+            currentHandshake)));
+        Assert.False(ProductServiceDesktopController.SupportsConsoleWait(new(
+            ProductServiceConnectionState.Connected,
+            "service.connected",
+            legacyHandshake)));
+        Assert.False(ProductServiceDesktopController.SupportsConsoleWait(new(
+            ProductServiceConnectionState.Connected,
+            "service.connected",
+            notReadyHandshake)));
+        Assert.False(ProductServiceDesktopController.SupportsConsoleWait(new(
+            ProductServiceConnectionState.Unavailable,
+            "service.connection_failed",
+            currentHandshake)));
+    }
+
+    [Fact]
+    public async Task ConsoleWait_DoesNotHoldStatusRefreshGateAndForwardsCursorBounds()
+    {
+        var serverId = Guid.NewGuid();
+        var client = new StubClient(serverId, Guid.NewGuid());
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ConsoleWaitHandler = async (requestedId, cursor, limit, waitMilliseconds, cancellationToken) =>
+        {
+            waitStarted.TrySetResult();
+            await releaseWait.Task.WaitAsync(cancellationToken);
+            return new ProductConsolePage(
+                requestedId,
+                cursor,
+                cursor + 1,
+                cursor,
+                HistoryGap: false,
+                Entries: []);
+        };
+        await using var controller = new ProductServiceDesktopController(client);
+        Task<ProductConsolePage>? waitTask = null;
+        try
+        {
+            waitTask = controller.WaitForConsoleAsync(
+                serverId,
+                afterCursor: 17,
+                limit: 12,
+                waitTimeoutMilliseconds: 750);
+            await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var refresh = await controller.RefreshFocusedAsync(null)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.True(refresh.Connection.IsConnected);
+            Assert.Equal([(serverId, 17L, 12, 750)], client.ConsoleWaitRequests);
+        }
+        finally
+        {
+            releaseWait.TrySetResult();
+            if (waitTask is not null)
+            {
+                await waitTask;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ConsoleWait_RejectsCrossServerPage()
+    {
+        var serverId = Guid.NewGuid();
+        var client = new StubClient(serverId, Guid.NewGuid())
+        {
+            ConsoleWaitHandler = (requestedId, cursor, _, _, _) => Task.FromResult(
+                new ProductConsolePage(
+                    Guid.NewGuid(),
+                    cursor,
+                    cursor + 1,
+                    cursor,
+                    HistoryGap: false,
+                    Entries: []))
+        };
+        await using var controller = new ProductServiceDesktopController(client);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            controller.WaitForConsoleAsync(serverId, 10, waitTimeoutMilliseconds: 100));
+    }
+
+    [Fact]
+    public async Task ConsoleWait_RejectsNonMonotonicPage()
+    {
+        var serverId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var client = new StubClient(serverId, sessionId)
+        {
+            ConsoleWaitHandler = (requestedId, cursor, _, _, _) => Task.FromResult(
+                new ProductConsolePage(
+                    requestedId,
+                    cursor,
+                    1,
+                    cursor + 2,
+                    HistoryGap: false,
+                    [
+                        new ProductConsoleEntry(
+                            cursor + 2,
+                            sessionId,
+                            DateTimeOffset.UtcNow,
+                            "later",
+                            ProductConsoleStream.StandardOutput,
+                            ProductConsoleSeverity.Information,
+                            null,
+                            false,
+                            false),
+                        new ProductConsoleEntry(
+                            cursor + 1,
+                            sessionId,
+                            DateTimeOffset.UtcNow,
+                            "earlier",
+                            ProductConsoleStream.StandardOutput,
+                            ProductConsoleSeverity.Information,
+                            null,
+                            false,
+                            false),
+                    ]))
+        };
+        await using var controller = new ProductServiceDesktopController(client);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            controller.WaitForConsoleAsync(serverId, 10, waitTimeoutMilliseconds: 100));
+    }
+
+    [Fact]
+    public async Task ConsoleWait_AllowsHistoryGapToResetAStaleCursor()
+    {
+        var serverId = Guid.NewGuid();
+        var client = new StubClient(serverId, Guid.NewGuid())
+        {
+            ConsoleWaitHandler = (requestedId, cursor, _, _, _) => Task.FromResult(
+                new ProductConsolePage(
+                    requestedId,
+                    cursor,
+                    OldestAvailableCursor: 1,
+                    NextCursor: 0,
+                    HistoryGap: true,
+                    Entries: []))
+        };
+        await using var controller = new ProductServiceDesktopController(client);
+
+        var page = await controller.WaitForConsoleAsync(
+            serverId,
+            afterCursor: 500,
+            waitTimeoutMilliseconds: 100);
+
+        Assert.True(page.HistoryGap);
+        Assert.Equal(0, page.NextCursor);
     }
 
     [Fact]
@@ -182,6 +377,14 @@ public sealed class ProductServiceDesktopControllerTests
 
         public List<long> ConsoleRequests { get; } = [];
 
+        public List<(Guid ServerId, long Cursor, int Limit, int WaitMilliseconds)> ConsoleWaitRequests { get; } = [];
+
+        public Func<Guid, long, int, int, CancellationToken, Task<ProductConsolePage>>? ConsoleWaitHandler
+        {
+            get;
+            set;
+        }
+
         public List<string> Mutations { get; } = [];
 
         public List<string> ProviderMutations { get; } = [];
@@ -260,6 +463,23 @@ public sealed class ProductServiceDesktopControllerTests
                     null,
                     false,
                 false)]));
+        }
+
+        public Task<ProductConsolePage> WaitForConsoleAsync(
+            Guid requestedServerId,
+            long afterCursor,
+            int limit = ProductConsoleContract.MaximumPageSize,
+            int waitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+            CancellationToken cancellationToken = default)
+        {
+            ConsoleWaitRequests.Add((requestedServerId, afterCursor, limit, waitTimeoutMilliseconds));
+            return ConsoleWaitHandler?.Invoke(
+                       requestedServerId,
+                       afterCursor,
+                       limit,
+                       waitTimeoutMilliseconds,
+                       cancellationToken)
+                   ?? ReadConsoleAsync(requestedServerId, afterCursor, limit, cancellationToken);
         }
 
         public Task<ProductServerPlayerList> ListPlayersAsync(

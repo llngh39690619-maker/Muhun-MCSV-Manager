@@ -93,6 +93,60 @@ public sealed class ProductServiceClientTests
     }
 
     [Fact]
+    public async Task ConsoleWait_UsesApi111BoundedCursorRequest()
+    {
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var serverId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var server = RunServerOnceAsync(pipeName, request =>
+        {
+            Assert.Equal(ProductIpcProtocol.ServerConsoleWaitMethod, request.Method);
+            Assert.Equal(ProductApiProtocol.ConsoleWaitVersion, request.ClientMinimumApiVersion);
+            Assert.Equal(ProductApiProtocol.CurrentVersion, request.ClientMaximumApiVersion);
+            Assert.Equal(serverId, request.ServerId);
+            Assert.Equal(41, request.ConsoleCursor);
+            Assert.Equal(25, request.ConsoleLimit);
+            Assert.Equal(750, request.ConsoleWaitTimeoutMilliseconds);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                Console = new ProductConsolePage(
+                    serverId,
+                    RequestedAfterCursor: 41,
+                    OldestAvailableCursor: 1,
+                    NextCursor: 42,
+                    HistoryGap: false,
+                    [new ProductConsoleEntry(
+                        42,
+                        sessionId,
+                        DateTimeOffset.UtcNow,
+                        "live",
+                        ProductConsoleStream.StandardOutput,
+                        ProductConsoleSeverity.Information,
+                        null,
+                        false,
+                        false)]),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var page = await client.WaitForConsoleAsync(serverId, 41, 25, 750);
+
+        Assert.Equal("live", Assert.Single(page.Entries).Text);
+        await server;
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(ProductConsoleContract.MaximumWaitTimeoutMilliseconds + 1)]
+    public async Task ConsoleWait_RejectsUnboundedTimeoutBeforeConnecting(int waitMilliseconds)
+    {
+        await using var client = new ProductServiceClient($"muhun-test-{Guid.NewGuid():N}");
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => client.WaitForConsoleAsync(Guid.NewGuid(), 0, 50, waitMilliseconds));
+    }
+
+    [Fact]
     public async Task ServiceError_PreservesStableCode()
     {
         var pipeName = $"muhun-test-{Guid.NewGuid():N}";
@@ -1070,6 +1124,12 @@ public sealed class ProductServiceClientTests
         => Assert.Equal(
             TimeSpan.FromSeconds(10),
             ProductServiceClient.GetRequestTimeout(ProductIpcProtocol.ServerStatusMethod));
+
+    [Fact]
+    public void ConsoleWait_AllowsBoundedServerWaitPlusConnectionOverhead()
+        => Assert.Equal(
+            TimeSpan.FromSeconds(15),
+            ProductServiceClient.GetRequestTimeout(ProductIpcProtocol.ServerConsoleWaitMethod));
 
     [Fact]
     public void ServerPropertiesUpdate_UsesMutationClientDeadline()

@@ -386,9 +386,21 @@ public sealed record ProductConsoleEntry(
     bool IsDiagnosticContinuation,
     bool TextTruncated);
 
+public static class ProductConsoleContract
+{
+    public const int MaximumPageSize = 50;
+    public const int MaximumTextCharacters = 512;
+    public const int DefaultWaitTimeoutMilliseconds = 5_000;
+    public const int MinimumWaitTimeoutMilliseconds = 100;
+    public const int MaximumWaitTimeoutMilliseconds = 8_000;
+
+    public static bool IsValidWaitTimeout(int milliseconds)
+        => milliseconds is >= MinimumWaitTimeoutMilliseconds and <= MaximumWaitTimeoutMilliseconds;
+}
+
 /// <summary>
-/// Cursor page for bounded console polling. HistoryGap is true when the requested cursor predates
-/// the oldest retained line; clients should replace rather than append in that case.
+/// Cursor page for bounded console reads and waits. HistoryGap is true when the requested cursor
+/// predates the oldest retained line; clients should replace rather than append in that case.
 /// </summary>
 public sealed record ProductConsolePage(
     Guid ServerId,

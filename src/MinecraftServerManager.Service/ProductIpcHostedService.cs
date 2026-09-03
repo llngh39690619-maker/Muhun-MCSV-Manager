@@ -9,6 +9,7 @@ namespace MinecraftServerManager.Service;
 internal enum ProductIpcExecutionClass
 {
     ReadOnly,
+    ConsoleWait,
     Mutation,
     LongMutation,
 }
@@ -20,6 +21,8 @@ internal sealed record ProductIpcHostOptions
     public int MaximumConcurrentMutations { get; init; } = 4;
 
     public int MaximumConcurrentLongMutations { get; init; } = 2;
+
+    public int MaximumConcurrentConsoleWaits { get; init; } = 1;
 
     public TimeSpan FrameReadTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
@@ -52,6 +55,12 @@ internal sealed record ProductIpcHostOptions
             throw new ArgumentOutOfRangeException(nameof(MaximumConcurrentLongMutations));
         }
 
+        if (MaximumConcurrentConsoleWaits is < 1 or > 4 ||
+            MaximumConcurrentConsoleWaits >= MaximumConcurrentClients)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumConcurrentConsoleWaits));
+        }
+
         ValidateTimeout(FrameReadTimeout, nameof(FrameReadTimeout), TimeSpan.FromMinutes(1));
         ValidateTimeout(FrameWriteTimeout, nameof(FrameWriteTimeout), TimeSpan.FromMinutes(1));
         ValidateTimeout(ReadOnlyOperationTimeout, nameof(ReadOnlyOperationTimeout), TimeSpan.FromMinutes(1));
@@ -77,6 +86,11 @@ internal static class ProductIpcExecutionPolicy
     public static ProductIpcExecutionClass Classify(string method)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
+        if (method == ProductIpcProtocol.ServerConsoleWaitMethod)
+        {
+            return ProductIpcExecutionClass.ConsoleWait;
+        }
+
         if (method is
             ProductIpcProtocol.ServerStopMethod or
             ProductIpcProtocol.ServerRestartMethod or
@@ -137,6 +151,7 @@ public sealed class ProductIpcHostedService : BackgroundService
     private readonly SemaphoreSlim _clientSlots;
     private readonly SemaphoreSlim _mutationSlots;
     private readonly SemaphoreSlim _longMutationSlots;
+    private readonly SemaphoreSlim _consoleWaitSlots;
     private readonly ConcurrentDictionary<long, Task> _activeHandlers = new();
     private readonly ConcurrentDictionary<long, NamedPipeServerStream> _activePipes = new();
     private long _nextHandlerId;
@@ -199,6 +214,9 @@ public sealed class ProductIpcHostedService : BackgroundService
         _longMutationSlots = new SemaphoreSlim(
             options.MaximumConcurrentLongMutations,
             options.MaximumConcurrentLongMutations);
+        _consoleWaitSlots = new SemaphoreSlim(
+            options.MaximumConcurrentConsoleWaits,
+            options.MaximumConcurrentConsoleWaits);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -376,6 +394,7 @@ public sealed class ProductIpcHostedService : BackgroundService
         {
             ProductIpcExecutionClass.LongMutation => _longMutationSlots,
             ProductIpcExecutionClass.Mutation => _mutationSlots,
+            ProductIpcExecutionClass.ConsoleWait => _consoleWaitSlots,
             _ => null,
         };
         if (operationSlots is not null && !operationSlots.Wait(0))
@@ -384,7 +403,9 @@ public sealed class ProductIpcHostedService : BackgroundService
                 request.RequestId,
                 new ProductIpcError(
                     "service.busy",
-                    "Muhun MCSV Service is already processing the maximum number of local mutations."));
+                    executionClass == ProductIpcExecutionClass.ConsoleWait
+                        ? "Muhun MCSV Service is already processing the maximum number of console waits."
+                        : "Muhun MCSV Service is already processing the maximum number of local mutations."));
         }
 
         try

@@ -89,7 +89,14 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion KnownPlayerRosterVersion { get; } = new(1, 10);
 
-    public static ProductApiVersion CurrentVersion { get; } = KnownPlayerRosterVersion;
+    /// <summary>
+    /// First API version that supports a bounded, cancellable console wait. The request returns
+    /// immediately when a cursor advances and otherwise returns an empty page after its bounded
+    /// wait, allowing desktop clients to avoid periodic console polling.
+    /// </summary>
+    public static ProductApiVersion ConsoleWaitVersion { get; } = new(1, 11);
+
+    public static ProductApiVersion CurrentVersion { get; } = ConsoleWaitVersion;
 
     public const string RestBasePath = "/api/v1";
 

@@ -185,6 +185,51 @@ public sealed class ProductIpcHostedServiceConcurrencyTests
     }
 
     [Fact]
+    public async Task Shutdown_CancelsAndDrainsActiveConsoleWait()
+    {
+        var entered = NewSignal();
+        var cancellationObserved = NewSignal();
+        var serverId = Guid.NewGuid();
+        await using var harness = await Harness.CreateAsync(
+            async (request, cancellationToken) =>
+            {
+                if (request?.Method == ProductIpcProtocol.ServerConsoleWaitMethod)
+                {
+                    entered.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        cancellationObserved.TrySetResult();
+                        throw;
+                    }
+                }
+
+                return Success(request?.RequestId ?? Guid.Empty);
+            },
+            TestOptions() with
+            {
+                ReadOnlyOperationTimeout = TimeSpan.FromSeconds(3),
+            });
+
+        var requestTask = harness.SendAsync(Request(ProductIpcProtocol.ServerConsoleWaitMethod) with
+        {
+            ServerId = serverId,
+            ConsoleCursor = 0,
+            ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await harness.StopAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await requestTask.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
     public async Task CallerDisconnect_CancelsLongMutationAndReleasesItsSlot()
     {
         var firstEntered = NewSignal();
@@ -227,6 +272,111 @@ public sealed class ProductIpcHostedServiceConcurrencyTests
         Assert.Equal(2, Volatile.Read(ref invocation));
     }
 
+    [Fact]
+    public async Task CallerDisconnect_CancelsConsoleWaitAndReleasesItsDedicatedSlot()
+    {
+        var entered = NewSignal();
+        var cancelled = NewSignal();
+        var serverId = Guid.NewGuid();
+        await using var harness = await Harness.CreateAsync(
+            async (request, cancellationToken) =>
+            {
+                if (request?.Method == ProductIpcProtocol.ServerConsoleWaitMethod)
+                {
+                    entered.TrySetResult();
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        cancelled.TrySetResult();
+                        throw;
+                    }
+                }
+
+                return Success(request?.RequestId ?? Guid.Empty);
+            },
+            TestOptions() with
+            {
+                MaximumConcurrentConsoleWaits = 1,
+                ReadOnlyOperationTimeout = TimeSpan.FromSeconds(3),
+            });
+
+        var abandonedClient = await harness.ConnectAndWriteAsync(
+            Request(ProductIpcProtocol.ServerConsoleWaitMethod) with
+            {
+                ServerId = serverId,
+                ConsoleCursor = 0,
+                ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+                ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+            });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await abandonedClient.DisposeAsync();
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var status = await harness.SendAsync(Request(ProductIpcProtocol.ServerStatusMethod) with
+        {
+            ServerId = serverId,
+        }).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(status.Success);
+    }
+
+    [Fact]
+    public async Task ConsoleWaitLimit_FailsFastWithoutConsumingOrdinaryRequestCapacity()
+    {
+        var firstEntered = NewSignal();
+        var releaseFirst = NewSignal();
+        var serverId = Guid.NewGuid();
+        var invocations = 0;
+        await using var harness = await Harness.CreateAsync(
+            async (request, cancellationToken) =>
+            {
+                if (request?.Method == ProductIpcProtocol.ServerConsoleWaitMethod)
+                {
+                    Interlocked.Increment(ref invocations);
+                    firstEntered.TrySetResult();
+                    await releaseFirst.Task.WaitAsync(cancellationToken);
+                }
+
+                return Success(request?.RequestId ?? Guid.Empty);
+            },
+            TestOptions() with
+            {
+                MaximumConcurrentConsoleWaits = 1,
+                ReadOnlyOperationTimeout = TimeSpan.FromSeconds(3),
+            });
+
+        var first = harness.SendAsync(Request(ProductIpcProtocol.ServerConsoleWaitMethod) with
+        {
+            ServerId = serverId,
+            ConsoleCursor = 0,
+            ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        });
+        await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var rejected = await harness.SendAsync(Request(ProductIpcProtocol.ServerConsoleWaitMethod) with
+        {
+            ServerId = serverId,
+            ConsoleCursor = 0,
+            ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        }).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(rejected.Success);
+        Assert.Equal("service.busy", rejected.Error?.Code);
+        Assert.Equal(1, Volatile.Read(ref invocations));
+
+        var status = await harness.SendAsync(Request(ProductIpcProtocol.ServerStatusMethod) with
+        {
+            ServerId = serverId,
+        }).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(status.Success);
+
+        releaseFirst.TrySetResult();
+        Assert.True((await first.WaitAsync(TimeSpan.FromSeconds(2))).Success);
+    }
+
     [Theory]
     [InlineData(ProductIpcProtocol.ServerStopMethod)]
     [InlineData(ProductIpcProtocol.ServerRestartMethod)]
@@ -252,11 +402,18 @@ public sealed class ProductIpcHostedServiceConcurrencyTests
             ProductIpcExecutionPolicy.Classify(ProductIpcProtocol.ServerPropertiesUpdateMethod));
     }
 
+    [Fact]
+    public void ConsoleWait_UsesItsOwnBoundedExecutionClass()
+        => Assert.Equal(
+            ProductIpcExecutionClass.ConsoleWait,
+            ProductIpcExecutionPolicy.Classify(ProductIpcProtocol.ServerConsoleWaitMethod));
+
     private static ProductIpcHostOptions TestOptions() => new()
     {
         MaximumConcurrentClients = 8,
         MaximumConcurrentMutations = 3,
         MaximumConcurrentLongMutations = 2,
+        MaximumConcurrentConsoleWaits = 2,
         FrameReadTimeout = TimeSpan.FromSeconds(1),
         FrameWriteTimeout = TimeSpan.FromSeconds(1),
         ReadOnlyOperationTimeout = TimeSpan.FromSeconds(1),

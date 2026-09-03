@@ -135,8 +135,21 @@ public interface IProductServiceClient : IAsyncDisposable
     Task<ProductConsolePage> ReadConsoleAsync(
         Guid serverId,
         long afterCursor,
-        int limit = 50,
+        int limit = ProductConsoleContract.MaximumPageSize,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Waits until the requested server's console cursor advances, or until the bounded wait
+    /// expires. Implementations that predate API 1.11 retain source compatibility by falling back
+    /// to a one-shot cursor read.
+    /// </summary>
+    Task<ProductConsolePage> WaitForConsoleAsync(
+        Guid serverId,
+        long afterCursor,
+        int limit = ProductConsoleContract.MaximumPageSize,
+        int waitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        CancellationToken cancellationToken = default)
+        => ReadConsoleAsync(serverId, afterCursor, limit, cancellationToken);
 
     Task<ProductServerPlayerList> ListPlayersAsync(
         Guid serverId,

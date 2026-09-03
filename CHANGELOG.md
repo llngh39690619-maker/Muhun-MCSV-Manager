@@ -2,6 +2,16 @@
 
 ## 未發布
 
+## 1.2.9-beta.15 — Service 即時控制台版（研發中）
+
+- Windows Service 與 GUI 新增 API 1.11 的有界 `server.console.wait` 通道；新輸出會直接喚醒目前選取伺服器的 cursor 訂閱，不再等候 2 秒狀態輪詢，無輸出時則保持休眠。
+- GUI 將即時輸出放入最多 4,096 行的有界佇列，並沿用本機模式每 100 ms 合併一次的 WPF 更新；50 行分頁有積壓時會立即接續讀取，避免逐行重建 2,000 行畫面造成卡頓。
+- 狀態、資源與連線指標仍維持低頻刷新；控制台等待使用獨立 IPC 與並行配額，至少保留一條一般操作通道，啟動、停止及狀態查詢不會被閒置等待占滿。
+- 選取伺服器、切換至客戶端工作區或關閉 GUI 時會取消舊等待；cursor 只在畫面佇列接受資料後提交，Service 重啟或保留範圍溢位則以 `HistoryGap` 安全重建，並保留玩家上下線與 `save-all` 完成偵測。
+- 本機 Android 驗證建置使用 `versionCode 34`；Windows 正式發行流程共 `3,274 / 3,274` 項測試通過，沒有建置警告、錯誤或已知 NuGet 弱點。單一 EXE 安裝器 SHA-256 為 `5EC8115622B8AC03179510BDEE1DF7637272D1FD572FFF858AE2FF252FC5F3C3`，Authenticode 與 DigiCert 時間戳記驗證有效。
+- 1.2.9-beta.15 目前只進行本機驗證，不發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，研發中。**
+
 ## 1.2.9-beta.14 — Java Runtime 損壞自動修復版（研發中）
 
 - 修正受管理 Java 只靠 `java -version` 判定可用，導致下載或系統中斷後 `java.exe` 仍能回報版本、但 `lib/modules` 內 CLDR 類別已損壞，最終讓 NeoForge 官方安裝器於 `install-game` 階段以 exit code 1 結束的問題。

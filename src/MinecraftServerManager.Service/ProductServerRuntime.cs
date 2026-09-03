@@ -539,6 +539,29 @@ public sealed class ProductServerRuntime : IAsyncDisposable
             .Read(serverId, afterCursor, limit);
     }
 
+    public Task<ProductConsolePage> WaitForConsoleAsync(
+        Guid serverId,
+        long afterCursor,
+        int limit,
+        int waitTimeoutMilliseconds,
+        CancellationToken cancellationToken = default)
+    {
+        _ = GetRegistration(serverId);
+        if (!ProductConsoleContract.IsValidWaitTimeout(waitTimeoutMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(waitTimeoutMilliseconds));
+        }
+
+        return _journals
+            .GetOrAdd(serverId, _ => new ProductConsoleJournal(RetainedConsoleLinesPerServer))
+            .WaitForChangeAsync(
+                serverId,
+                afterCursor,
+                limit,
+                TimeSpan.FromMilliseconds(waitTimeoutMilliseconds),
+                cancellationToken);
+    }
+
     public async Task ShutdownAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _shutdown, 1) != 0)

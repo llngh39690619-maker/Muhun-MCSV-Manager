@@ -46,10 +46,12 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private const DispatcherPriority PresenceDispatcherPriority = DispatcherPriority.Background;
     internal const int MaximumPendingConsoleLinesPerInstance = 4_096;
     private const int MaximumTrackedOnlinePlayers = 4_096;
-    private const int ConsoleDrainBatchSize = MaximumPendingConsoleLinesPerInstance;
+    internal const int ConsoleDrainBatchSize = 200;
     internal static readonly TimeSpan ConsoleUiRefreshInterval = TimeSpan.FromMilliseconds(100);
     internal static readonly TimeSpan PresenceUiRefreshInterval = TimeSpan.FromMilliseconds(100);
     internal static readonly TimeSpan ProductServiceUpdateReconnectTimeout = TimeSpan.FromSeconds(30);
+    private const int ProductServiceConsoleInitialBackoffMilliseconds = 100;
+    private const int ProductServiceConsoleMaximumBackoffMilliseconds = 2_000;
     private static readonly Regex SaveCompletionPattern = new(
         @"(?:Saved the game|Saved the world|Saved all player data|Saved all chunks)",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
@@ -142,6 +144,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, byte> _scheduledResourceSampleDrains = new();
     private readonly ConcurrentDictionary<Guid, BoundedDropOldestQueue<PendingConsoleLine>> _pendingConsoleLines = new();
     private readonly ConcurrentDictionary<Guid, byte> _scheduledConsoleDrains = new();
+    private readonly object _productServiceConsoleSubscriptionSync = new();
     private readonly PlayerPresenceDispatchBuffer _playerPresenceBuffer =
         new(MaximumTrackedOnlinePlayers);
     private readonly ConcurrentDictionary<Guid, byte> _scheduledPresenceDrains = new();
@@ -190,6 +193,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private Task? _shutdownTask;
     private Task? _disposeTask;
     private Task _productServicePollingTask = Task.CompletedTask;
+    private Task _productServiceConsoleSubscriptionTask = Task.CompletedTask;
+    private CancellationTokenSource? _productServiceConsoleSubscriptionCancellation;
+    private Guid? _productServiceConsoleTargetId;
+    private long _productServiceConsoleSubscriptionGeneration;
     private Task _legacyServiceMigrationTask = Task.CompletedTask;
     private ProductServiceConnectionState _productServiceConnectionState =
         ProductServiceConnectionState.Unavailable;
@@ -198,7 +205,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private bool _isProductServiceUpdateRunning;
     private bool _isSelectedInstanceConfigurationSaveRunning;
     private IReadOnlyList<ServerInstance>? _readOnlyLegacyInstances;
-    private readonly Dictionary<Guid, Guid> _playerPresenceSessions = [];
+    private readonly ConcurrentDictionary<Guid, Guid> _playerPresenceSessions = new();
     private readonly ConcurrentDictionary<Guid, byte> _loadedPlayerRegistries = new();
     private readonly HashSet<Guid> _dirtyProductServiceRegistrations = [];
     private bool _applyingProductServiceProjection;
@@ -541,6 +548,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             if (SetProperty(ref _isClientWorkspace, value))
             {
                 OnPropertyChanged(nameof(IsServerWorkspace));
+                QueueProductServiceConsoleSubscriptionRefresh();
             }
         }
     }
@@ -712,6 +720,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 }
                 SecondaryServer ??= Servers.FirstOrDefault(server => server.Id != value.Id) ?? value;
             }
+
+            QueueProductServiceConsoleSubscriptionRefresh();
         }
     }
 
@@ -872,6 +882,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IsProductServiceConnected &&
         _productServiceNegotiatedApiVersion is { } version &&
         version.CompareTo(ProductApiProtocol.KnownPlayerRosterVersion) >= 0;
+    internal bool SupportsProductServiceConsoleWait =>
+        IsProductServiceConnected &&
+        _productServiceNegotiatedApiVersion is { } version &&
+        version.CompareTo(ProductApiProtocol.ConsoleWaitVersion) >= 0;
     public bool KeepsRunningServersOnGuiExit => IsProductServiceRuntime;
     public string ProductServiceConnectionText => FormatProductServiceConnection(
         _productServiceConnectionState,
@@ -1283,7 +1297,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
                 var snapshot = await _productServiceController.RefreshFocusedAsync(
-                        IsClientWorkspace ? null : SelectedServer?.Id,
+                        GetProductServicePollingConsoleServerId(),
                         cancellationToken)
                     .ConfigureAwait(false);
                 var dispatcher = Application.Current?.Dispatcher;
@@ -1305,6 +1319,347 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         catch (ObjectDisposedException) when (_isDisposed)
         {
             // A late dispatcher teardown can race the idempotent disposal path.
+        }
+    }
+
+    private Guid? GetProductServicePollingConsoleServerId()
+        => IsClientWorkspace || SupportsProductServiceConsoleWait
+            ? null
+            : SelectedServer?.Id;
+
+    /// <summary>
+    /// Replaces the current Service-console subscription without ever overlapping two waits.
+    /// Setters only queue the transition; cancellation releases the old named-pipe handler before
+    /// the next selected server starts waiting.
+    /// </summary>
+    private void QueueProductServiceConsoleSubscriptionRefresh()
+    {
+        if (_productServiceController is null || _isDisposed ||
+            _sessionServicesCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var targetId = IsServerWorkspace && SupportsProductServiceConsoleWait &&
+                       SelectedServer is { IsServiceManaged: true } selected
+            ? selected.Id
+            : (Guid?)null;
+        CancellationTokenSource? previousCancellation;
+        CancellationTokenSource? nextCancellation;
+        Task previousTask;
+        long generation;
+
+        lock (_productServiceConsoleSubscriptionSync)
+        {
+            if (_productServiceConsoleTargetId == targetId &&
+                (targetId is null || !_productServiceConsoleSubscriptionTask.IsCompleted))
+            {
+                return;
+            }
+
+            nextCancellation = targetId is null
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(_sessionServicesCancellation.Token);
+            previousCancellation = _productServiceConsoleSubscriptionCancellation;
+            previousTask = _productServiceConsoleSubscriptionTask;
+            generation = ++_productServiceConsoleSubscriptionGeneration;
+            _productServiceConsoleTargetId = targetId;
+            _productServiceConsoleSubscriptionCancellation = nextCancellation;
+            _productServiceConsoleSubscriptionTask = TransitionProductServiceConsoleSubscriptionAsync(
+                previousTask,
+                targetId,
+                generation,
+                nextCancellation);
+        }
+
+        TryCancelProductServiceConsoleSubscription(previousCancellation);
+    }
+
+    private async Task TransitionProductServiceConsoleSubscriptionAsync(
+        Task previousTask,
+        Guid? targetId,
+        long generation,
+        CancellationTokenSource? cancellation)
+    {
+        // Queueing can happen inside a property setter while the lifecycle lock is held. Yielding
+        // prevents a synchronously completed predecessor from re-entering that same lock.
+        await Task.Yield();
+        try
+        {
+            await previousTask.ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            _ = error;
+            // A failed observational subscription must not poison the next selection.
+        }
+
+        if (targetId is null || cancellation is null || cancellation.IsCancellationRequested ||
+            !IsCurrentProductServiceConsoleSubscription(targetId.Value, generation, cancellation))
+        {
+            cancellation?.Dispose();
+            return;
+        }
+
+        try
+        {
+            await RunProductServiceConsoleSubscriptionAsync(
+                    targetId.Value,
+                    generation,
+                    cancellation,
+                    cancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Selection changes, workspace changes, and GUI shutdown all end the wait normally.
+        }
+        catch (ObjectDisposedException) when (_isDisposed)
+        {
+            // Controller disposal is ordered after cancellation, but tolerate final teardown races.
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task RunProductServiceConsoleSubscriptionAsync(
+        Guid serverId,
+        long generation,
+        CancellationTokenSource subscriptionCancellation,
+        CancellationToken cancellationToken)
+    {
+        var controller = _productServiceController
+            ?? throw new InvalidOperationException("Product Service controller is unavailable.");
+        var cursor = controller.GetAcceptedConsoleCursor(serverId);
+        var failureBackoffMilliseconds = 250;
+        var immediateEmptyBackoffMilliseconds = ProductServiceConsoleInitialBackoffMilliseconds;
+
+        while (!cancellationToken.IsCancellationRequested &&
+               IsCurrentProductServiceConsoleSubscription(
+                   serverId,
+                   generation,
+                   subscriptionCancellation))
+        {
+            ProductConsolePage page;
+            var waitStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                page = await controller.WaitForConsoleAsync(
+                        serverId,
+                        cursor,
+                        ProductConsoleContract.MaximumPageSize,
+                        ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                _ = error;
+                await Task.Delay(
+                        TimeSpan.FromMilliseconds(failureBackoffMilliseconds),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                failureBackoffMilliseconds = Math.Min(
+                    failureBackoffMilliseconds * 2,
+                    ProductServiceConsoleMaximumBackoffMilliseconds);
+                continue;
+            }
+
+            if (!IsCurrentProductServiceConsoleSubscription(
+                    serverId,
+                    generation,
+                    subscriptionCancellation))
+            {
+                return;
+            }
+
+            if (!await AcceptProductServiceConsolePageAsync(
+                    serverId,
+                    page,
+                    generation,
+                    subscriptionCancellation,
+                    cancellationToken)
+                .ConfigureAwait(false))
+            {
+                if (IsCurrentProductServiceConsoleSubscription(
+                        serverId,
+                        generation,
+                        subscriptionCancellation))
+                {
+                    var acceptedCursor = controller.GetAcceptedConsoleCursor(serverId);
+                    if (acceptedCursor != cursor)
+                    {
+                        // A legacy page can win the same acceptance race while API capability is
+                        // changing. Continue from the shared cursor instead of silently ending the
+                        // still-current subscription.
+                        cursor = acceptedCursor;
+                        continue;
+                    }
+                }
+
+                return;
+            }
+
+            // Commit only after the page is accepted into the bounded visual queue (or its gap
+            // replacement reaches the UI). Cancellation before acceptance therefore cannot lose
+            // lines when this server is selected again.
+            cursor = page.NextCursor;
+            failureBackoffMilliseconds = 250;
+
+            if (page.Entries.Count > 0)
+            {
+                immediateEmptyBackoffMilliseconds = ProductServiceConsoleInitialBackoffMilliseconds;
+                continue;
+            }
+
+            var elapsed = Stopwatch.GetElapsedTime(waitStarted);
+            if (elapsed >= TimeSpan.FromMilliseconds(ProductConsoleContract.MinimumWaitTimeoutMilliseconds))
+            {
+                immediateEmptyBackoffMilliseconds = ProductServiceConsoleInitialBackoffMilliseconds;
+                continue;
+            }
+
+            // Source-compatible API 1.10 fakes and a defensive Service may answer an empty wait
+            // immediately. Bound that path so it cannot become a CPU-intensive hot loop.
+            await Task.Delay(
+                    TimeSpan.FromMilliseconds(immediateEmptyBackoffMilliseconds),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            immediateEmptyBackoffMilliseconds = Math.Min(
+                immediateEmptyBackoffMilliseconds * 2,
+                ProductServiceConsoleMaximumBackoffMilliseconds);
+        }
+    }
+
+    private async Task<bool> AcceptProductServiceConsolePageAsync(
+        Guid serverId,
+        ProductConsolePage page,
+        long generation,
+        CancellationTokenSource subscriptionCancellation,
+        CancellationToken cancellationToken)
+    {
+        var lines = page.Entries.Select(MapProductConsoleLine).ToArray();
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            return TryAcceptProductServiceConsolePageOnUi(
+                serverId,
+                page,
+                lines,
+                generation,
+                subscriptionCancellation,
+                dispatcher: null);
+        }
+
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        var accepted = false;
+        await dispatcher.InvokeAsync(
+            () => accepted = TryAcceptProductServiceConsolePageOnUi(
+                serverId,
+                page,
+                lines,
+                generation,
+                subscriptionCancellation,
+                dispatcher),
+            DispatcherPriority.Background,
+            cancellationToken);
+        return accepted;
+    }
+
+    private bool TryAcceptProductServiceConsolePageOnUi(
+        Guid serverId,
+        ProductConsolePage page,
+        IReadOnlyList<ConsoleLine> lines,
+        long generation,
+        CancellationTokenSource subscriptionCancellation,
+        Dispatcher? dispatcher)
+    {
+        // Selection, workspace, capability, and generation must all still match at the exact UI
+        // acceptance point. No readiness/save/player side effect is allowed before this boundary.
+        if (!IsCurrentProductServiceConsoleSubscription(
+                serverId,
+                generation,
+                subscriptionCancellation) ||
+            subscriptionCancellation.IsCancellationRequested ||
+            !IsServerWorkspace ||
+            !SupportsProductServiceConsoleWait ||
+            SelectedServer is not { IsServiceManaged: true } selected ||
+            selected.Id != serverId)
+        {
+            return false;
+        }
+
+        var controller = _productServiceController;
+        if (controller is null || !controller.TryAcceptConsolePage(page))
+        {
+            return false;
+        }
+
+        if (page.HistoryGap && _pendingConsoleLines.TryGetValue(serverId, out var pending))
+        {
+            pending.Clear();
+        }
+
+        // This method runs on the dispatcher (or in a dispatcher-free test host), so apply all
+        // derived state synchronously only after the page and its generation were accepted.
+        ApplyProductServiceConsoleEffects(serverId, page.Entries, dispatcher: null);
+        if (page.HistoryGap)
+        {
+            selected.ReplaceConsoleBatch(lines);
+            QueueAuthoritativePlayerRegistryReload(selected);
+        }
+        else if (lines.Count > 0)
+        {
+            if (dispatcher is null)
+            {
+                selected.AppendConsoleBatch(lines);
+            }
+            else
+            {
+                EnqueueProductServiceConsoleLines(dispatcher, serverId, page.Entries, lines);
+            }
+        }
+
+        return true;
+    }
+
+    private bool IsCurrentProductServiceConsoleSubscription(
+        Guid serverId,
+        long generation,
+        CancellationTokenSource cancellation)
+    {
+        lock (_productServiceConsoleSubscriptionSync)
+        {
+            return generation == _productServiceConsoleSubscriptionGeneration &&
+                   _productServiceConsoleTargetId == serverId &&
+                   ReferenceEquals(_productServiceConsoleSubscriptionCancellation, cancellation);
+        }
+    }
+
+    private static void TryCancelProductServiceConsoleSubscription(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // A completed subscription disposes its own source. The transition is already done.
         }
     }
 
@@ -1334,7 +1689,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 try
                 {
                     var snapshot = await _productServiceController.RefreshFocusedAsync(
-                        SelectedServer?.Id,
+                        GetProductServicePollingConsoleServerId(),
                         _applicationShutdownCancellation.Token);
                     ApplyProductServiceSnapshot(snapshot);
                 }
@@ -1374,7 +1729,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 _applicationShutdownCancellation.Token.ThrowIfCancellationRequested();
                 var snapshot = await _productServiceController.RefreshFocusedAsync(
-                    SelectedServer?.Id,
+                    GetProductServicePollingConsoleServerId(),
                     _applicationShutdownCancellation.Token);
                 ApplyProductServiceSnapshot(snapshot);
                 if (snapshot.Connection.IsConnected &&
@@ -1538,6 +1893,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         if (!snapshot.Connection.IsConnected)
         {
+            QueueProductServiceConsoleSubscriptionRefresh();
             return;
         }
 
@@ -1554,6 +1910,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             _dirtyProductServiceRegistrations.Remove(stale.Id);
             _instanceModels.TryRemove(stale.Id, out _);
             _playerPresenceCoreTypes.TryRemove(stale.Id, out _);
+            _pendingConsoleLines.TryRemove(stale.Id, out _);
+            _playerPresenceBuffer.RemoveInstance(stale.Id);
         }
 
         var localMetadata = _settings.Instances
@@ -1596,21 +1954,28 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             // even when the overall connection state itself did not change during the import.
             server.IsControlChannelAvailable = IsProductServiceConnected;
             ApplyProductServiceStatus(server, projection.Status);
-            ApplyProductServicePresence(server, projection.Status, projection.Console.Entries);
-            foreach (var entry in projection.Console.Entries)
+            if (!projection.IncludesConsole ||
+                _productServiceController is null ||
+                !_productServiceController.TryAcceptConsolePage(projection.Console))
             {
-                if (SaveCompletionPattern.IsMatch(entry.Text)
-                    && _pendingSaveFlushes.TryGetValue(
-                        (projection.Summary.Id, entry.SessionId),
-                        out var saveCompletion))
-                {
-                    saveCompletion.TrySetResult();
-                }
+                continue;
             }
+
+            if (projection.Console.HistoryGap &&
+                _pendingConsoleLines.TryGetValue(server.Id, out var pending))
+            {
+                pending.Clear();
+            }
+
+            ApplyProductServiceConsoleEffects(
+                projection.Summary.Id,
+                projection.Console.Entries,
+                dispatcher: null);
             var consoleLines = projection.Console.Entries.Select(MapProductConsoleLine).ToArray();
             if (projection.ReplaceConsole)
             {
                 server.ReplaceConsoleBatch(consoleLines);
+                QueueAuthoritativePlayerRegistryReload(server);
             }
             else if (consoleLines.Length > 0)
             {
@@ -1631,6 +1996,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ServerCountText));
         OnPropertyChanged(nameof(RunningSummary));
         OnPropertyChanged(nameof(HasRunningServers));
+        QueueProductServiceConsoleSubscriptionRefresh();
     }
 
     private static ProductApiVersion? NegotiateProductServiceApiVersion(
@@ -1735,7 +2101,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ? coreType
             : CoreType.Unknown;
 
-    private static void ApplyProductServiceStatus(
+    private void ApplyProductServiceStatus(
         ServerInstanceViewModel server,
         ProductServerStatus status)
     {
@@ -1751,6 +2117,38 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         {
             server.UpdateMetrics(resource.CpuPercent, resource.WorkingSetBytes, resource.Uptime);
         }
+
+        SynchronizeProductServicePresenceSession(server, status);
+    }
+
+    private void SynchronizeProductServicePresenceSession(
+        ServerInstanceViewModel server,
+        ProductServerStatus status)
+    {
+        if (status.SessionId is not { } sessionId ||
+            status.Server.State is not (ProductServerState.Starting or ProductServerState.Running))
+        {
+            if (_playerPresenceSessions.TryRemove(server.Id, out var previousSession))
+            {
+                _playerPresenceBuffer.EndSession(server.Id, previousSession);
+            }
+            else
+            {
+                _playerPresenceBuffer.RemoveInstance(server.Id);
+            }
+
+            server.UpdateOnlinePlayers([]);
+            return;
+        }
+
+        if (!_playerPresenceSessions.TryGetValue(server.Id, out var activeSession) ||
+            activeSession != sessionId)
+        {
+            server.UpdateOnlinePlayers([]);
+        }
+
+        _playerPresenceSessions[server.Id] = sessionId;
+        _playerPresenceBuffer.StartSession(server.Id, sessionId);
     }
 
     private void ApplyProductServicePresence(
@@ -1759,18 +2157,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<ProductConsoleEntry> entries)
     {
         if (status.SessionId is not { } sessionId ||
-            status.Server.State is not (ProductServerState.Starting or ProductServerState.Running))
+            status.Server.State is not (ProductServerState.Starting or ProductServerState.Running) ||
+            !_playerPresenceSessions.TryGetValue(server.Id, out var activeSession) ||
+            activeSession != sessionId)
         {
-            _playerPresenceSessions.Remove(server.Id);
-            server.UpdateOnlinePlayers([]);
             return;
-        }
-
-        if (!_playerPresenceSessions.TryGetValue(server.Id, out var previousSession)
-            || previousSession != sessionId)
-        {
-            _playerPresenceSessions[server.Id] = sessionId;
-            server.UpdateOnlinePlayers([]);
         }
 
         var coreType = server.Model.CoreType;
@@ -1784,7 +2175,62 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 continue;
             }
 
+            _ = _playerPresenceBuffer.Apply(server.Id, sessionId, change);
             server.UpdatePlayerPresence(change.PlayerName, change.IsOnline);
+        }
+    }
+
+    private void ApplyProductServiceConsoleEffects(
+        Guid serverId,
+        IReadOnlyList<ProductConsoleEntry> entries,
+        Dispatcher? dispatcher)
+    {
+        foreach (var entry in entries)
+        {
+            var isServerOutput = entry.Stream is ProductConsoleStream.StandardOutput
+                or ProductConsoleStream.StandardError;
+            if (isServerOutput && MinecraftServerReadinessDetector.IsReadyLine(entry.Text))
+            {
+                MarkPendingModpackSessionHealthy(serverId, entry.SessionId, "Minecraft Done");
+            }
+
+            if (isServerOutput &&
+                !_pendingSaveFlushes.IsEmpty &&
+                entry.Text.Length <= 4096 &&
+                entry.Text.Contains("saved", StringComparison.OrdinalIgnoreCase) &&
+                SaveCompletionPattern.IsMatch(entry.Text) &&
+                _pendingSaveFlushes.TryGetValue((serverId, entry.SessionId), out var saveCompletion))
+            {
+                saveCompletion.TrySetResult();
+            }
+
+            if (!isServerOutput ||
+                !_playerPresenceSessions.TryGetValue(serverId, out var activeSession) ||
+                activeSession != entry.SessionId)
+            {
+                continue;
+            }
+
+            var coreType = _playerPresenceCoreTypes.TryGetValue(serverId, out var configuredCoreType)
+                ? configuredCoreType
+                : CoreType.Unknown;
+            if (!PlayerPresenceEventParser.TryParse(entry.Text, coreType, out var presenceChange))
+            {
+                continue;
+            }
+
+            if (dispatcher is null)
+            {
+                if (_playerPresenceBuffer.Apply(serverId, entry.SessionId, presenceChange))
+                {
+                    Servers.FirstOrDefault(item => item.Id == serverId)?
+                        .UpdatePlayerPresence(presenceChange.PlayerName, presenceChange.IsOnline);
+                }
+            }
+            else
+            {
+                EnqueuePresenceChange(dispatcher, serverId, entry.SessionId, presenceChange);
+            }
         }
     }
 
@@ -2055,9 +2501,18 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             }
         }
         _sessionServicesCancellation.Cancel();
+        CancellationTokenSource? consoleSubscriptionCancellation;
+        lock (_productServiceConsoleSubscriptionSync)
+        {
+            consoleSubscriptionCancellation = _productServiceConsoleSubscriptionCancellation;
+        }
+        TryCancelProductServiceConsoleSubscription(consoleSubscriptionCancellation);
         try
         {
-            await Task.WhenAll(_productServicePollingTask, _legacyServiceMigrationTask);
+            await Task.WhenAll(
+                _productServicePollingTask,
+                _productServiceConsoleSubscriptionTask,
+                _legacyServiceMigrationTask);
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -2437,7 +2892,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 await PersistServiceMetadataAsync(model, cancellationToken).ConfigureAwait(false);
             }
 
-            var snapshot = await controller.RefreshServerAsync(model.Id, cancellationToken)
+            var snapshot = await controller.RefreshServerForUiAsync(
+                    model.Id,
+                    includeConsole: !SupportsProductServiceConsoleWait,
+                    cancellationToken)
                 .ConfigureAwait(false);
             await ApplyProductServiceSnapshotOnUiAsync(snapshot, cancellationToken).ConfigureAwait(false);
             _pendingProductServiceImports.TryRemove(model.Id, out _);
@@ -5703,7 +6161,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _dirtyProductServiceRegistrations.Remove(server.Id);
         _instanceModels.TryRemove(server.Id, out _);
         _playerPresenceCoreTypes.TryRemove(server.Id, out _);
-        _playerPresenceSessions.Remove(server.Id);
+        _playerPresenceSessions.TryRemove(server.Id, out _);
+        _playerPresenceBuffer.RemoveInstance(server.Id);
+        _pendingConsoleLines.TryRemove(server.Id, out _);
         Servers.Remove(server);
         if (wasSelected)
         {
@@ -6534,6 +6994,15 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private void QueuePlayerRegistryLoadIfNeeded(ServerInstanceViewModel server)
     {
         if (_loadedPlayerRegistries.ContainsKey(server.Id)) return;
+        _lastPlayerRegistryReload = LoadSelectedPlayerRegistryAsync(server);
+    }
+
+    private void QueueAuthoritativePlayerRegistryReload(ServerInstanceViewModel server)
+    {
+        // A console history gap means join/leave events may have been discarded. Invalidate the
+        // cached event-derived roster and reconcile it with the Service's authoritative snapshot,
+        // even when the Players tab is not currently open.
+        _loadedPlayerRegistries.TryRemove(server.Id, out _);
         _lastPlayerRegistryReload = LoadSelectedPlayerRegistryAsync(server);
     }
 
@@ -9587,7 +10056,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             }
             else
             {
-                _playerPresenceSessions.Remove(e.InstanceId);
+                _playerPresenceSessions.TryRemove(e.InstanceId, out _);
                 server.UpdateOnlinePlayers([]);
             }
 
@@ -10455,14 +10924,55 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         => _scheduledResourceSampleDrains.ContainsKey(instanceId);
 
     private void EnqueueConsoleLine(Dispatcher dispatcher, ConsoleLineReceivedEventArgs eventArgs)
-    {
-        var queue = _pendingConsoleLines.GetOrAdd(
+        => EnqueueConsoleLines(
+            dispatcher,
             eventArgs.InstanceId,
-            static _ => new BoundedDropOldestQueue<PendingConsoleLine>(MaximumPendingConsoleLinesPerInstance));
-        queue.Enqueue(new PendingConsoleLine(eventArgs.SessionId, eventArgs.Line));
-        if (_scheduledConsoleDrains.TryAdd(eventArgs.InstanceId, 0))
+            [new PendingConsoleLine(eventArgs.SessionId, eventArgs.Line)]);
+
+    private void EnqueueProductServiceConsoleLines(
+        Dispatcher dispatcher,
+        Guid instanceId,
+        IReadOnlyList<ProductConsoleEntry> entries,
+        IReadOnlyList<ConsoleLine> lines)
+    {
+        if (entries.Count != lines.Count)
         {
-            ScheduleConsoleDrain(dispatcher, eventArgs.InstanceId, queue);
+            throw new InvalidDataException("Console entry mapping count changed unexpectedly.");
+        }
+
+        var pending = new PendingConsoleLine[lines.Count];
+        for (var index = 0; index < lines.Count; index++)
+        {
+            pending[index] = new PendingConsoleLine(
+                entries[index].SessionId,
+                lines[index],
+                PreserveAcrossSessions: true);
+        }
+
+        EnqueueConsoleLines(dispatcher, instanceId, pending);
+    }
+
+    private void EnqueueConsoleLines(
+        Dispatcher dispatcher,
+        Guid instanceId,
+        IReadOnlyList<PendingConsoleLine> lines)
+    {
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        var queue = _pendingConsoleLines.GetOrAdd(
+            instanceId,
+            static _ => new BoundedDropOldestQueue<PendingConsoleLine>(MaximumPendingConsoleLinesPerInstance));
+        foreach (var line in lines)
+        {
+            queue.Enqueue(line);
+        }
+
+        if (_scheduledConsoleDrains.TryAdd(instanceId, 0))
+        {
+            ScheduleConsoleDrain(dispatcher, instanceId, queue);
         }
     }
 
@@ -10534,11 +11044,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         var server = Servers.FirstOrDefault(item => item.Id == instanceId);
         var batch = queue.Take(ConsoleDrainBatchSize);
-        if (server is not null && _latestConsoleSessions.TryGetValue(instanceId, out var currentSessionId))
+        if (server is not null)
         {
-            server.AppendConsoleBatch(batch
-                .Where(item => item.SessionId == currentSessionId)
-                .Select(item => item.Line));
+            var hasCurrentLocalSession = _latestConsoleSessions.TryGetValue(
+                instanceId,
+                out var currentSessionId);
+            server.AppendConsoleBatch(
+                batch
+                    .Where(item => item.PreserveAcrossSessions ||
+                                   (hasCurrentLocalSession && item.SessionId == currentSessionId))
+                    .Select(item => item.Line));
         }
 
         if (queue.Count > 0)
@@ -11118,6 +11633,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private readonly record struct PendingConsoleLine(Guid SessionId, ConsoleLine Line);
+    private readonly record struct PendingConsoleLine(
+        Guid SessionId,
+        ConsoleLine Line,
+        bool PreserveAcrossSessions = false);
 
 }

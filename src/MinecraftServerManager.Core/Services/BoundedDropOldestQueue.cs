@@ -41,6 +41,15 @@ public sealed class BoundedDropOldestQueue<T>
         }
     }
 
+    /// <summary>Atomically discards every queued item.</summary>
+    public void Clear()
+    {
+        lock (_sync)
+        {
+            _items.Clear();
+        }
+    }
+
     /// <summary>Atomically removes and returns up to <paramref name="maximumItems"/> oldest items.</summary>
     public IReadOnlyList<T> Take(int maximumItems)
     {

@@ -414,6 +414,16 @@ public sealed class ProductIpcMessageProcessor
                     "Service-owned server.properties editing requires API version 1.7 or newer."));
         }
 
+        if (request.Method == ProductIpcProtocol.ServerConsoleWaitMethod &&
+            negotiation.SelectedVersion.Value.CompareTo(ProductApiProtocol.ConsoleWaitVersion) < 0)
+        {
+            return Failure(
+                request.RequestId,
+                new ProductIpcError(
+                    "protocol.method_version_unsupported",
+                    "Event-driven console waits require API version 1.11 or newer."));
+        }
+
         if (_runtime is null)
         {
             return Failure(
@@ -551,7 +561,18 @@ public sealed class ProductIpcMessageProcessor
                     Console = _runtime.ReadConsole(
                         request.ServerId!.Value,
                         request.ConsoleCursor ?? 0,
-                        request.ConsoleLimit ?? 50),
+                        request.ConsoleLimit ?? ProductConsoleContract.MaximumPageSize),
+                },
+                ProductIpcProtocol.ServerConsoleWaitMethod => Success(request.RequestId) with
+                {
+                    Console = await _runtime.WaitForConsoleAsync(
+                            request.ServerId!.Value,
+                            request.ConsoleCursor ?? 0,
+                            request.ConsoleLimit ?? ProductConsoleContract.MaximumPageSize,
+                            request.ConsoleWaitTimeoutMilliseconds ??
+                                ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+                            cancellationToken)
+                        .ConfigureAwait(false),
                 },
                 ProductIpcProtocol.ServerPlayersMethod => Success(request.RequestId) with
                 {

@@ -84,8 +84,36 @@ public sealed class ProductIpcContractTests
         Assert.Equal(new ProductApiVersion(1, 8), ProductApiProtocol.ServiceInstanceSettingsVersion);
         Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.RuntimeStatusVersion);
         Assert.Equal(new ProductApiVersion(1, 10), ProductApiProtocol.KnownPlayerRosterVersion);
-        Assert.Equal(ProductApiProtocol.KnownPlayerRosterVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 11), ProductApiProtocol.ConsoleWaitVersion);
+        Assert.Equal(ProductApiProtocol.ConsoleWaitVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void ConsoleWait_RequiresServerAndBoundedMethodSpecificTimeout()
+    {
+        var missingServer = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.ServerConsoleWaitMethod,
+            ConsoleCursor = 0,
+            ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        };
+        var valid = missingServer with { ServerId = Guid.NewGuid() };
+        var tooLong = valid with
+        {
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.MaximumWaitTimeoutMilliseconds + 1,
+        };
+        var unexpected = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.HandshakeMethod,
+            ConsoleWaitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        };
+
+        Assert.Equal("protocol.server_id_required", ProductIpcRequestValidator.Validate(missingServer)?.Code);
+        Assert.Null(ProductIpcRequestValidator.Validate(valid));
+        Assert.Equal("protocol.console_wait_invalid", ProductIpcRequestValidator.Validate(tooLong)?.Code);
+        Assert.Equal("protocol.console_wait_unexpected", ProductIpcRequestValidator.Validate(unexpected)?.Code);
     }
 
     [Fact]

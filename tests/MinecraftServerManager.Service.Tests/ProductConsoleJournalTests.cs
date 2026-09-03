@@ -49,6 +49,75 @@ public sealed class ProductConsoleJournalTests
     }
 
     [Fact]
+    public async Task Wait_ReturnsImmediatelyWhenCursorCanReplayRetainedEntries()
+    {
+        var journal = new ProductConsoleJournal(capacity: 10);
+        var serverId = Guid.NewGuid();
+        journal.Add(Guid.NewGuid(), new ConsoleLine(DateTimeOffset.UtcNow, "already available"));
+
+        var page = await journal.WaitForChangeAsync(
+            serverId,
+            afterCursor: 0,
+            limit: 10,
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal("already available", Assert.Single(page.Entries).Text);
+        Assert.Equal(1, page.NextCursor);
+    }
+
+    [Fact]
+    public async Task Wait_WakesWhenCursorAdvancesWithoutPolling()
+    {
+        var journal = new ProductConsoleJournal(capacity: 10);
+        var serverId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+
+        var waiting = journal.WaitForChangeAsync(
+            serverId,
+            afterCursor: 0,
+            limit: 10,
+            TimeSpan.FromSeconds(2));
+        await Task.Yield();
+        journal.Add(sessionId, new ConsoleLine(DateTimeOffset.UtcNow, "live"));
+
+        var page = await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("live", Assert.Single(page.Entries).Text);
+    }
+
+    [Fact]
+    public async Task Wait_ExpiresAsSuccessfulEmptyCursorPage()
+    {
+        var journal = new ProductConsoleJournal(capacity: 10);
+
+        var page = await journal.WaitForChangeAsync(
+            Guid.NewGuid(),
+            afterCursor: 0,
+            limit: 10,
+            TimeSpan.FromMilliseconds(ProductConsoleContract.MinimumWaitTimeoutMilliseconds));
+
+        Assert.Empty(page.Entries);
+        Assert.Equal(0, page.NextCursor);
+        Assert.False(page.HistoryGap);
+    }
+
+    [Fact]
+    public async Task Wait_PropagatesCallerCancellation()
+    {
+        var journal = new ProductConsoleJournal(capacity: 10);
+        using var cancellation = new CancellationTokenSource();
+        var waiting = journal.WaitForChangeAsync(
+            Guid.NewGuid(),
+            afterCursor: 0,
+            limit: 10,
+            TimeSpan.FromSeconds(2),
+            cancellation.Token);
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+    }
+
+    [Fact]
     public async Task MaximumConsolePage_FitsBoundedIpcResponseFrame()
     {
         var journal = new ProductConsoleJournal(capacity: 50);

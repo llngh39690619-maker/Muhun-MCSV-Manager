@@ -229,6 +229,44 @@ public sealed class ProductServerRuntimeTests
     }
 
     [Fact]
+    public async Task IpcConsoleWait_WakesOnRuntimeOutputAndRejectsPre111Negotiation()
+    {
+        var fixture = await RuntimeFixture.CreateAsync();
+        await using var runtime = fixture.Runtime;
+        var state = new ProductServiceState(TimeProvider.System);
+        state.Initialize(Guid.NewGuid());
+        state.MarkReady();
+        var processor = new ProductIpcMessageProcessor(state, runtime);
+        await runtime.StartAsync(fixture.Registration.Id);
+
+        var request = Request(ProductIpcProtocol.ServerConsoleWaitMethod) with
+        {
+            ServerId = fixture.Registration.Id,
+            ClientMinimumApiVersion = ProductApiProtocol.ConsoleWaitVersion,
+            ConsoleCursor = 0,
+            ConsoleLimit = ProductConsoleContract.MaximumPageSize,
+            ConsoleWaitTimeoutMilliseconds = 2_000,
+        };
+        var waiting = processor.ProcessAsync(request, default);
+        Assert.Single(fixture.Factory.Processes).EmitOutput("event driven");
+
+        var response = await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(response.Success);
+        Assert.Equal("event driven", Assert.Single(response.Console!.Entries).Text);
+
+        var oldClient = await processor.ProcessAsync(
+            request with
+            {
+                RequestId = Guid.NewGuid(),
+                ClientMinimumApiVersion = ProductApiProtocol.MinimumSupportedVersion,
+                ClientMaximumApiVersion = ProductApiProtocol.KnownPlayerRosterVersion,
+            },
+            default);
+        Assert.False(oldClient.Success);
+        Assert.Equal("protocol.method_version_unsupported", oldClient.Error?.Code);
+    }
+
+    [Fact]
     public async Task IpcPlayerList_ProjectsBoundedPresenceWithoutPollingTheProcess()
     {
         var fixture = await RuntimeFixture.CreateAsync();

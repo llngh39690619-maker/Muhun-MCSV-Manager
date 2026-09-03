@@ -16,7 +16,88 @@ namespace MinecraftServerManager.App.Tests;
 public sealed class ConsoleDispatchPerformanceTests
 {
     [Fact]
-    public async Task TenThousandLineBurst_HasBoundedBacklogAndOneUiCommitOnRealSta()
+    public async Task CancelledServiceWaitGeneration_DoesNotCommitCursorOrPlayerEffectsOnRealSta()
+    {
+        using var temporary = new AppearanceThemeServiceTests.TestDirectory();
+        Directory.CreateDirectory(temporary.Path);
+        MainWindowViewModel? main = null;
+        MainWindowProductServiceConsoleRealtimeTests.RealtimeServiceClient? client = null;
+        Task initialization = Task.CompletedTask;
+        using var releaseDispatcher = new ManualResetEventSlim();
+
+        try
+        {
+            WpfStaTestHost.Run(() =>
+            {
+                client = new MainWindowProductServiceConsoleRealtimeTests.RealtimeServiceClient(
+                    serverCount: 2)
+                {
+                    ServersRunning = true,
+                };
+                main = MainWindowViewModel.CreateServiceOwned(
+                    new ApplicationPaths(temporary.Path),
+                    client);
+                initialization = main.InitializeAsync(allowInteractiveAutoImport: false);
+            });
+            await initialization.WaitAsync(TimeSpan.FromSeconds(3));
+
+            var first = main!.Servers[0];
+            var second = main.Servers[1];
+            await client!.WaitUntilConsoleWaitStartsAsync(first.Id);
+
+            var dispatcherBlocked = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            WpfStaTestHost.Run(() =>
+            {
+                _ = Application.Current!.Dispatcher.BeginInvoke(
+                    () =>
+                    {
+                        dispatcherBlocked.TrySetResult();
+                        _ = releaseDispatcher.Wait(TimeSpan.FromSeconds(5));
+                    },
+                    DispatcherPriority.Send);
+            });
+            await dispatcherBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            client.Publish(
+                first.Id,
+                "[12:34:56] [Server thread/INFO]: Alice joined the game");
+            await client.WaitUntilConsoleWaitResponseReturnsAsync(first.Id);
+            await Task.Delay(50);
+
+            // Simulate the UI selection changing after the pipe response arrived but before the
+            // dispatcher was able to accept it. The cancelled generation must have no effects.
+            main.SelectedServer = second;
+            await client.WaitUntilConsoleWaitStartsAsync(second.Id);
+            releaseDispatcher.Set();
+
+            WpfStaTestHost.Run(() => main.SelectedServer = first);
+            await WaitUntilAsync(
+                () => client.ConsoleWaitRequests.Count(request => request.ServerId == first.Id) >= 2,
+                TimeSpan.FromSeconds(2));
+
+            var resumedRequest = client.ConsoleWaitRequests
+                .Where(request => request.ServerId == first.Id)
+                .Last();
+            Assert.Equal(0, resumedRequest.AfterCursor);
+            WpfStaTestHost.Run(() =>
+            {
+                Assert.DoesNotContain(first.ConsoleLines, line => line.Text.Contains("Alice"));
+                Assert.DoesNotContain(first.Players, player => player.Name == "Alice");
+            });
+        }
+        finally
+        {
+            releaseDispatcher.Set();
+            if (main is not null)
+            {
+                await main.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TenThousandLineBurst_HasBoundedBacklogAndChunkedUiCommitsOnRealSta()
     {
         using var temporary = new AppearanceThemeServiceTests.TestDirectory();
         Directory.CreateDirectory(temporary.Path);
@@ -36,7 +117,7 @@ public sealed class ConsoleDispatchPerformanceTests
                         Name = "Burst Server",
                         DirectoryPath = temporary.Path,
                         ServerJarPath = "server.jar",
-                        SeparateDiagnosticOutput = true
+                        SeparateDiagnosticOutput = false
                     },
                     static (_, _) => Task.CompletedTask);
                 main.Servers.Add(server);
@@ -65,7 +146,12 @@ public sealed class ConsoleDispatchPerformanceTests
                 var timestamp = DateTimeOffset.UtcNow;
                 var consoleEvents = new List<NotifyCollectionChangedEventArgs>();
                 var diagnosticEvents = new List<NotifyCollectionChangedEventArgs>();
-                server.ConsoleLines.CollectionChanged += (_, eventArgs) => consoleEvents.Add(eventArgs);
+                var consoleCountsAtCommit = new List<int>();
+                server.ConsoleLines.CollectionChanged += (_, eventArgs) =>
+                {
+                    consoleEvents.Add(eventArgs);
+                    consoleCountsAtCommit.Add(server.ConsoleLines.Count);
+                };
                 server.DiagnosticLines.CollectionChanged += (_, eventArgs) => diagnosticEvents.Add(eventArgs);
 
                 var burstStopwatch = Stopwatch.StartNew();
@@ -103,12 +189,15 @@ public sealed class ConsoleDispatchPerformanceTests
                     () => !main.HasScheduledConsoleDrain(instanceId),
                     TimeSpan.FromSeconds(5)));
 
-                Assert.Equal(1_000, server.ConsoleLines.Count);
+                Assert.Equal(2_000, server.ConsoleLines.Count);
                 Assert.Equal(1_000, server.DiagnosticLines.Count);
                 Assert.Equal("line-8000", server.ConsoleLines[0].Text);
                 Assert.Equal("line-9999", server.DiagnosticLines[^1].Text);
-                Assert.Single(consoleEvents);
-                Assert.Single(diagnosticEvents);
+                Assert.True(
+                    consoleEvents.Count >= 20,
+                    $"Expected a 4,096-line catch-up to use small UI batches, but observed {consoleEvents.Count} commit(s).");
+                Assert.Equal(consoleEvents.Count, diagnosticEvents.Count);
+                Assert.InRange(consoleCountsAtCommit[0], 1, 200);
                 Assert.All(consoleEvents.Concat(diagnosticEvents), eventArgs =>
                     Assert.Equal(NotifyCollectionChangedAction.Reset, eventArgs.Action));
                 Assert.Equal(0, main.GetPendingConsoleLineCount(instanceId));
@@ -240,6 +329,20 @@ public sealed class ConsoleDispatchPerformanceTests
         timer.Start();
         Dispatcher.PushFrame(frame);
         return predicate();
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+        while (!predicate())
+        {
+            if (Stopwatch.GetTimestamp() >= deadline)
+            {
+                throw new TimeoutException("The expected Service console transition was not observed.");
+            }
+
+            await Task.Delay(10);
+        }
     }
 
     private static void PumpDispatcherFor(TimeSpan duration)

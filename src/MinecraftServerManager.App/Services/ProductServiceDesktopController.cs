@@ -10,6 +10,7 @@ internal sealed record ProductServiceServerProjection(
     ProductServerStatus Status,
     ProductServerRegistration Registration,
     bool RegistrationChanged,
+    bool IncludesConsole,
     ProductConsolePage Console,
     bool ReplaceConsole);
 
@@ -109,6 +110,7 @@ internal sealed class ProductServiceDesktopController :
     private readonly ConcurrentDictionary<Guid, long> _consoleCursors = [];
     private readonly ConcurrentDictionary<Guid, ProductServerRegistration> _registrations = [];
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly SemaphoreSlim _consoleWaitGate = new(1, 1);
     private int _disposed;
 
     public ProductServiceDesktopController(
@@ -124,7 +126,11 @@ internal sealed class ProductServiceDesktopController :
 
     public async Task<ProductServiceDesktopSnapshot> RefreshAsync(
         CancellationToken cancellationToken = default)
-        => await RefreshCoreAsync(consoleServerIds: null, cancellationToken).ConfigureAwait(false);
+        => await RefreshCoreAsync(
+                consoleServerIds: null,
+                commitConsoleCursor: true,
+                cancellationToken)
+            .ConfigureAwait(false);
 
     /// <summary>
     /// Production polling reads status pages for every row but console data only for the visible
@@ -139,7 +145,141 @@ internal sealed class ProductServiceDesktopController :
         IReadOnlySet<Guid> ids = consoleServerId is { } id && id != Guid.Empty
             ? new HashSet<Guid> { id }
             : new HashSet<Guid>();
-        return await RefreshCoreAsync(ids, cancellationToken).ConfigureAwait(false);
+        // The production UI commits each console page only after its dispatcher accepts the
+        // corresponding projection. This prevents a cancelled/stale UI transition from consuming
+        // lines permanently. RefreshAsync retains its eager-commit compatibility contract.
+        return await RefreshCoreAsync(ids, commitConsoleCursor: false, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the single accepted cursor shared by event-driven waits and legacy console reads.
+    /// Fetching a page never changes this value on the production projection path.
+    /// </summary>
+    internal long GetAcceptedConsoleCursor(Guid serverId)
+    {
+        if (serverId == Guid.Empty)
+        {
+            throw new ArgumentException("Server id must not be empty.", nameof(serverId));
+        }
+
+        return _consoleCursors.GetValueOrDefault(serverId);
+    }
+
+    /// <summary>
+    /// Atomically commits a validated page at the UI acceptance boundary. Competing wait and
+    /// legacy reads can fetch the same cursor, but only the first accepted page advances it.
+    /// History-gap pages may intentionally move a stale cursor backwards to the retained tail.
+    /// </summary>
+    internal bool TryAcceptConsolePage(ProductConsolePage page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (page.ServerId == Guid.Empty || page.RequestedAfterCursor < 0 || page.NextCursor < 0)
+        {
+            throw new InvalidDataException("Service returned an invalid console cursor page.");
+        }
+
+        while (true)
+        {
+            var hasCurrent = _consoleCursors.TryGetValue(page.ServerId, out var current);
+            if (!hasCurrent)
+            {
+                current = 0;
+            }
+
+            if (page.RequestedAfterCursor != current)
+            {
+                return false;
+            }
+
+            if (page.NextCursor == current)
+            {
+                return true;
+            }
+
+            if (hasCurrent)
+            {
+                if (_consoleCursors.TryUpdate(page.ServerId, page.NextCursor, current))
+                {
+                    return true;
+                }
+            }
+            else if (_consoleCursors.TryAdd(page.ServerId, page.NextCursor))
+            {
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reports whether the connected Service negotiated the event-driven console-wait capability.
+    /// Callers can retain the bounded polling path when an older compatible Service is active.
+    /// </summary>
+    public static bool SupportsConsoleWait(ProductServiceConnectionResult connection)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        if (!connection.IsConnected || connection.Handshake?.Protocol is not { Ready: true } protocol ||
+            protocol.MinimumApiVersion.CompareTo(protocol.ApiVersion) > 0)
+        {
+            return false;
+        }
+
+        var negotiation = ProductApiProtocol.Negotiate(
+            protocol.MinimumApiVersion,
+            protocol.ApiVersion);
+        return negotiation.IsCompatible &&
+               negotiation.SelectedVersion is { } selected &&
+               selected.CompareTo(ProductApiProtocol.ConsoleWaitVersion) >= 0;
+    }
+
+    /// <summary>
+    /// Waits independently of the status-refresh gate so one idle console subscription never
+    /// delays the two-second status projection. Cursor ownership remains with the caller, which
+    /// lets a selection-generation coordinator commit a cursor only after accepting the page into
+    /// its bounded UI buffer.
+    /// </summary>
+    public async Task<ProductConsolePage> WaitForConsoleAsync(
+        Guid serverId,
+        long afterCursor,
+        int limit = ProductConsoleContract.MaximumPageSize,
+        int waitTimeoutMilliseconds = ProductConsoleContract.DefaultWaitTimeoutMilliseconds,
+        CancellationToken cancellationToken = default)
+    {
+        if (serverId == Guid.Empty)
+        {
+            throw new ArgumentException("Server id must not be empty.", nameof(serverId));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(afterCursor);
+        if (limit is < 1 or > ProductConsoleContract.MaximumPageSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        }
+
+        if (!ProductConsoleContract.IsValidWaitTimeout(waitTimeoutMilliseconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(waitTimeoutMilliseconds));
+        }
+
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        await _consoleWaitGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            var page = await _client.WaitForConsoleAsync(
+                    serverId,
+                    afterCursor,
+                    limit,
+                    waitTimeoutMilliseconds,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            ValidateConsoleWaitPage(page, serverId, afterCursor, limit);
+            return page;
+        }
+        finally
+        {
+            _consoleWaitGate.Release();
+        }
     }
 
     /// <summary>
@@ -150,6 +290,40 @@ internal sealed class ProductServiceDesktopController :
     public async Task<ProductServiceDesktopSnapshot> RefreshServerAsync(
         Guid serverId,
         CancellationToken cancellationToken = default)
+        => await RefreshServerAsync(serverId, includeConsole: true, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<ProductServiceDesktopSnapshot> RefreshServerAsync(
+        Guid serverId,
+        bool includeConsole,
+        CancellationToken cancellationToken = default)
+        => await RefreshServerCoreAsync(
+                serverId,
+                includeConsole,
+                commitConsoleCursor: true,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// UI-specific single-row refresh whose console cursor is committed later by
+    /// <see cref="TryAcceptConsolePage"/> on the dispatcher.
+    /// </summary>
+    internal async Task<ProductServiceDesktopSnapshot> RefreshServerForUiAsync(
+        Guid serverId,
+        bool includeConsole,
+        CancellationToken cancellationToken = default)
+        => await RefreshServerCoreAsync(
+                serverId,
+                includeConsole,
+                commitConsoleCursor: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task<ProductServiceDesktopSnapshot> RefreshServerCoreAsync(
+        Guid serverId,
+        bool includeConsole,
+        bool commitConsoleCursor,
+        CancellationToken cancellationToken)
     {
         if (serverId == Guid.Empty)
         {
@@ -177,15 +351,26 @@ internal sealed class ProductServiceDesktopController :
                 _registrations[serverId] = registration;
 
                 var requestedCursor = _consoleCursors.GetValueOrDefault(serverId);
-                var console = await _client.ReadConsoleAsync(
+                var console = includeConsole
+                    ? await _client.ReadConsoleAsync(
+                            serverId,
+                            requestedCursor,
+                            ConsolePageSize,
+                            cancellationToken)
+                        .ConfigureAwait(false)
+                    : new ProductConsolePage(
                         serverId,
                         requestedCursor,
-                        ConsolePageSize,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                        requestedCursor,
+                        requestedCursor,
+                        HistoryGap: false,
+                        Entries: []);
                 ValidateProjection(status.Server, status, console, requestedCursor);
-                _consoleCursors[serverId] = console.NextCursor;
-
+                if (includeConsole && commitConsoleCursor && !TryAcceptConsolePage(console))
+                {
+                    throw new InvalidDataException(
+                        "Console cursor changed before the compatibility refresh was committed.");
+                }
                 ProductServiceServerProjection[] projection =
                 [
                     new(
@@ -193,8 +378,9 @@ internal sealed class ProductServiceDesktopController :
                         status,
                         registration,
                         true,
+                        includeConsole,
                         console,
-                        console.HistoryGap),
+                        includeConsole && console.HistoryGap),
                 ];
                 return new ProductServiceDesktopSnapshot(
                     connection,
@@ -233,6 +419,7 @@ internal sealed class ProductServiceDesktopController :
 
     private async Task<ProductServiceDesktopSnapshot> RefreshCoreAsync(
         IReadOnlySet<Guid>? consoleServerIds,
+        bool commitConsoleCursor,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -299,17 +486,22 @@ internal sealed class ProductServiceDesktopController :
                             HistoryGap: false,
                             Entries: []);
                     ValidateProjection(summary, status, console, requestedCursor);
-                    if (shouldReadConsole)
+                    if (shouldReadConsole && commitConsoleCursor)
                     {
-                        _consoleCursors[summary.Id] = console.NextCursor;
+                        if (!TryAcceptConsolePage(console))
+                        {
+                            throw new InvalidDataException(
+                                "Console cursor changed before the compatibility refresh was committed.");
+                        }
                     }
                     projections.Add(new ProductServiceServerProjection(
                         status.Server,
                         status,
                         registration,
                         registrationChanged,
+                        shouldReadConsole,
                         console,
-                        console.HistoryGap));
+                        shouldReadConsole && console.HistoryGap));
                 }
 
                 return new ProductServiceDesktopSnapshot(connection, projections.AsReadOnly());
@@ -686,8 +878,11 @@ internal sealed class ProductServiceDesktopController :
         // while another continuation can still release it.
         await _refreshGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         _refreshGate.Release();
+        await _consoleWaitGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        _consoleWaitGate.Release();
         await _client.DisposeAsync().ConfigureAwait(false);
         _refreshGate.Dispose();
+        _consoleWaitGate.Dispose();
     }
 
     private static void ValidateProjection(
@@ -715,6 +910,58 @@ internal sealed class ProductServiceDesktopController :
                 console.Entries.Select(entry => entry.Cursor).Order()))
         {
             throw new InvalidDataException("Service returned an invalid console cursor page.");
+        }
+    }
+
+    private static void ValidateConsoleWaitPage(
+        ProductConsolePage? page,
+        Guid expectedServerId,
+        long requestedCursor,
+        int requestedLimit)
+    {
+        if (page is null ||
+            page.ServerId != expectedServerId ||
+            page.RequestedAfterCursor != requestedCursor ||
+            page.OldestAvailableCursor < 1 ||
+            page.NextCursor < 0 ||
+            page.OldestAvailableCursor - 1 > page.NextCursor ||
+            page.Entries is null ||
+            page.Entries.Count > requestedLimit)
+        {
+            throw new InvalidDataException("Service returned an invalid console wait page.");
+        }
+
+        var cursorFallsBeforeHistory = requestedCursor < page.OldestAvailableCursor - 1;
+        var cursorFallsAfterPage = requestedCursor > page.NextCursor;
+        if (page.HistoryGap != (cursorFallsBeforeHistory || cursorFallsAfterPage))
+        {
+            throw new InvalidDataException("Service returned an invalid console wait page.");
+        }
+
+        var previousCursor = page.HistoryGap
+            ? page.OldestAvailableCursor - 1
+            : requestedCursor;
+        foreach (var entry in page.Entries)
+        {
+            if (entry is null ||
+                entry.Cursor <= previousCursor ||
+                entry.Cursor > page.NextCursor ||
+                entry.SessionId == Guid.Empty ||
+                entry.Text is null ||
+                entry.Text.Length > ProductConsoleContract.MaximumTextCharacters ||
+                !Enum.IsDefined(entry.Stream) ||
+                !Enum.IsDefined(entry.Severity))
+            {
+                throw new InvalidDataException("Service returned an invalid console wait page.");
+            }
+
+            previousCursor = entry.Cursor;
+        }
+
+        if ((page.Entries.Count > 0 && page.Entries[^1].Cursor != page.NextCursor) ||
+            (page.Entries.Count == 0 && !page.HistoryGap && page.NextCursor != requestedCursor))
+        {
+            throw new InvalidDataException("Service returned an invalid console wait page.");
         }
     }
 

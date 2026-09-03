@@ -17,7 +17,7 @@ public sealed class PendingProductServiceProjectionContractTests
             "private void ApplyProductServiceSnapshot(",
             StringComparison.Ordinal);
         var nextMethod = source.IndexOf(
-            "private static void ApplyProductServiceStatus(",
+            "private void ApplyProductServiceStatus(",
             methodStart,
             StringComparison.Ordinal);
         Assert.True(methodStart >= 0 && nextMethod > methodStart);

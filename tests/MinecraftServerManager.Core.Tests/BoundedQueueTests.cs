@@ -53,6 +53,20 @@ public sealed class BoundedDropOldestQueueTests
     }
 
     [Fact]
+    public void Clear_AtomicallyDiscardsPendingItemsAndAllowsReuse()
+    {
+        var queue = new BoundedDropOldestQueue<int>(3);
+        queue.Enqueue(1);
+        queue.Enqueue(2);
+
+        queue.Clear();
+        queue.Enqueue(3);
+
+        Assert.Equal(1, queue.Count);
+        Assert.Equal([3], queue.Take(3));
+    }
+
+    [Fact]
     public void ConcurrentEnqueueAndTake_NeverExceedsCapacity()
     {
         const int capacity = 64;
