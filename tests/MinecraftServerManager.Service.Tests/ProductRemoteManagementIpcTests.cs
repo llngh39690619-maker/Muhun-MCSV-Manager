@@ -79,6 +79,90 @@ public sealed class ProductRemoteManagementIpcTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PersistentRouteTwoPhaseMethods_ForwardOnlyBoundedChallengeFields()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+        var prepared = await _processor.ProcessAsync(
+            Request(ProductIpcProtocol.RemoteAccessRoutePrepareMethod) with
+            {
+                RemoteAccessPublicUrl = publicUrl,
+            },
+            CancellationToken.None);
+        var challenge = Assert.IsType<ProductRemoteAccessRouteChallenge>(
+            prepared.RemoteAccessRouteChallenge);
+        var verifiedAtUtc = challenge.ExpiresAtUtc.AddMinutes(-1);
+
+        var committed = await _processor.ProcessAsync(
+            Request(ProductIpcProtocol.RemoteAccessRouteCommitMethod) with
+            {
+                RemoteAccessOperationId = challenge.OperationId,
+                RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+            },
+            CancellationToken.None);
+        var removalPrepared = await SendAsync(
+            ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod);
+        var removalChallenge = Assert.IsType<ProductRemoteAccessRouteChallenge>(
+            removalPrepared.RemoteAccessRouteChallenge);
+        var removalCommitted = await _processor.ProcessAsync(
+            Request(ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod) with
+            {
+                RemoteAccessOperationId = removalChallenge.OperationId,
+                RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+            },
+            CancellationToken.None);
+
+        Assert.True(prepared.Success);
+        Assert.Equal(publicUrl, challenge.PublicUrl);
+        Assert.Equal(ProductRemoteWebSupervisor.LocalWebPort, challenge.LocalPort);
+        Assert.True(committed.RemoteAccess?.RouteConfigured);
+        Assert.True(committed.RemoteAccess?.RouteStatusCached);
+        Assert.False(committed.RemoteAccess?.FunnelRunning);
+        Assert.False(removalCommitted.RemoteAccess?.DesiredEnabled);
+        Assert.False(removalCommitted.RemoteAccess?.RouteConfigured);
+        Assert.Equal(1, _remoteWeb.PrepareRouteCount);
+        Assert.Equal(1, _remoteWeb.CommitRouteCount);
+        Assert.Equal(1, _remoteWeb.PrepareRemovalCount);
+        Assert.Equal(1, _remoteWeb.CommitRemovalCount);
+        Assert.Equal(publicUrl, _remoteWeb.PreparedPublicUrl);
+        Assert.Equal(challenge.OperationId, _remoteWeb.CommittedOperationId);
+        Assert.Null(_remoteWeb.PreparedRemovalPublicUrl);
+        Assert.Equal(removalChallenge.OperationId, _remoteWeb.CommittedRemovalOperationId);
+    }
+
+    [Fact]
+    public async Task CorruptReceiptRemovalRecovery_ForwardsOnlyCanonicalUrlField()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+
+        var response = await _processor.ProcessAsync(
+            Request(ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod) with
+            {
+                RemoteAccessPublicUrl = publicUrl,
+            },
+            CancellationToken.None);
+
+        Assert.True(response.Success);
+        Assert.Equal(publicUrl, _remoteWeb.PreparedRemovalPublicUrl);
+        Assert.NotNull(response.RemoteAccessRouteChallenge);
+    }
+
+    [Fact]
+    public async Task PersistentRouteMethods_AreRejectedWhenNegotiatedBelowApi112()
+    {
+        var response = await _processor.ProcessAsync(
+            Request(ProductIpcProtocol.RemoteAccessRoutePrepareMethod) with
+            {
+                ClientMaximumApiVersion = ProductApiProtocol.ConsoleWaitVersion,
+                RemoteAccessPublicUrl = "https://x-mcsv.tail123.ts.net/",
+            },
+            CancellationToken.None);
+
+        Assert.False(response.Success);
+        Assert.Equal("protocol.method_version_unsupported", response.Error?.Code);
+        Assert.Equal(0, _remoteWeb.PrepareRouteCount);
+    }
+
+    [Fact]
     public async Task AccountLifecycle_PreservesPermissionsAndRecoverablePin()
     {
         var grants = new[]
@@ -272,6 +356,16 @@ public sealed class ProductRemoteManagementIpcTests : IAsyncLifetime
         public int EnableCount { get; private set; }
         public int DisableCount { get; private set; }
         public int ReconnectCount { get; private set; }
+        public int PrepareRouteCount { get; private set; }
+        public int CommitRouteCount { get; private set; }
+        public int PrepareRemovalCount { get; private set; }
+        public int CommitRemovalCount { get; private set; }
+        public string? PreparedPublicUrl { get; private set; }
+        public Guid? CommittedOperationId { get; private set; }
+        public Guid? CommittedRemovalOperationId { get; private set; }
+        public string? PreparedRemovalPublicUrl { get; private set; }
+        private Guid _routeOperationId;
+        private Guid _removalOperationId;
 
         public ProductRemoteWebStatus Snapshot { get; private set; } = Status(false, false);
 
@@ -294,6 +388,69 @@ public sealed class ProductRemoteManagementIpcTests : IAsyncLifetime
             cancellationToken.ThrowIfCancellationRequested();
             ReconnectCount++;
             return Task.FromResult(Snapshot = Status(true, true));
+        }
+
+        public Task<ProductRemoteAccessRouteChallenge> PrepareRouteAsync(
+            string publicUrl,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PrepareRouteCount++;
+            PreparedPublicUrl = publicUrl;
+            _routeOperationId = Guid.NewGuid();
+            return Task.FromResult(new ProductRemoteAccessRouteChallenge(
+                _routeOperationId,
+                publicUrl,
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                ProductRemoteWebSupervisor.LocalWebPort));
+        }
+
+        public Task<ProductRemoteWebStatus> CommitRouteAsync(
+            Guid operationId,
+            DateTimeOffset verifiedAtUtc,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitRouteCount++;
+            CommittedOperationId = operationId;
+            Assert.Equal(_routeOperationId, operationId);
+            Assert.Equal(TimeSpan.Zero, verifiedAtUtc.Offset);
+            Snapshot = Status(true, running: true) with
+            {
+                FunnelRunning = false,
+                RouteConfigured = true,
+                RouteStatusCached = true,
+                RouteLastVerifiedAtUtc = verifiedAtUtc,
+            };
+            return Task.FromResult(Snapshot);
+        }
+
+        public Task<ProductRemoteAccessRouteChallenge> PrepareRouteRemovalAsync(
+            string? recoveryPublicUrl,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PrepareRemovalCount++;
+            PreparedRemovalPublicUrl = recoveryPublicUrl;
+            _removalOperationId = Guid.NewGuid();
+            return Task.FromResult(new ProductRemoteAccessRouteChallenge(
+                _removalOperationId,
+                recoveryPublicUrl ?? Snapshot.PublicUrl ?? "https://x-mcsv.tail123.ts.net/",
+                DateTimeOffset.UtcNow.AddMinutes(2),
+                ProductRemoteWebSupervisor.LocalWebPort));
+        }
+
+        public Task<ProductRemoteWebStatus> CommitRouteRemovalAsync(
+            Guid operationId,
+            DateTimeOffset verifiedAtUtc,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitRemovalCount++;
+            CommittedRemovalOperationId = operationId;
+            Assert.Equal(_removalOperationId, operationId);
+            Assert.Equal(TimeSpan.Zero, verifiedAtUtc.Offset);
+            return Task.FromResult(Snapshot = Status(false, false));
         }
 
         private static ProductRemoteWebStatus Status(bool desired, bool running)

@@ -301,6 +301,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     private readonly Action<string> _copyText;
     private readonly Action<string> _openUrl;
     private readonly Func<bool> _launchTailscale;
+    private readonly IProductTailscalePersistentFunnelService _persistentFunnel;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly TimeSpan _tailscaleRecoveryPollInterval;
     private readonly TimeSpan _tailscaleRecoveryTimeout;
@@ -331,6 +332,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         Action<string>? copyText = null,
         Action<string>? openUrl = null,
         Func<bool>? launchTailscale = null,
+        IProductTailscalePersistentFunnelService? persistentFunnel = null,
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
         TimeSpan? tailscaleRecoveryPollInterval = null,
         TimeSpan? tailscaleRecoveryTimeout = null,
@@ -370,6 +372,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         _copyText = copyText ?? CopyToClipboard;
         _openUrl = openUrl ?? OpenBrowser;
         _launchTailscale = launchTailscale ?? TailscaleInteractiveLauncher.TryLaunch;
+        _persistentFunnel = persistentFunnel ?? new ProductTailscalePersistentFunnelService();
         _delayAsync = delayAsync ?? ((delay, token) => Task.Delay(delay, token));
         _tailscaleRecoveryPollInterval = recoveryPollInterval;
         _tailscaleRecoveryTimeout = recoveryTimeout;
@@ -417,6 +420,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             OnPropertyChanged(nameof(HostStateText));
             OnPropertyChanged(nameof(FunnelStateText));
             OnPropertyChanged(nameof(LastUpdatedText));
+            OnPropertyChanged(nameof(RouteVerificationText));
             OnPropertyChanged(nameof(RetryText));
             OnPropertyChanged(nameof(LifecycleDiagnosticText));
             OnPropertyChanged(nameof(HasLifecycleDiagnostic));
@@ -432,6 +436,11 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         "blocked" => L("remote.service.state.blocked"),
         "retrying" => L("remote.service.state.retrying"),
         "running" => L("remote.service.state.running"),
+        "configured" => L("remote.service.state.configured"),
+        "configured_cached" => L("remote.service.state.configuredCached"),
+        "awaiting_route_verification" or "awaiting_interactive_route" =>
+            L("remote.service.state.awaitingVerification"),
+        "awaiting_route_removal" => L("remote.service.state.awaitingRemoval"),
         { Length: > 0 } state => state,
         _ => L("remote.service.unknown"),
     };
@@ -444,12 +453,19 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     public string HostStateText => RemoteStatus?.HostRunning == true
         ? L("remote.service.hostRunning")
         : L("remote.service.hostStopped");
-    public string FunnelStateText => RemoteStatus?.FunnelRunning == true
-        ? L("remote.service.funnelConnected")
-        : L("remote.service.funnelDisconnected");
+    public string FunnelStateText => RemoteStatus switch
+    {
+        { FunnelRunning: true } => L("remote.service.funnelConnected"),
+        { RouteConfigured: true, RouteStatusCached: true } =>
+            L("remote.service.funnelConfiguredCached"),
+        _ => L("remote.service.funnelDisconnected"),
+    };
     public string LastUpdatedText => RemoteStatus is null
         ? "—"
         : RemoteStatus.UpdatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    public string RouteVerificationText => RemoteStatus?.RouteLastVerifiedAtUtc is { } verified
+        ? L("remote.service.routeLastVerified", verified.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
+        : string.Empty;
     public string RetryText => RemoteStatus?.NextRetryAtUtc is { } retry
         ? L("remote.service.retryAt", retry.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
         : string.Empty;
@@ -655,18 +671,23 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         });
     }
 
-    private Task StartAsync() => ChangeRuntimeAsync(
-        token => _client.StartRemoteAccessAsync(token),
-        "remote.service.started",
-        requireReady: true);
+    private async Task StartAsync()
+    {
+        CancelTailscaleRecovery();
+        await RunAsync(async cancellationToken =>
+        {
+            var outcome = await ConfigurePersistentRouteAsync(
+                    token => _client.StartRemoteAccessAsync(token),
+                    cancellationToken)
+                .ConfigureAwait(true);
+            StartInteractiveRecoveryWhenRequired(outcome);
+        });
+    }
 
     private Task StopAsync()
     {
         CancelTailscaleRecovery();
-        return ChangeRuntimeAsync(
-            token => _client.StopRemoteAccessAsync(token),
-            "remote.service.stopped",
-            requireReady: false);
+        return RunAsync(StopPersistentRouteAsync);
     }
 
     private async Task ReconnectAsync()
@@ -674,35 +695,209 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         CancelTailscaleRecovery();
         await RunAsync(async cancellationToken =>
         {
-            var status = await _client.ReconnectRemoteAccessAsync(cancellationToken);
-            RemoteStatus = status;
-            if (IsRemoteAccessReady(status))
-            {
-                HasError = false;
-                StatusMessage = L("remote.service.tailscale.connected", status.PublicUrl!);
-                return;
-            }
-
-            HasError = true;
-            var errorCode = GetLifecycleErrorCode(status);
-            if (!RequiresTailscaleLogin(status))
-            {
-                var diagnostic = FormatLifecycleDiagnostic(status);
-                StatusMessage = diagnostic.Length > 0
-                    ? diagnostic
-                    : L("remote.service.lifecycleFailure", errorCode);
-                return;
-            }
-
-            if (!_launchTailscale())
-            {
-                StatusMessage = L("remote.service.tailscale.loginLaunchFailed", errorCode);
-                return;
-            }
-
-            StatusMessage = L("remote.service.tailscale.loginOpening", errorCode);
-            StartTailscaleRecovery();
+            var outcome = await ConfigurePersistentRouteAsync(
+                    token => _client.ReconnectRemoteAccessAsync(token),
+                    cancellationToken)
+                .ConfigureAwait(true);
+            StartInteractiveRecoveryWhenRequired(outcome);
         });
+    }
+
+    private void StartInteractiveRecoveryWhenRequired(PersistentRouteAttempt outcome)
+    {
+        if (outcome != PersistentRouteAttempt.WaitingForTailscaleLogin)
+        {
+            return;
+        }
+
+        const string errorCode = "tailscale.backend_not_running";
+        if (!_launchTailscale())
+        {
+            HasError = true;
+            StatusMessage = L("remote.service.tailscale.loginLaunchFailed", errorCode);
+            return;
+        }
+
+        HasError = true;
+        StatusMessage = L("remote.service.tailscale.loginOpening", errorCode);
+        StartTailscaleRecovery();
+    }
+
+    private async Task<PersistentRouteAttempt> ConfigurePersistentRouteAsync(
+        Func<CancellationToken, Task<ProductRemoteAccessStatus>> requestIntent,
+        CancellationToken cancellationToken)
+    {
+        var intentStatus = await requestIntent(cancellationToken).ConfigureAwait(true);
+        RemoteStatus = intentStatus;
+        if (!intentStatus.DesiredEnabled)
+        {
+            SetLifecycleFailure(intentStatus);
+            return PersistentRouteAttempt.Failed;
+        }
+
+        var identity = await _persistentFunnel.EnsureProductIdentityAsync(cancellationToken)
+            .ConfigureAwait(true);
+        if (!identity.Succeeded || identity.PublicOrigin is null)
+        {
+            var errorCode = identity.ErrorCode ?? "tailscale.hostname_unavailable";
+            HasError = true;
+            StatusMessage = FormatTailscaleDiagnostic(errorCode);
+            return errorCode == "tailscale.backend_not_running"
+                ? PersistentRouteAttempt.WaitingForTailscaleLogin
+                : PersistentRouteAttempt.Failed;
+        }
+
+        var mayReuseExistingRoute = intentStatus.RouteConfigured &&
+                                    TryGetCanonicalPublicOrigin(
+                                        intentStatus.PublicUrl,
+                                        out var recordedOrigin) &&
+                                    SameOrigin(recordedOrigin!, identity.PublicOrigin);
+        var challenge = await _client.PrepareRemoteAccessRouteAsync(
+                identity.PublicOrigin.AbsoluteUri,
+                cancellationToken)
+            .ConfigureAwait(true);
+        ValidateRouteChallenge(challenge, identity.PublicOrigin);
+
+        var route = await _persistentFunnel.EnsureRouteAsync(
+                identity.PublicOrigin,
+                challenge.LocalPort,
+                mayReuseExistingRoute,
+                cancellationToken)
+            .ConfigureAwait(true);
+        if (!route.Succeeded ||
+            route.Disposition != ProductPersistentFunnelDisposition.ExactTarget ||
+            route.VerifiedAtUtc is not { } verifiedAtUtc)
+        {
+            var errorCode = route.ErrorCode ?? "tailscale.funnel_verification_failed";
+            HasError = true;
+            StatusMessage = FormatTailscaleDiagnostic(errorCode);
+            return PersistentRouteAttempt.Failed;
+        }
+
+        ProductRemoteAccessStatus committed;
+        try
+        {
+            committed = await _client.CommitRemoteAccessRouteAsync(
+                    challenge.OperationId,
+                    verifiedAtUtc,
+                    cancellationToken)
+                .ConfigureAwait(true);
+        }
+        catch
+        {
+            if (route.Changed)
+            {
+                // This invocation created the route but the Service did not accept its receipt.
+                // Remove only the still-exact sole configuration; RemoveRouteAsync otherwise
+                // fails closed and the Service keeps the prepared listener bound.
+                _ = await _persistentFunnel.RemoveRouteAsync(
+                        identity.PublicOrigin,
+                        challenge.LocalPort,
+                        CancellationToken.None)
+                    .ConfigureAwait(true);
+            }
+
+            throw;
+        }
+
+        RemoteStatus = committed;
+        if (!IsRemoteAccessReady(committed))
+        {
+            SetLifecycleFailure(committed);
+            return PersistentRouteAttempt.Failed;
+        }
+
+        HasError = false;
+        StatusMessage = L("remote.service.tailscale.connected", committed.PublicUrl!);
+        return PersistentRouteAttempt.Ready;
+    }
+
+    private async Task StopPersistentRouteAsync(CancellationToken cancellationToken)
+    {
+        Uri? publicOrigin;
+        string? recoveryPublicUrl = null;
+        if (string.Equals(
+                RemoteStatus?.ErrorCode,
+                "remote.route_receipt_invalid",
+                StringComparison.Ordinal))
+        {
+            // A corrupt receipt must not make the persistent public route impossible to remove.
+            // Ignore every value from that receipt and recover only the canonical origin from
+            // the active desktop user's trusted Tailscale session.
+            var identity = await _persistentFunnel.EnsureProductIdentityAsync(cancellationToken)
+                .ConfigureAwait(true);
+            if (!identity.Succeeded || identity.PublicOrigin is null)
+            {
+                HasError = true;
+                StatusMessage = FormatTailscaleDiagnostic(
+                    identity.ErrorCode ?? "tailscale.hostname_unavailable");
+                return;
+            }
+
+            publicOrigin = identity.PublicOrigin;
+            recoveryPublicUrl = publicOrigin.AbsoluteUri;
+        }
+        else if (!TryGetCanonicalPublicOrigin(RemoteStatus?.PublicUrl, out publicOrigin))
+        {
+            // No receipt and no prepared canonical origin means there is no route this GUI is
+            // authorized to reset. The Service can safely clear a route-free desired intent.
+            var routeFreeStatus = await _client.StopRemoteAccessAsync(cancellationToken)
+                .ConfigureAwait(true);
+            RemoteStatus = routeFreeStatus;
+            if (routeFreeStatus.DesiredEnabled || routeFreeStatus.HostRunning)
+            {
+                SetLifecycleFailure(routeFreeStatus);
+                return;
+            }
+
+            HasError = false;
+            StatusMessage = L("remote.service.stopped");
+            return;
+        }
+
+        var challenge = await _client.PrepareRemoteAccessRouteRemovalAsync(
+                recoveryPublicUrl,
+                cancellationToken)
+            .ConfigureAwait(true);
+        if (!TryGetCanonicalPublicOrigin(challenge.PublicUrl, out var challengeOrigin))
+        {
+            throw new InvalidDataException("Service returned an invalid Tailscale route-removal origin.");
+        }
+        if (publicOrigin is null)
+        {
+            throw new InvalidDataException("No trusted Tailscale route-removal origin is available.");
+        }
+        ValidateRouteChallenge(challenge, publicOrigin);
+
+        var removal = await _persistentFunnel.RemoveRouteAsync(
+                challengeOrigin!,
+                challenge.LocalPort,
+                cancellationToken)
+            .ConfigureAwait(true);
+        if (!removal.Succeeded ||
+            removal.Disposition != ProductPersistentFunnelDisposition.Absent ||
+            removal.VerifiedAtUtc is not { } verifiedAtUtc)
+        {
+            HasError = true;
+            StatusMessage = FormatTailscaleDiagnostic(
+                removal.ErrorCode ?? "tailscale.funnel_removal_verification_failed");
+            return;
+        }
+
+        var status = await _client.CommitRemoteAccessRouteRemovalAsync(
+                challenge.OperationId,
+                verifiedAtUtc,
+                cancellationToken)
+            .ConfigureAwait(true);
+        RemoteStatus = status;
+        if (status.DesiredEnabled || status.HostRunning || status.FunnelRunning)
+        {
+            SetLifecycleFailure(status);
+            return;
+        }
+
+        HasError = false;
+        StatusMessage = L("remote.service.stopped");
     }
 
     private void StartTailscaleRecovery()
@@ -737,35 +932,17 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
 
                 try
                 {
-                    latest = await _client.GetRemoteAccessStatusAsync(cancellation.Token);
-                    RemoteStatus = latest;
-                    if (IsRemoteAccessReady(latest))
+                    var outcome = await ConfigurePersistentRouteAsync(
+                            token => _client.ReconnectRemoteAccessAsync(token),
+                            cancellation.Token)
+                        .ConfigureAwait(true);
+                    latest = RemoteStatus;
+                    if (outcome == PersistentRouteAttempt.Ready)
                     {
-                        HasError = false;
-                        StatusMessage = L("remote.service.tailscale.connected", latest.PublicUrl!);
                         return;
                     }
-
-                    if (!CanContinueTailscaleRecovery(latest))
+                    if (outcome == PersistentRouteAttempt.Failed)
                     {
-                        HasError = true;
-                        StatusMessage = FormatLifecycleDiagnostic(latest);
-                        return;
-                    }
-
-                    latest = await _client.ReconnectRemoteAccessAsync(cancellation.Token);
-                    RemoteStatus = latest;
-                    if (IsRemoteAccessReady(latest))
-                    {
-                        HasError = false;
-                        StatusMessage = L("remote.service.tailscale.connected", latest.PublicUrl!);
-                        return;
-                    }
-
-                    if (!CanContinueTailscaleRecovery(latest))
-                    {
-                        HasError = true;
-                        StatusMessage = FormatLifecycleDiagnostic(latest);
                         return;
                     }
 
@@ -825,6 +1002,13 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         }
     }
 
+    private enum PersistentRouteAttempt
+    {
+        Ready,
+        WaitingForTailscaleLogin,
+        Failed,
+    }
+
     private void CancelTailscaleRecovery()
     {
         CancellationTokenSource? cancellation;
@@ -845,30 +1029,6 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         {
             return ReferenceEquals(_tailscaleRecoveryCancellation, cancellation);
         }
-    }
-
-    private async Task ChangeRuntimeAsync(
-        Func<CancellationToken, Task<ProductRemoteAccessStatus>> operation,
-        string successMessageKey,
-        bool requireReady)
-    {
-        await RunAsync(async cancellationToken =>
-        {
-            var status = await operation(cancellationToken);
-            RemoteStatus = status;
-            if (requireReady && !IsRemoteAccessReady(status))
-            {
-                HasError = true;
-                var diagnostic = FormatLifecycleDiagnostic(status);
-                StatusMessage = diagnostic.Length > 0
-                    ? diagnostic
-                    : L("remote.service.lifecycleFailure", GetLifecycleErrorCode(status));
-                return;
-            }
-
-            HasError = false;
-            StatusMessage = L(successMessageKey);
-        });
     }
 
     private async Task CreateAccountAsync()
@@ -1213,32 +1373,10 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     private static bool IsRemoteAccessReady(ProductRemoteAccessStatus status)
         => status.DesiredEnabled &&
            status.HostRunning &&
-           status.FunnelRunning &&
+           status.RouteConfigured &&
+           status.RouteStatusCached &&
            Uri.TryCreate(status.PublicUrl, UriKind.Absolute, out var uri) &&
            uri.Scheme == Uri.UriSchemeHttps;
-
-    private static bool RequiresTailscaleLogin(ProductRemoteAccessStatus status)
-        => status.ErrorCode is "tailscale.backend_not_running";
-
-    private static bool CanContinueTailscaleRecovery(ProductRemoteAccessStatus status)
-    {
-        if (!status.DesiredEnabled)
-        {
-            return false;
-        }
-
-        return (status.ErrorCode is null or
-                "tailscale.backend_not_running" or
-                "tailscale.status_failed" or
-                "tailscale.status_timeout" or
-                "tailscale.funnel_status_failed" or
-                "tailscale.funnel_status_timeout" or
-                "tailscale.funnel_process_exited" or
-                "tailscale.funnel_start_timeout" or
-                "remote.start_timeout" or
-                "remote.start_failed") ||
-               status.State is "waiting" or "retrying";
-    }
 
     private static string GetLifecycleErrorCode(ProductRemoteAccessStatus? status)
     {
@@ -1257,7 +1395,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             return "remote.disabled";
         }
 
-        return status.HostRunning && status.FunnelRunning
+        return status.HostRunning && status.RouteConfigured
             ? "remote.public_url_missing"
             : "remote.lifecycle_not_ready";
     }
@@ -1270,7 +1408,11 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         }
 
         var errorCode = GetLifecycleErrorCode(status);
-        return errorCode switch
+        return FormatTailscaleDiagnostic(errorCode);
+    }
+
+    private static string FormatTailscaleDiagnostic(string errorCode)
+        => errorCode switch
         {
             "tailscale.backend_not_running" =>
                 L("remote.service.tailscale.loginRequired", errorCode),
@@ -1279,6 +1421,12 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             "tailscale.status_schema_invalid" or "tailscale.status_payload_invalid" or
                 "tailscale.status_json_invalid" =>
                 L("remote.service.tailscale.statusInvalid", errorCode),
+            "tailscale.status_failed" =>
+                L("remote.service.tailscale.statusFailed", errorCode),
+            "tailscale.localapi_identity_conflict" =>
+                L("remote.service.tailscale.localApiIdentityConflict", errorCode),
+            "tailscale.localapi_access_denied" =>
+                L("remote.service.tailscale.localApiAccessDenied", errorCode),
             "tailscale.https_not_enabled" =>
                 L("remote.service.tailscale.httpsRequired", errorCode),
             "tailscale.hostname_unavailable" =>
@@ -1288,11 +1436,64 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             "tailscale.hostname_status_failed" or "tailscale.hostname_status_timeout" or
                 "tailscale.hostname_status_invalid" or "tailscale.hostname_verification_failed" =>
                 L("remote.service.tailscale.hostnameStatusFailed", errorCode),
-            "tailscale.funnel_route_conflict" or "tailscale.precondition_changed" =>
+            "tailscale.funnel_route_conflict" or "tailscale.funnel_unowned_exact_route" or
+                "tailscale.precondition_changed" =>
                 L("remote.service.tailscale.routeConflict", errorCode),
             _ => L("remote.service.lifecycleFailure", errorCode),
         };
+
+    private void SetLifecycleFailure(ProductRemoteAccessStatus status)
+    {
+        HasError = true;
+        var diagnostic = FormatLifecycleDiagnostic(status);
+        StatusMessage = diagnostic.Length > 0
+            ? diagnostic
+            : L("remote.service.lifecycleFailure", GetLifecycleErrorCode(status));
     }
+
+    private static void ValidateRouteChallenge(
+        ProductRemoteAccessRouteChallenge challenge,
+        Uri expectedPublicOrigin)
+    {
+        ArgumentNullException.ThrowIfNull(challenge);
+        if (challenge.OperationId == Guid.Empty ||
+            challenge.LocalPort is < 1024 or > 65_535 ||
+            challenge.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            challenge.ExpiresAtUtc <= DateTimeOffset.UtcNow ||
+            !TryGetCanonicalPublicOrigin(challenge.PublicUrl, out var challengeOrigin) ||
+            !SameOrigin(challengeOrigin!, expectedPublicOrigin))
+        {
+            throw new InvalidDataException("Service returned an invalid remote-route challenge.");
+        }
+    }
+
+    private static bool TryGetCanonicalPublicOrigin(string? value, out Uri? origin)
+    {
+        origin = null;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var parsed))
+        {
+            return false;
+        }
+
+        try
+        {
+            origin = ProductTailscalePersistentFunnelService.ValidateCanonicalOrigin(parsed);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool SameOrigin(Uri left, Uri right)
+        => Uri.Compare(
+               left,
+               right,
+               UriComponents.SchemeAndServer,
+               UriFormat.SafeUnescaped,
+               StringComparison.Ordinal)
+           == 0;
 
     private static void CopyToClipboard(string value) => Clipboard.SetText(value);
 
@@ -1310,6 +1511,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         OnPropertyChanged(nameof(DesiredStateText));
         OnPropertyChanged(nameof(HostStateText));
         OnPropertyChanged(nameof(FunnelStateText));
+        OnPropertyChanged(nameof(RouteVerificationText));
         OnPropertyChanged(nameof(RetryText));
         OnPropertyChanged(nameof(LifecycleDiagnosticText));
         OnPropertyChanged(nameof(HasLifecycleDiagnostic));

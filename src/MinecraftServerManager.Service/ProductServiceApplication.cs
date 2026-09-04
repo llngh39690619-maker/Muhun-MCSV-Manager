@@ -129,6 +129,7 @@ public static class ProductServiceApplication
         builder.Services.AddSingleton<ProductRemoteCredentialStore>();
         builder.Services.AddSingleton<ProductRemoteSecurityAuditSink>();
         builder.Services.AddSingleton<ProductRemoteWebIntentStore>();
+        builder.Services.AddSingleton<ProductRemoteWebRouteStore>();
         builder.Services.AddSingleton<IProductTailscaleExecutableLocator, ProductTailscaleExecutableLocator>();
         builder.Services.AddSingleton<IProductTailscaleProcessRunner, ProductTailscaleProcessRunner>();
         builder.Services.AddSingleton<IProductTailscalePlatform, ProductTailscalePlatform>();
@@ -285,6 +286,9 @@ public static class ProductServiceApplication
             EnableRemoteWebInConsole = section.GetValue<bool?>(
                                            nameof(ProductServiceOptions.EnableRemoteWebInConsole))
                                        ?? false,
+            UseInteractiveTailscaleRouteReceipts = section.GetValue<bool?>(
+                                                       nameof(ProductServiceOptions.UseInteractiveTailscaleRouteReceipts))
+                                                   ?? false,
             Updates = new ProductUpdateOptions
             {
                 StableManifestUrl = updates[nameof(ProductUpdateOptions.StableManifestUrl)],

@@ -386,6 +386,10 @@ public sealed class ProductIpcHostedServiceConcurrencyTests
     [InlineData(ProductIpcProtocol.ServerModpackUpdateCommitMethod)]
     [InlineData(ProductIpcProtocol.UpdateDownloadMethod)]
     [InlineData(ProductIpcProtocol.ProviderInstallMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRoutePrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteCommitMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod)]
     public void SlowFilesystemAndProcessMethods_UseLongMutationPolicy(string method)
         => Assert.Equal(
             ProductIpcExecutionClass.LongMutation,

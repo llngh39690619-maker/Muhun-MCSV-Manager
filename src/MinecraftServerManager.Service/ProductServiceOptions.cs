@@ -34,6 +34,13 @@ public sealed class ProductServiceOptions
     /// </summary>
     public bool EnableRemoteWebInConsole { get; init; }
 
+    /// <summary>
+    /// Test/development opt-in for the installed-product Tailscale model. Formal Windows Service
+    /// execution always uses interactive route receipts because Windows Tailscale rejects a
+    /// second local actor SID while its tray UI is connected.
+    /// </summary>
+    public bool UseInteractiveTailscaleRouteReceipts { get; init; }
+
     public ProductUpdateOptions Updates { get; init; } = new();
 }
 

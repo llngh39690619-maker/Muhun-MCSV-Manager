@@ -96,7 +96,13 @@ public static class ProductApiProtocol
     /// </summary>
     public static ProductApiVersion ConsoleWaitVersion { get; } = new(1, 11);
 
-    public static ProductApiVersion CurrentVersion { get; } = ConsoleWaitVersion;
+    /// <summary>
+    /// Adds the two-phase interactive Tailscale route receipt protocol. The Windows Service
+    /// never impersonates or elevates into Tailscale's single-local-user control session.
+    /// </summary>
+    public static ProductApiVersion PersistentRemoteRouteVersion { get; } = new(1, 12);
+
+    public static ProductApiVersion CurrentVersion { get; } = PersistentRemoteRouteVersion;
 
     public const string RestBasePath = "/api/v1";
 

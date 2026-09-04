@@ -66,7 +66,25 @@ public sealed record ProductRemoteAccessStatus(
     string State,
     string? ErrorCode,
     DateTimeOffset UpdatedAtUtc,
-    DateTimeOffset? NextRetryAtUtc);
+    DateTimeOffset? NextRetryAtUtc)
+{
+    /// <summary>
+    /// True only when an interactive desktop process verified the exact persistent Tailscale
+    /// route and committed a durable Service receipt. This is configuration state, not a live
+    /// health assertion.
+    /// </summary>
+    public bool RouteConfigured { get; init; }
+
+    public bool RouteStatusCached { get; init; }
+
+    public DateTimeOffset? RouteLastVerifiedAtUtc { get; init; }
+}
+
+public sealed record ProductRemoteAccessRouteChallenge(
+    Guid OperationId,
+    string PublicUrl,
+    DateTimeOffset ExpiresAtUtc,
+    int LocalPort);
 
 public sealed record ProductRemoteAccountPage(
     int Offset,

@@ -85,8 +85,83 @@ public sealed class ProductIpcContractTests
         Assert.Equal(new ProductApiVersion(1, 9), ProductApiProtocol.RuntimeStatusVersion);
         Assert.Equal(new ProductApiVersion(1, 10), ProductApiProtocol.KnownPlayerRosterVersion);
         Assert.Equal(new ProductApiVersion(1, 11), ProductApiProtocol.ConsoleWaitVersion);
-        Assert.Equal(ProductApiProtocol.ConsoleWaitVersion, ProductApiProtocol.CurrentVersion);
+        Assert.Equal(new ProductApiVersion(1, 12), ProductApiProtocol.PersistentRemoteRouteVersion);
+        Assert.Equal(ProductApiProtocol.PersistentRemoteRouteVersion, ProductApiProtocol.CurrentVersion);
         Assert.Equal("X-MCSV-Service-Token", ProductLocalApiAuthentication.HeaderName);
+    }
+
+    [Fact]
+    public void RemoteRouteTwoPhaseOperations_RequireOnlyTheirBoundedMethodSpecificFields()
+    {
+        var operationId = Guid.NewGuid();
+        var verifiedAtUtc = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var prepare = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.RemoteAccessRoutePrepareMethod,
+            RemoteAccessPublicUrl = "https://x-mcsv.tail123.ts.net/",
+        };
+        var commit = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.RemoteAccessRouteCommitMethod,
+            RemoteAccessOperationId = operationId,
+            RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+        };
+        var removalPrepare = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod,
+        };
+        var recoveryRemovalPrepare = removalPrepare with
+        {
+            RemoteAccessPublicUrl = "https://x-mcsv.tail123.ts.net/",
+        };
+        var removalCommit = ValidRequest() with
+        {
+            Method = ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod,
+            RemoteAccessOperationId = operationId,
+            RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+        };
+
+        Assert.Null(ProductIpcRequestValidator.Validate(prepare));
+        Assert.Null(ProductIpcRequestValidator.Validate(commit));
+        Assert.Null(ProductIpcRequestValidator.Validate(removalPrepare));
+        Assert.Null(ProductIpcRequestValidator.Validate(recoveryRemovalPrepare));
+        Assert.Null(ProductIpcRequestValidator.Validate(removalCommit));
+        Assert.Equal(
+            "protocol.remote_access_public_url_required",
+            ProductIpcRequestValidator.Validate(prepare with { RemoteAccessPublicUrl = null })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_operation_id_required",
+            ProductIpcRequestValidator.Validate(commit with { RemoteAccessOperationId = Guid.Empty })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_verification_time_invalid",
+            ProductIpcRequestValidator.Validate(commit with
+            {
+                RemoteAccessVerifiedAtUtc = verifiedAtUtc.ToOffset(TimeSpan.FromHours(8)),
+            })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_recovery_public_url_invalid",
+            ProductIpcRequestValidator.Validate(removalPrepare with
+            {
+                RemoteAccessPublicUrl = " ",
+            })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_public_url_unexpected",
+            ProductIpcRequestValidator.Validate(commit with
+            {
+                RemoteAccessPublicUrl = "https://x-mcsv.tail123.ts.net/",
+            })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_operation_id_unexpected",
+            ProductIpcRequestValidator.Validate(prepare with
+            {
+                RemoteAccessOperationId = operationId,
+            })?.Code);
+        Assert.Equal(
+            "protocol.remote_access_verification_time_unexpected",
+            ProductIpcRequestValidator.Validate(prepare with
+            {
+                RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+            })?.Code);
     }
 
     [Fact]

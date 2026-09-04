@@ -250,6 +250,21 @@ public sealed class ProductIpcMessageProcessor
                         "Remote management methods require API version 1.2 or newer."));
             }
 
+            var isPersistentRouteMethod = request.Method is
+                ProductIpcProtocol.RemoteAccessRoutePrepareMethod or
+                ProductIpcProtocol.RemoteAccessRouteCommitMethod or
+                ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod or
+                ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod;
+            if (isPersistentRouteMethod &&
+                negotiation.SelectedVersion.Value.CompareTo(ProductApiProtocol.PersistentRemoteRouteVersion) < 0)
+            {
+                return Failure(
+                    request.RequestId,
+                    new ProductIpcError(
+                        "protocol.method_version_unsupported",
+                        "Persistent remote route methods require API version 1.12 or newer."));
+            }
+
             if (_remoteWeb is null || _remoteAccounts is null || _remoteDevices is null)
             {
                 return Failure(
@@ -886,6 +901,40 @@ public sealed class ProductIpcMessageProcessor
                     RemoteAccess = ToRemoteAccessStatus(
                         await _remoteWeb!.ReconnectAsync(cancellationToken).ConfigureAwait(false)),
                 };
+            case ProductIpcProtocol.RemoteAccessRoutePrepareMethod:
+                return Success(request.RequestId) with
+                {
+                    RemoteAccessRouteChallenge = await _remoteWeb!
+                        .PrepareRouteAsync(request.RemoteAccessPublicUrl!, cancellationToken)
+                        .ConfigureAwait(false),
+                };
+            case ProductIpcProtocol.RemoteAccessRouteCommitMethod:
+                return Success(request.RequestId) with
+                {
+                    RemoteAccess = ToRemoteAccessStatus(
+                        await _remoteWeb!.CommitRouteAsync(
+                                request.RemoteAccessOperationId!.Value,
+                                request.RemoteAccessVerifiedAtUtc!.Value,
+                                cancellationToken)
+                            .ConfigureAwait(false)),
+                };
+            case ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod:
+                return Success(request.RequestId) with
+                {
+                    RemoteAccessRouteChallenge = await _remoteWeb!
+                        .PrepareRouteRemovalAsync(request.RemoteAccessPublicUrl, cancellationToken)
+                        .ConfigureAwait(false),
+                };
+            case ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod:
+                return Success(request.RequestId) with
+                {
+                    RemoteAccess = ToRemoteAccessStatus(
+                        await _remoteWeb!.CommitRouteRemovalAsync(
+                                request.RemoteAccessOperationId!.Value,
+                                request.RemoteAccessVerifiedAtUtc!.Value,
+                                cancellationToken)
+                            .ConfigureAwait(false)),
+                };
             case ProductIpcProtocol.RemoteAccountListMethod:
                 return ListRemoteAccounts(request);
             case ProductIpcProtocol.RemoteAccountCreateMethod:
@@ -1086,7 +1135,12 @@ public sealed class ProductIpcMessageProcessor
             status.State,
             status.ErrorCode,
             status.UpdatedAtUtc,
-            status.NextRetryAtUtc);
+            status.NextRetryAtUtc)
+        {
+            RouteConfigured = status.RouteConfigured,
+            RouteStatusCached = status.RouteStatusCached,
+            RouteLastVerifiedAtUtc = status.RouteLastVerifiedAtUtc,
+        };
 
     private static ProductRemoteAccountSummary ToRemoteAccountSummary(ProductRemoteAccountInfo account)
         => new(
@@ -1116,6 +1170,9 @@ public sealed class ProductIpcMessageProcessor
 
     private static ProductIpcError ToRemoteError(Exception error) => error switch
     {
+        ProductRemoteRouteOperationException route => new(
+            route.Code,
+            "The remote route operation was rejected."),
         KeyNotFoundException => new(
             "remote.account_not_found",
             "The remote account was not found."),

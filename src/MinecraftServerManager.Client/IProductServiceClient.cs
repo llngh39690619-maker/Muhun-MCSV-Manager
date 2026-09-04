@@ -257,6 +257,32 @@ public interface IProductServiceClient : IAsyncDisposable
         => Task.FromException<ProductRemoteAccessStatus>(
             new NotSupportedException("This client does not support remote-access management."));
 
+    Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductRemoteAccessRouteChallenge>(
+            new NotSupportedException("This client does not support interactive route preparation."));
+
+    Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductRemoteAccessStatus>(
+            new NotSupportedException("This client does not support interactive route commit."));
+
+    Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteRemovalAsync(
+        string? publicUrl,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductRemoteAccessRouteChallenge>(
+            new NotSupportedException("This client does not support route-removal preparation."));
+
+    Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<ProductRemoteAccessStatus>(
+            new NotSupportedException("This client does not support route-removal commit."));
+
     Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
         CancellationToken cancellationToken = default)
         => Task.FromException<IReadOnlyList<ProductRemoteAccountSummary>>(

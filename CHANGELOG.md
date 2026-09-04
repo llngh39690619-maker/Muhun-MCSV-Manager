@@ -2,6 +2,17 @@
 
 ## 未發布
 
+## 1.2.9-beta.17 — 使用者工作階段固定 Funnel 版（研發中）
+
+- 修正 beta.16 在正式 Windows Service 虛擬帳號下無法存取目前登入使用者的 Tailscale LocalAPI，導致遠端管理畫面顯示 `tailscale.status_failed`、固定網址無法建立的問題；Service 不再假裝能直接查詢另一個 Windows SID 的 Tailscale 工作階段。
+- 既有「重新連線」現在會由目前登入的桌面 GUI 使用 `Program Files` 內受信任的官方 Tailscale CLI，自動確認登入狀態、將裝置名稱固定為 `x-mcsv`、取得實際 Tailnet suffix 與 HTTPS 憑證，再建立持久化的 `443 -> http://127.0.0.1:42871` Funnel；不新增按鈕，也不要求使用者填入 DNSName。
+- API 1.12 新增 Service 與 GUI 的兩階段路由驗證。Service 只接受通過 ServiceManage 驗證之桌面客戶端提交的 canonical `https://x-mcsv.<tailnet>.ts.net/` receipt，並將 receipt 嚴格綁定本機埠 `42871`、loopback target 與 UTC 驗證時間；相同操作可安全重試，不同未完成操作不能互相覆寫。
+- 啟用與移除皆 fail closed：只有完整 Funnel JSON 是唯一且完全相符的 X MCSV 路由時才會沿用或執行 `tailscale funnel reset`，並且必須再次觀察到空設定後才能提交移除。若已有其他 Funnel、未知欄位、不同網域／Port／target 或狀態不明，程式不覆蓋、不刪除也不宣告成功。
+- Windows Service 重啟時可用已驗證 receipt 恢復 loopback Web Host，但 GUI 會明確標示為「已設定／快取狀態」，不把 receipt 誤報成目前 Funnel 在線；receipt 損毀時只接受桌面 Tailscale 重新取得的 canonical origin 進行安全移除。
+- 本機 Android 驗證建置使用 `versionCode 36`；Windows 正式發行流程共 `3,357 / 3,357` 項測試通過，沒有建置警告、錯誤或已知 NuGet 弱點。單一 EXE 安裝器 SHA-256 為 `E9F62354A4F0EB85472D4C2C8B9195CCE112FCB636094993299B023663C22629`，本機自簽 Authenticode 與 DigiCert 時間戳記驗證有效。
+- 1.2.9-beta.17 目前只進行本機驗證，不發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，研發中。**
+
 ## 1.2.9-beta.16 — Tailscale 固定網址自動恢復版（研發中）
 
 - 修正 Tailscale 已安裝但尚未登入時，`BackendState=NoState` 因缺少 `Self.DNSName` 被誤判為狀態格式損壞，導致 GUI 只顯示 `unavailable` 且固定 HTTPS 網址保持空白的問題。

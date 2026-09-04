@@ -58,6 +58,24 @@ internal interface IProductRemoteManagementClient
     Task<ProductRemoteAccessStatus> ReconnectRemoteAccessAsync(
         CancellationToken cancellationToken = default);
 
+    Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken = default);
+
+    Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default);
+
+    Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteRemovalAsync(
+        string? publicUrl,
+        CancellationToken cancellationToken = default);
+
+    Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
         CancellationToken cancellationToken = default);
 
@@ -759,6 +777,28 @@ internal sealed class ProductServiceDesktopController :
     public Task<ProductRemoteAccessStatus> ReconnectRemoteAccessAsync(
         CancellationToken cancellationToken = default)
         => _client.ReconnectRemoteAccessAsync(cancellationToken);
+
+    public Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken = default)
+        => _client.PrepareRemoteAccessRouteAsync(publicUrl, cancellationToken);
+
+    public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => _client.CommitRemoteAccessRouteAsync(operationId, verifiedAtUtc, cancellationToken);
+
+    public Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteRemovalAsync(
+        string? publicUrl,
+        CancellationToken cancellationToken = default)
+        => _client.PrepareRemoteAccessRouteRemovalAsync(publicUrl, cancellationToken);
+
+    public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => _client.CommitRemoteAccessRouteRemovalAsync(operationId, verifiedAtUtc, cancellationToken);
 
     public Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
         CancellationToken cancellationToken = default)

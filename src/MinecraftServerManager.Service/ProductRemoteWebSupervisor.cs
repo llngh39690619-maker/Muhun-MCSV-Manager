@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using MinecraftServerManager.Contracts;
 using Microsoft.Extensions.Hosting.WindowsServices;
 
 namespace MinecraftServerManager.Service;
@@ -11,7 +12,14 @@ public sealed record ProductRemoteWebStatus(
     string State,
     string? ErrorCode,
     DateTimeOffset UpdatedAtUtc,
-    DateTimeOffset? NextRetryAtUtc);
+    DateTimeOffset? NextRetryAtUtc)
+{
+    public bool RouteConfigured { get; init; }
+
+    public bool RouteStatusCached { get; init; }
+
+    public DateTimeOffset? RouteLastVerifiedAtUtc { get; init; }
+}
 
 public interface IProductRemoteWebSupervisor
 {
@@ -22,16 +30,37 @@ public interface IProductRemoteWebSupervisor
     Task<ProductRemoteWebStatus> DisableAsync(CancellationToken cancellationToken);
 
     Task<ProductRemoteWebStatus> ReconnectAsync(CancellationToken cancellationToken);
+
+    Task<ProductRemoteAccessRouteChallenge> PrepareRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken);
+
+    Task<ProductRemoteWebStatus> CommitRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken);
+
+    Task<ProductRemoteAccessRouteChallenge> PrepareRouteRemovalAsync(
+        string? recoveryPublicUrl,
+        CancellationToken cancellationToken);
+
+    Task<ProductRemoteWebStatus> CommitRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// Owns the formal remote Web listener and its one foreground Tailscale Funnel session. The
-/// foreground process is the route ownership token: this class never issues a broad reset command.
+/// Owns the formal remote Web listener. Console/dev mode may own a foreground Funnel process;
+/// the installed Windows Service instead accepts a narrowly validated route receipt from the
+/// authenticated interactive desktop client because Tailscale's Windows LocalAPI is single-user.
+/// A receipt is configuration evidence only and is never reported as live Funnel health.
 /// </summary>
 internal sealed class ProductRemoteWebSupervisor(
     ProductServiceOptions serviceOptions,
     ProductServiceState serviceState,
     ProductRemoteWebIntentStore intentStore,
+    ProductRemoteWebRouteStore routeStore,
     IProductRemoteWebHostFactory hostFactory,
     IProductTailscalePlatform tailscale,
     IHostApplicationLifetime applicationLifetime,
@@ -50,6 +79,8 @@ internal sealed class ProductRemoteWebSupervisor(
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StartOperationTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RouteChallengeLifetime = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan VerificationClockTolerance = TimeSpan.FromSeconds(5);
 
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly Channel<byte> _wake = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
@@ -66,7 +97,12 @@ internal sealed class ProductRemoteWebSupervisor(
     private string? _target;
     private string? _guardedDnsName;
     private Uri? _knownPublicOrigin;
+    private ProductRemoteWebRouteReceipt? _routeReceipt;
+    private RouteChallenge? _routeChallenge;
+    private Uri? _preparedOrigin;
     private bool _intentLoaded;
+    private bool _routeLoaded;
+    private bool _routeReceiptInvalid;
     private bool _desiredEnabled = true;
     private int _stopping;
     private ProductRemoteWebStatus _status = new(
@@ -97,6 +133,7 @@ internal sealed class ProductRemoteWebSupervisor(
         {
             ThrowIfStopping();
             EnsureIntentLoaded();
+            EnsureRouteLoaded();
             intentStore.WriteDesiredEnabled(true);
             _desiredEnabled = true;
             if (!serviceState.IsReady)
@@ -120,6 +157,24 @@ internal sealed class ProductRemoteWebSupervisor(
         {
             ThrowIfStopping();
             EnsureIntentLoaded();
+            EnsureRouteLoaded();
+            if (UsesInteractiveRouteReceipts())
+            {
+                if (_routeReceipt is not null ||
+                    _preparedOrigin is not null ||
+                    _knownPublicOrigin is not null ||
+                    _host is not null ||
+                    _routeReceiptInvalid)
+                {
+                    return Publish("blocked", "tailscale.interactive_route_removal_required");
+                }
+
+                // No Service-authorized route or runtime has ever been established. Disabling the
+                // durable intent is safe and does not mutate any unrelated Tailscale configuration.
+                intentStore.WriteDesiredEnabled(false);
+                _desiredEnabled = false;
+                return Publish("disabled", null);
+            }
             intentStore.WriteDesiredEnabled(false);
             _desiredEnabled = false;
             // Once the durable intent is disabled, a disconnected loopback caller must not be
@@ -140,10 +195,286 @@ internal sealed class ProductRemoteWebSupervisor(
         {
             ThrowIfStopping();
             EnsureIntentLoaded();
+            EnsureRouteLoaded();
             intentStore.WriteDesiredEnabled(true);
             _desiredEnabled = true;
+            if (UsesInteractiveRouteReceipts())
+            {
+                // Keep the verified host bound while the desktop process validates/replaces the
+                // persistent route. Stopping it here would create a public route to an empty port.
+                return await EnsureStartedCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
             await StopRuntimeCoreAsync(shutdown: false, CancellationToken.None).ConfigureAwait(false);
             return await EnsureStartedCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _operationGate.Release();
+            Signal();
+        }
+    }
+
+    public async Task<ProductRemoteAccessRouteChallenge> PrepareRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken)
+    {
+        var origin = ProductRemoteWebRouteStore.ValidateCanonicalPublicOrigin(publicUrl);
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfStopping();
+            EnsureReceiptMode();
+            EnsureIntentLoaded();
+            EnsureRouteLoaded();
+            if (!serviceState.IsReady)
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "remote.service_not_ready",
+                    "Remote Web cannot prepare a route until the Service is ready.");
+            }
+
+            var reusable = ReuseOrRejectActiveChallenge(RouteChallengeKind.Provision, origin);
+
+            if (_routeReceipt is { } existing && !SameOrigin(existing.PublicOrigin, origin))
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "tailscale.route_origin_changed",
+                    "Remove the previously verified route before changing Tailnet origins.");
+            }
+
+            if (_host is not null &&
+                _knownPublicOrigin is { } hostedOrigin &&
+                !SameOrigin(hostedOrigin, origin))
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "tailscale.route_origin_changed",
+                    "The currently bound Web host belongs to another Tailnet origin.");
+            }
+
+            if (_host is null)
+            {
+                _host = await hostFactory.StartAsync(
+                        origin,
+                        LocalWebPort,
+                        applicationLifetime.ApplicationStopping,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            _knownPublicOrigin = origin;
+            _preparedOrigin = origin;
+            intentStore.WriteDesiredEnabled(true);
+            _desiredEnabled = true;
+            if (reusable is not null)
+            {
+                Publish("awaiting_route_verification", null, publicUrl: origin.ToString());
+                return reusable;
+            }
+
+            var now = timeProvider.GetUtcNow();
+            var challenge = new RouteChallenge(
+                Guid.NewGuid(),
+                RouteChallengeKind.Provision,
+                origin,
+                now,
+                now + RouteChallengeLifetime);
+            _routeChallenge = challenge;
+            Publish("awaiting_route_verification", null, publicUrl: origin.ToString());
+            return ToPublicChallenge(challenge);
+        }
+        finally
+        {
+            _operationGate.Release();
+            Signal();
+        }
+    }
+
+    public async Task<ProductRemoteWebStatus> CommitRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfStopping();
+            EnsureReceiptMode();
+            EnsureIntentLoaded();
+            EnsureRouteLoaded();
+            var challenge = ValidateChallenge(
+                operationId,
+                verifiedAtUtc,
+                RouteChallengeKind.Provision);
+            if (_host is null ||
+                _knownPublicOrigin is null ||
+                !SameOrigin(_knownPublicOrigin, challenge.PublicOrigin))
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "remote.route_host_not_ready",
+                    "The loopback Web host is no longer bound for this route.");
+            }
+
+            var receipt = routeStore.WriteVerified(
+                challenge.PublicOrigin.ToString(),
+                verifiedAtUtc);
+            // This commit trusts an attestation from the authenticated ServiceManage desktop
+            // client. It is not an independent Service-side proof of current Tailscale state.
+            intentStore.WriteDesiredEnabled(true);
+            _routeReceipt = receipt;
+            _routeLoaded = true;
+            _routeReceiptInvalid = false;
+            _desiredEnabled = true;
+            _preparedOrigin = null;
+            _routeChallenge = null;
+            return Publish("configured", null, publicUrl: receipt.PublicOrigin.ToString());
+        }
+        finally
+        {
+            _operationGate.Release();
+            Signal();
+        }
+    }
+
+    public async Task<ProductRemoteAccessRouteChallenge> PrepareRouteRemovalAsync(
+        string? recoveryPublicUrl,
+        CancellationToken cancellationToken)
+    {
+        var recoveryOrigin = recoveryPublicUrl is null
+            ? null
+            : ProductRemoteWebRouteStore.ValidateCanonicalPublicOrigin(recoveryPublicUrl);
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfStopping();
+            EnsureReceiptMode();
+            EnsureIntentLoaded();
+            EnsureRouteLoaded();
+            var origin = _routeReceipt?.PublicOrigin ?? _preparedOrigin ?? _knownPublicOrigin;
+            var requestedOrigin = recoveryOrigin ?? origin;
+            var reusable = requestedOrigin is null
+                ? null
+                : ReuseOrRejectActiveChallenge(RouteChallengeKind.Remove, requestedOrigin);
+            if (recoveryOrigin is not null)
+            {
+                var recoveringPreviouslyAdoptedOrigin =
+                    _routeReceiptInvalid &&
+                    _routeReceipt is null &&
+                    _preparedOrigin is not null &&
+                    SameOrigin(_preparedOrigin, recoveryOrigin);
+                if (!_routeReceiptInvalid ||
+                    _routeReceipt is not null ||
+                    (origin is not null && !recoveringPreviouslyAdoptedOrigin))
+                {
+                    throw new ProductRemoteRouteOperationException(
+                        "remote.route_recovery_not_allowed",
+                        "A recovery origin is accepted only when a corrupt receipt left no known origin.");
+                }
+
+                origin = recoveryOrigin;
+            }
+
+            if (_routeReceiptInvalid && origin is null)
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "remote.route_recovery_url_required",
+                    "A canonical origin from the authenticated desktop is required to remove this corrupt receipt.");
+            }
+
+            if (origin is null)
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "tailscale.route_not_configured",
+                    "No managed Tailscale route is available for removal.");
+            }
+
+            if (_host is not null &&
+                _knownPublicOrigin is { } hostedOrigin &&
+                !SameOrigin(hostedOrigin, origin))
+            {
+                throw new ProductRemoteRouteOperationException(
+                    "remote.route_host_origin_mismatch",
+                    "The loopback Web host is bound for another route origin.");
+            }
+
+            if (_host is null)
+            {
+                _host = await hostFactory.StartAsync(
+                        origin,
+                        _routeReceipt?.LocalPort ?? LocalWebPort,
+                        applicationLifetime.ApplicationStopping,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            _knownPublicOrigin = origin;
+            if (_routeReceiptInvalid)
+            {
+                _preparedOrigin = origin;
+            }
+
+            if (reusable is not null)
+            {
+                Publish("awaiting_route_removal", null, publicUrl: origin.ToString());
+                return reusable;
+            }
+
+            var now = timeProvider.GetUtcNow();
+            var challenge = new RouteChallenge(
+                Guid.NewGuid(),
+                RouteChallengeKind.Remove,
+                origin,
+                now,
+                now + RouteChallengeLifetime);
+            _routeChallenge = challenge;
+            // Deliberately retain the bound host and durable receipt until the interactive
+            // caller has proved this is the only configured Funnel route, issued `funnel reset`,
+            // and independently observed an empty configuration.
+            Publish("awaiting_route_removal", null, publicUrl: origin.ToString());
+            return ToPublicChallenge(challenge);
+        }
+        finally
+        {
+            _operationGate.Release();
+            Signal();
+        }
+    }
+
+    public async Task<ProductRemoteWebStatus> CommitRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfStopping();
+            EnsureReceiptMode();
+            EnsureIntentLoaded();
+            EnsureRouteLoaded();
+            _ = ValidateChallenge(operationId, verifiedAtUtc, RouteChallengeKind.Remove);
+
+            // Tailscale 1.102 no longer accepts the historical `off` form. ServiceManage is an
+            // authenticated trusted desktop client; its commit attests that it proved the complete
+            // Funnel config contained only this managed route, issued `funnel reset`, and observed
+            // an empty config. The Service cannot independently query that user's LocalAPI session.
+            // Stop serving first; if receipt deletion then fails, durable intent enables recovery.
+            var stopped = await StopRuntimeCoreAsync(shutdown: false, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (stopped.HostRunning)
+            {
+                throw new IOException("Remote Web host did not stop after route removal.");
+            }
+
+            routeStore.Delete();
+            intentStore.WriteDesiredEnabled(false);
+            _routeReceipt = null;
+            _routeLoaded = true;
+            _routeReceiptInvalid = false;
+            _routeChallenge = null;
+            _preparedOrigin = null;
+            _knownPublicOrigin = null;
+            _desiredEnabled = false;
+            return Publish("disabled", null);
         }
         finally
         {
@@ -165,10 +496,15 @@ internal sealed class ProductRemoteWebSupervisor(
                 try
                 {
                     EnsureIntentLoaded();
+                    EnsureRouteLoaded();
                     if (_funnelProcess is { HasExited: true })
                     {
+                        var processError = ProductTailscalePlatform.ClassifyLocalApiFailure(
+                            _funnelProcess.StandardOutput,
+                            _funnelProcess.StandardError,
+                            "tailscale.funnel_process_exited");
                         await StopRuntimeCoreAsync(shutdown: false, stoppingToken).ConfigureAwait(false);
-                        Publish("retrying", "tailscale.funnel_process_exited");
+                        Publish("retrying", processError);
                     }
                     else if (_funnelProcess is { HasExited: false } && _dnsName is { } activeDns)
                     {
@@ -191,7 +527,10 @@ internal sealed class ProductRemoteWebSupervisor(
                     if (_desiredEnabled && ShouldAutoStart())
                     {
                         var current = await EnsureStartedCoreAsync(stoppingToken).ConfigureAwait(false);
-                        if (current.FunnelRunning)
+                        if (current.FunnelRunning ||
+                            (UsesInteractiveRouteReceipts() &&
+                             current.HostRunning &&
+                             current.RouteConfigured))
                         {
                             retryDelay = InitialRetryDelay;
                             delayAfterIteration = RunningProbeInterval;
@@ -264,9 +603,58 @@ internal sealed class ProductRemoteWebSupervisor(
         }
     }
 
+    private async Task<ProductRemoteWebStatus> EnsureReceiptBackedHostStartedAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureRouteLoaded();
+        if (_routeReceiptInvalid)
+        {
+            return Publish("blocked", "remote.route_receipt_invalid");
+        }
+
+        if (_host is not null)
+        {
+            var expected = _routeReceipt?.PublicOrigin ?? _preparedOrigin;
+            if (expected is null ||
+                _knownPublicOrigin is null ||
+                !SameOrigin(expected, _knownPublicOrigin))
+            {
+                return Publish("blocked", "remote.route_host_origin_mismatch");
+            }
+
+            return Publish(
+                _routeReceipt is null ? "awaiting_route_verification" : "configured_cached",
+                null,
+                publicUrl: expected.ToString());
+        }
+
+        if (_routeReceipt is null)
+        {
+            return Publish("awaiting_interactive_route", "tailscale.interactive_route_required");
+        }
+
+        _host = await hostFactory.StartAsync(
+                _routeReceipt.PublicOrigin,
+                _routeReceipt.LocalPort,
+                applicationLifetime.ApplicationStopping,
+                cancellationToken)
+            .ConfigureAwait(false);
+        _knownPublicOrigin = _routeReceipt.PublicOrigin;
+        logger.LogInformation("Remote Web host restored from a verified persistent-route receipt.");
+        return Publish(
+            "configured_cached",
+            null,
+            publicUrl: _routeReceipt.PublicOrigin.ToString());
+    }
+
     private async Task<ProductRemoteWebStatus> EnsureStartedWithinDeadlineAsync(
         CancellationToken cancellationToken)
     {
+        if (UsesInteractiveRouteReceipts())
+        {
+            return await EnsureReceiptBackedHostStartedAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         if (_host is not null && _funnelProcess is { HasExited: false } && _status.FunnelRunning)
         {
             return Snapshot;
@@ -395,7 +783,10 @@ internal sealed class ProductRemoteWebSupervisor(
                             startingHost,
                             startingProcess,
                             node.DnsName,
-                            "tailscale.funnel_process_exited",
+                            ProductTailscalePlatform.ClassifyLocalApiFailure(
+                                startingProcess.StandardOutput,
+                                startingProcess.StandardError,
+                                "tailscale.funnel_process_exited"),
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -688,6 +1079,120 @@ internal sealed class ProductRemoteWebSupervisor(
         }
     }
 
+    private void EnsureRouteLoaded()
+    {
+        if (_routeLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _routeReceipt = routeStore.Read();
+            _knownPublicOrigin = _routeReceipt?.PublicOrigin;
+            _routeReceiptInvalid = false;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            // A corrupt or inaccessible receipt must never become authority for a public origin.
+            // Keep the durable intent intact so an authenticated desktop can replace the receipt.
+            _routeReceipt = null;
+            _knownPublicOrigin = null;
+            _routeReceiptInvalid = true;
+            logger.LogError(error, "Remote Web route receipt could not be loaded; no cached route will be trusted.");
+        }
+        finally
+        {
+            _routeLoaded = true;
+        }
+    }
+
+    private bool UsesInteractiveRouteReceipts()
+        => WindowsServiceHelpers.IsWindowsService() || serviceOptions.UseInteractiveTailscaleRouteReceipts;
+
+    private void EnsureReceiptMode()
+    {
+        if (!UsesInteractiveRouteReceipts())
+        {
+            throw new ProductRemoteRouteOperationException(
+                "remote.route_receipts_unavailable",
+                "Interactive route receipts are available only for the installed Service mode.");
+        }
+    }
+
+    private ProductRemoteAccessRouteChallenge? ReuseOrRejectActiveChallenge(
+        RouteChallengeKind requestedKind,
+        Uri requestedOrigin)
+    {
+        if (_routeChallenge is not { } active)
+        {
+            return null;
+        }
+
+        if (timeProvider.GetUtcNow() > active.ExpiresAtUtc)
+        {
+            _routeChallenge = null;
+            return null;
+        }
+
+        if (active.Kind == requestedKind && SameOrigin(active.PublicOrigin, requestedOrigin))
+        {
+            return ToPublicChallenge(active);
+        }
+
+        throw new ProductRemoteRouteOperationException(
+            "remote.route_operation_in_progress",
+            "Another unexpired route operation must finish before a different operation can begin.");
+    }
+
+    private RouteChallenge ValidateChallenge(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        RouteChallengeKind expectedKind)
+    {
+        if (operationId == Guid.Empty || verifiedAtUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("A non-empty operation id and UTC verification time are required.");
+        }
+
+        var challenge = _routeChallenge;
+        if (challenge is null ||
+            challenge.OperationId != operationId ||
+            challenge.Kind != expectedKind)
+        {
+            throw new ProductRemoteRouteOperationException(
+                "remote.route_challenge_invalid",
+                "The route challenge is missing or does not match this operation.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (now > challenge.ExpiresAtUtc)
+        {
+            _routeChallenge = null;
+            throw new ProductRemoteRouteOperationException(
+                "remote.route_challenge_expired",
+                "The route challenge expired before verification was committed.");
+        }
+
+        if (verifiedAtUtc < challenge.IssuedAtUtc - VerificationClockTolerance ||
+            verifiedAtUtc > now + VerificationClockTolerance ||
+            verifiedAtUtc > challenge.ExpiresAtUtc + VerificationClockTolerance)
+        {
+            throw new ProductRemoteRouteOperationException(
+                "remote.route_verification_time_invalid",
+                "The route verification time is outside this challenge's validity window.");
+        }
+
+        return challenge;
+    }
+
+    private static ProductRemoteAccessRouteChallenge ToPublicChallenge(RouteChallenge challenge)
+        => new(
+            challenge.OperationId,
+            challenge.PublicOrigin.ToString(),
+            challenge.ExpiresAtUtc,
+            LocalWebPort);
+
     private bool ShouldAutoStart()
         => WindowsServiceHelpers.IsWindowsService() || serviceOptions.EnableRemoteWebInConsole;
 
@@ -726,15 +1231,23 @@ internal sealed class ProductRemoteWebSupervisor(
     {
         lock (_statusGate)
         {
+            var receiptMode = UsesInteractiveRouteReceipts();
             var status = new ProductRemoteWebStatus(
                 _desiredEnabled,
                 _host is not null,
-                _funnelProcess is { HasExited: false },
+                !receiptMode && _funnelProcess is { HasExited: false },
                 publicUrl ?? _knownPublicOrigin?.ToString(),
                 state,
                 errorCode,
                 timeProvider.GetUtcNow(),
-                nextRetry);
+                nextRetry)
+            {
+                RouteConfigured = receiptMode && _routeReceipt is not null,
+                // The Service cannot safely query Tailscale's live LocalAPI while the tray owns
+                // another SID. Even a freshly committed receipt becomes cached status afterward.
+                RouteStatusCached = receiptMode && _routeReceipt is not null,
+                RouteLastVerifiedAtUtc = receiptMode ? _routeReceipt?.VerifiedAtUtc : null,
+            };
             _status = status;
             return status;
         }
@@ -789,4 +1302,23 @@ internal sealed class ProductRemoteWebSupervisor(
         => process.StandardOutput.Contains(
             publicOrigin.GetLeftPart(UriPartial.Authority),
             StringComparison.OrdinalIgnoreCase);
+
+    private enum RouteChallengeKind
+    {
+        Provision,
+        Remove,
+    }
+
+    private sealed record RouteChallenge(
+        Guid OperationId,
+        RouteChallengeKind Kind,
+        Uri PublicOrigin,
+        DateTimeOffset IssuedAtUtc,
+        DateTimeOffset ExpiresAtUtc);
+}
+
+internal sealed class ProductRemoteRouteOperationException(string code, string message)
+    : InvalidOperationException(message)
+{
+    public string Code { get; } = code;
 }

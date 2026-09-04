@@ -103,6 +103,10 @@ internal static class ProductIpcExecutionPolicy
             ProductIpcProtocol.RemoteAccessStartMethod or
             ProductIpcProtocol.RemoteAccessStopMethod or
             ProductIpcProtocol.RemoteAccessReconnectMethod or
+            ProductIpcProtocol.RemoteAccessRoutePrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteCommitMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod or
             ProductIpcProtocol.ProviderInstallMethod or
             ProductIpcProtocol.ProviderUninstallMethod)
         {

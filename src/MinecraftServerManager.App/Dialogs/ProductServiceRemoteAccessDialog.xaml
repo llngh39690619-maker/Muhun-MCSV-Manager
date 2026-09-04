@@ -81,6 +81,8 @@
                                     <TextBlock Text="{Binding LastUpdatedText, Mode=OneWay}"
                                                Style="{StaticResource MutedText}" />
                                 </StackPanel>
+                                <TextBlock Text="{Binding RouteVerificationText, Mode=OneWay}"
+                                           Style="{StaticResource MutedText}" Margin="0,4,0,0" />
                                 <TextBlock Text="{Binding RetryText}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
                                 <Border Background="{DynamicResource PanelRaisedBrush}"
                                         BorderBrush="{DynamicResource WarningBrush}"

@@ -103,7 +103,8 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             client,
             [],
             copyText: value => copied = value,
-            openUrl: value => opened = value);
+            openUrl: value => opened = value,
+            persistentFunnel: new StubPersistentFunnel());
         await viewModel.InitializeAsync();
 
         Assert.True(viewModel.StartCommand.CanExecute(null));
@@ -115,9 +116,379 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         Assert.True(viewModel.CopyUrlCommand.CanExecute(null));
         viewModel.CopyUrlCommand.Execute(null);
         viewModel.OpenUrlCommand.Execute(null);
-        Assert.Equal("https://service.tailnet.ts.net", copied);
+        Assert.Equal("https://x-mcsv.tail123.ts.net/", copied);
         Assert.Equal(copied, opened);
         Assert.Equal(1, client.StartCalls);
+    }
+
+    [Fact]
+    public async Task Reconnect_ConfiguresPersistentRouteInStrictChallengeCommitOrder()
+    {
+        var events = new List<string>();
+        var configured = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: true,
+            funnelRunning: false,
+            publicUrl: "https://x-mcsv.tail123.ts.net/",
+            state: "configured_cached",
+            errorCode: null) with
+        {
+            RouteConfigured = true,
+            RouteStatusCached = true,
+            RouteLastVerifiedAtUtc = DateTimeOffset.UtcNow,
+        };
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            ReconnectRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: false,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "awaiting_interactive_route",
+                errorCode: "tailscale.interactive_route_required"),
+            RouteCommitStatus = configured,
+        };
+        var persistentFunnel = new StubPersistentFunnel { Events = events };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () => throw new InvalidOperationException("A ready active-user route must not launch recovery."),
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.Equal(
+            [
+                "client.reconnect",
+                "funnel.identity",
+                "client.route.prepare",
+                "funnel.ensure",
+                "client.route.commit",
+            ],
+            events);
+        Assert.False(viewModel.HasError);
+        Assert.True(viewModel.HasPublicUrl);
+        Assert.True(viewModel.RemoteStatus?.HostRunning);
+        Assert.False(viewModel.RemoteStatus?.FunnelRunning);
+        Assert.True(viewModel.RemoteStatus?.RouteConfigured);
+        Assert.True(viewModel.RemoteStatus?.RouteStatusCached);
+        Assert.Equal(1, client.RoutePrepareCalls);
+        Assert.Equal(1, client.RouteCommitCalls);
+        Assert.False(persistentFunnel.LastAllowExistingVerifiedRoute);
+    }
+
+    [Fact]
+    public async Task Reconnect_PublicUrlWithoutReceiptNeverAuthorizesAnExistingRoute()
+    {
+        var client = new StubRemoteClient
+        {
+            ReconnectRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: "https://x-mcsv.tail123.ts.net/",
+                state: "awaiting_route_verification",
+                errorCode: null),
+        };
+        var persistentFunnel = new StubPersistentFunnel
+        {
+            EnsureResult = new ProductPersistentFunnelOperationResult(
+                false,
+                false,
+                ProductPersistentFunnelDisposition.Conflict,
+                null,
+                "tailscale.funnel_unowned_exact_route"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.False(persistentFunnel.LastAllowExistingVerifiedRoute);
+        Assert.Equal(0, client.RouteCommitCalls);
+        Assert.True(viewModel.HasError);
+        Assert.Contains(
+            "tailscale.funnel_unowned_exact_route",
+            viewModel.StatusMessage,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Stop_ResetFailureNeverCommitsRemovalOrDropsCachedHostState()
+    {
+        var events = new List<string>();
+        var configured = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: true,
+            funnelRunning: false,
+            publicUrl: "https://x-mcsv.tail123.ts.net/",
+            state: "configured_cached",
+            errorCode: null) with
+        {
+            RouteConfigured = true,
+            RouteStatusCached = true,
+            RouteLastVerifiedAtUtc = DateTimeOffset.UtcNow,
+        };
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            InitialRemoteStatus = configured,
+        };
+        var persistentFunnel = new StubPersistentFunnel
+        {
+            Events = events,
+            RemoveResult = new ProductPersistentFunnelOperationResult(
+                false,
+                false,
+                ProductPersistentFunnelDisposition.ExactTarget,
+                null,
+                "tailscale.funnel_reset_failed"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => client.RouteRemovalPrepareCalls == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(
+            ["client.route-removal.prepare", "funnel.remove"],
+            events);
+        Assert.Equal(0, client.RouteRemovalCommitCalls);
+        Assert.Null(client.LastRouteRemovalRecoveryPublicUrl);
+        Assert.True(viewModel.HasError);
+        Assert.True(viewModel.RemoteStatus?.DesiredEnabled);
+        Assert.True(viewModel.RemoteStatus?.HostRunning);
+        Assert.True(viewModel.RemoteStatus?.RouteConfigured);
+    }
+
+    [Fact]
+    public async Task Stop_VerifiedAbsenceCommitsOnlyAfterPersistentRouteRemoval()
+    {
+        var events = new List<string>();
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: "https://x-mcsv.tail123.ts.net/",
+                state: "configured_cached",
+                errorCode: null) with
+            {
+                RouteConfigured = true,
+                RouteStatusCached = true,
+                RouteLastVerifiedAtUtc = DateTimeOffset.UtcNow,
+            },
+        };
+        var persistentFunnel = new StubPersistentFunnel { Events = events };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => client.RouteRemovalCommitCalls == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(
+            [
+                "client.route-removal.prepare",
+                "funnel.remove",
+                "client.route-removal.commit",
+            ],
+            events);
+        Assert.False(viewModel.HasError);
+        Assert.False(viewModel.RemoteStatus?.DesiredEnabled);
+        Assert.False(viewModel.RemoteStatus?.HostRunning);
+        Assert.False(viewModel.RemoteStatus?.RouteConfigured);
+        Assert.Null(client.LastRouteRemovalRecoveryPublicUrl);
+    }
+
+    [Fact]
+    public async Task Stop_InvalidServiceChallengeNeverTouchesTailscaleOrCommitsRemoval()
+    {
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: "https://x-mcsv.tail123.ts.net/",
+                state: "configured_cached",
+                errorCode: null) with
+            {
+                RouteConfigured = true,
+                RouteStatusCached = true,
+                RouteLastVerifiedAtUtc = DateTimeOffset.UtcNow,
+            },
+            RouteRemovalChallenge = new ProductRemoteAccessRouteChallenge(
+                Guid.NewGuid(),
+                "https://x-mcsv.attacker.example/",
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                42_871),
+        };
+        var persistentFunnel = new StubPersistentFunnel();
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => client.RouteRemovalPrepareCalls == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(0, persistentFunnel.RemoveCalls);
+        Assert.Equal(0, client.RouteRemovalCommitCalls);
+        Assert.True(viewModel.HasError);
+    }
+
+    [Fact]
+    public async Task Stop_CorruptReceiptRecoversCanonicalActiveUserOriginBeforeRemoval()
+    {
+        var events = new List<string>();
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "blocked",
+                errorCode: "remote.route_receipt_invalid"),
+        };
+        var persistentFunnel = new StubPersistentFunnel { Events = events };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => client.RouteRemovalCommitCalls == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(
+            [
+                "funnel.identity",
+                "client.route-removal.prepare",
+                "funnel.remove",
+                "client.route-removal.commit",
+            ],
+            events);
+        Assert.Equal(
+            StubPersistentFunnel.ReadyIdentity.PublicOrigin?.AbsoluteUri,
+            client.LastRouteRemovalRecoveryPublicUrl);
+        Assert.Equal(0, client.StopCalls);
+        Assert.False(viewModel.HasError);
+    }
+
+    [Fact]
+    public async Task Stop_CorruptReceiptWithUnverifiedIdentityNeverPreparesOrCommitsRemoval()
+    {
+        var events = new List<string>();
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "blocked",
+                errorCode: "remote.route_receipt_invalid"),
+        };
+        var persistentFunnel = new StubPersistentFunnel
+        {
+            Events = events,
+            Identity = new ProductTailscaleIdentityResult(
+                false,
+                null,
+                "tailscale.status_schema_invalid"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => events.Count == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(["funnel.identity"], events);
+        Assert.Equal(0, client.RouteRemovalPrepareCalls);
+        Assert.Equal(0, persistentFunnel.RemoveCalls);
+        Assert.Equal(0, client.RouteRemovalCommitCalls);
+        Assert.True(viewModel.HasError);
+    }
+
+    [Fact]
+    public async Task Stop_CorruptReceiptWithUnverifiableRouteNeverCommitsRemoval()
+    {
+        var events = new List<string>();
+        var client = new StubRemoteClient
+        {
+            Events = events,
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: true,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "blocked",
+                errorCode: "remote.route_receipt_invalid"),
+        };
+        var persistentFunnel = new StubPersistentFunnel
+        {
+            Events = events,
+            RemoveResult = new ProductPersistentFunnelOperationResult(
+                false,
+                false,
+                ProductPersistentFunnelDisposition.Indeterminate,
+                null,
+                "tailscale.funnel_status_schema_invalid"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            persistentFunnel: persistentFunnel);
+        await viewModel.InitializeAsync();
+
+        viewModel.StopCommand.Execute(null);
+        await WaitUntilAsync(() => persistentFunnel.RemoveCalls == 1 && !viewModel.IsBusy);
+
+        Assert.Equal(
+            ["funnel.identity", "client.route-removal.prepare", "funnel.remove"],
+            events);
+        Assert.Equal(0, client.RouteRemovalCommitCalls);
+        Assert.True(viewModel.HasError);
     }
 
     [Fact]
@@ -150,6 +521,13 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             {
                 launchCalls++;
                 return true;
+            },
+            persistentFunnel: new StubPersistentFunnel
+            {
+                Identity = new ProductTailscaleIdentityResult(
+                    false,
+                    null,
+                    "tailscale.backend_not_running"),
             },
             delayAsync: (_, cancellationToken) =>
                 Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken),
@@ -206,6 +584,12 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         client.StatusResponses.Enqueue(waiting);
         client.ReconnectResponses.Enqueue(signedOut);
         client.ReconnectResponses.Enqueue(running);
+        var persistentFunnel = new StubPersistentFunnel();
+        persistentFunnel.IdentityResponses.Enqueue(new ProductTailscaleIdentityResult(
+            false,
+            null,
+            "tailscale.backend_not_running"));
+        persistentFunnel.IdentityResponses.Enqueue(StubPersistentFunnel.ReadyIdentity);
         var launchCalls = 0;
         var delayCalls = 0;
         using var viewModel = new ProductServiceRemoteAccessViewModel(
@@ -218,6 +602,7 @@ public sealed class ProductServiceRemoteAccessViewModelTests
                 launchCalls++;
                 return true;
             },
+            persistentFunnel: persistentFunnel,
             delayAsync: (_, _) =>
             {
                 delayCalls++;
@@ -237,7 +622,8 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         Assert.Equal(1, delayCalls);
         Assert.Equal(2, client.ReconnectCalls);
         Assert.True(viewModel.RemoteStatus?.HostRunning);
-        Assert.True(viewModel.RemoteStatus?.FunnelRunning);
+        Assert.False(viewModel.RemoteStatus?.FunnelRunning);
+        Assert.True(viewModel.RemoteStatus?.RouteConfigured);
         Assert.True(viewModel.HasPublicUrl);
         Assert.Equal("https://x-mcsv.tail123.ts.net/", viewModel.PublicUrl);
         Assert.False(viewModel.HasError);
@@ -293,7 +679,14 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             [],
             copyText: _ => { },
             openUrl: _ => { },
-            launchTailscale: () => throw new InvalidOperationException("Start must not launch an absent client."));
+            launchTailscale: () => throw new InvalidOperationException("Start must not launch an absent client."),
+            persistentFunnel: new StubPersistentFunnel
+            {
+                Identity = new ProductTailscaleIdentityResult(
+                    false,
+                    null,
+                    "tailscale.not_installed"),
+            });
         await viewModel.InitializeAsync();
 
         viewModel.StartCommand.Execute(null);
@@ -333,6 +726,13 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             {
                 launchCalls++;
                 return true;
+            },
+            persistentFunnel: new StubPersistentFunnel
+            {
+                Identity = new ProductTailscaleIdentityResult(
+                    false,
+                    null,
+                    "tailscale.status_schema_invalid"),
             });
         await viewModel.InitializeAsync();
 
@@ -345,6 +745,62 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         Assert.True(viewModel.HasError);
         Assert.Contains("tailscale.status_schema_invalid", viewModel.StatusMessage,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(
+        "tailscale.localapi_identity_conflict",
+        "remote.service.tailscale.localApiIdentityConflict")]
+    [InlineData(
+        "tailscale.localapi_access_denied",
+        "remote.service.tailscale.localApiAccessDenied")]
+    public async Task Reconnect_LocalApiIdentityFailure_ShowsDedicatedActionWithoutFalseRecovery(
+        string errorCode,
+        string localizationKey)
+    {
+        var unavailable = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "unavailable",
+            errorCode: errorCode);
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = unavailable,
+            ReconnectRemoteStatus = unavailable,
+        };
+        var launchCalls = 0;
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () =>
+            {
+                launchCalls++;
+                return true;
+            },
+            persistentFunnel: new StubPersistentFunnel
+            {
+                Identity = new ProductTailscaleIdentityResult(false, null, errorCode),
+            });
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.Equal(0, launchCalls);
+        Assert.False(viewModel.IsTailscaleRecoveryActive);
+        Assert.True(viewModel.HasError);
+        Assert.False(viewModel.HasPublicUrl);
+        Assert.Equal(
+            LocalizationService.Current.Get(localizationKey, errorCode),
+            viewModel.StatusMessage);
+        Assert.NotEqual(
+            LocalizationService.Current.Get("remote.service.reconnected"),
+            viewModel.StatusMessage);
     }
 
     [Fact]
@@ -372,6 +828,13 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             {
                 launchCalls++;
                 return true;
+            },
+            persistentFunnel: new StubPersistentFunnel
+            {
+                Identity = new ProductTailscaleIdentityResult(
+                    false,
+                    null,
+                    "tailscale.hostname_unavailable"),
             });
         await viewModel.InitializeAsync();
 
@@ -535,11 +998,20 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         public ProductRemoteAccessStatus InitialRemoteStatus { get; set; } = Status(false);
         public ProductRemoteAccessStatus StartRemoteStatus { get; set; } = Status(true);
         public ProductRemoteAccessStatus ReconnectRemoteStatus { get; set; } = Status(true);
+        public ProductRemoteAccessStatus RouteCommitStatus { get; set; } = Status(true);
+        public ProductRemoteAccessStatus RouteRemovalCommitStatus { get; set; } = Status(false);
+        public ProductRemoteAccessRouteChallenge? RouteRemovalChallenge { get; set; }
         public Queue<ProductRemoteAccessStatus> StatusResponses { get; } = [];
         public Queue<ProductRemoteAccessStatus> ReconnectResponses { get; } = [];
+        public List<string>? Events { get; set; }
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
         public int ReconnectCalls { get; private set; }
+        public int RoutePrepareCalls { get; private set; }
+        public int RouteCommitCalls { get; private set; }
+        public int RouteRemovalPrepareCalls { get; private set; }
+        public int RouteRemovalCommitCalls { get; private set; }
+        public string? LastRouteRemovalRecoveryPublicUrl { get; private set; }
         public TaskCompletionSource StartObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReconnectObserved { get; } = new(
@@ -558,6 +1030,7 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         public Task<ProductRemoteAccessStatus> StartRemoteAccessAsync(
             CancellationToken cancellationToken = default)
         {
+            Events?.Add("client.start");
             StartCalls++;
             StartObserved.TrySetResult();
             return Task.FromResult(StartRemoteStatus);
@@ -566,6 +1039,7 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         public Task<ProductRemoteAccessStatus> StopRemoteAccessAsync(
             CancellationToken cancellationToken = default)
         {
+            Events?.Add("client.stop");
             StopCalls++;
             return Task.FromResult(Status(false));
         }
@@ -573,11 +1047,59 @@ public sealed class ProductServiceRemoteAccessViewModelTests
         public Task<ProductRemoteAccessStatus> ReconnectRemoteAccessAsync(
             CancellationToken cancellationToken = default)
         {
+            Events?.Add("client.reconnect");
             ReconnectCalls++;
             ReconnectObserved.TrySetResult();
             return Task.FromResult(ReconnectResponses.Count > 0
                 ? ReconnectResponses.Dequeue()
                 : ReconnectRemoteStatus);
+        }
+
+        public Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteAsync(
+            string publicUrl,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("client.route.prepare");
+            RoutePrepareCalls++;
+            return Task.FromResult(new ProductRemoteAccessRouteChallenge(
+                Guid.NewGuid(),
+                publicUrl,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                42_871));
+        }
+
+        public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteAsync(
+            Guid operationId,
+            DateTimeOffset verifiedAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("client.route.commit");
+            RouteCommitCalls++;
+            return Task.FromResult(RouteCommitStatus);
+        }
+
+        public Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteRemovalAsync(
+            string? publicUrl,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("client.route-removal.prepare");
+            RouteRemovalPrepareCalls++;
+            LastRouteRemovalRecoveryPublicUrl = publicUrl;
+            return Task.FromResult(RouteRemovalChallenge ?? new ProductRemoteAccessRouteChallenge(
+                Guid.NewGuid(),
+                "https://x-mcsv.tail123.ts.net/",
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                42_871));
+        }
+
+        public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteRemovalAsync(
+            Guid operationId,
+            DateTimeOffset verifiedAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("client.route-removal.commit");
+            RouteRemovalCommitCalls++;
+            return Task.FromResult(RouteRemovalCommitStatus);
         }
 
         public Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
@@ -647,12 +1169,75 @@ public sealed class ProductServiceRemoteAccessViewModelTests
             => new(
                 enabled,
                 enabled,
-                enabled,
-                enabled ? "https://service.tailnet.ts.net" : null,
+                false,
+                enabled ? "https://x-mcsv.tail123.ts.net/" : null,
                 enabled ? "running" : "disabled",
                 null,
                 DateTimeOffset.UtcNow,
-                null);
+                null)
+            {
+                RouteConfigured = enabled,
+                RouteStatusCached = enabled,
+                RouteLastVerifiedAtUtc = enabled ? DateTimeOffset.UtcNow : null,
+            };
+    }
+
+    private sealed class StubPersistentFunnel : IProductTailscalePersistentFunnelService
+    {
+        public static ProductTailscaleIdentityResult ReadyIdentity { get; } = new(
+            true,
+            new Uri("https://x-mcsv.tail123.ts.net/", UriKind.Absolute),
+            null);
+
+        public ProductTailscaleIdentityResult Identity { get; set; } = ReadyIdentity;
+        public Queue<ProductTailscaleIdentityResult> IdentityResponses { get; } = [];
+        public ProductPersistentFunnelOperationResult EnsureResult { get; set; } = new(
+            true,
+            true,
+            ProductPersistentFunnelDisposition.ExactTarget,
+            DateTimeOffset.UtcNow,
+            null);
+        public ProductPersistentFunnelOperationResult RemoveResult { get; set; } = new(
+            true,
+            true,
+            ProductPersistentFunnelDisposition.Absent,
+            DateTimeOffset.UtcNow,
+            null);
+        public int EnsureCalls { get; private set; }
+        public int RemoveCalls { get; private set; }
+        public bool? LastAllowExistingVerifiedRoute { get; private set; }
+        public List<string>? Events { get; set; }
+
+        public Task<ProductTailscaleIdentityResult> EnsureProductIdentityAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("funnel.identity");
+            return Task.FromResult(IdentityResponses.Count > 0
+                ? IdentityResponses.Dequeue()
+                : Identity);
+        }
+
+        public Task<ProductPersistentFunnelOperationResult> EnsureRouteAsync(
+            Uri expectedPublicOrigin,
+            int localPort,
+            bool allowExistingVerifiedRoute,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("funnel.ensure");
+            EnsureCalls++;
+            LastAllowExistingVerifiedRoute = allowExistingVerifiedRoute;
+            return Task.FromResult(EnsureResult);
+        }
+
+        public Task<ProductPersistentFunnelOperationResult> RemoveRouteAsync(
+            Uri expectedPublicOrigin,
+            int localPort,
+            CancellationToken cancellationToken = default)
+        {
+            Events?.Add("funnel.remove");
+            RemoveCalls++;
+            return Task.FromResult(RemoveResult);
+        }
     }
 
     private static ProductRemoteAccessStatus RemoteStatus(

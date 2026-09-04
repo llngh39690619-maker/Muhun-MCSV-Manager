@@ -758,6 +758,59 @@ public sealed class ProductServiceClient : IProductServiceClient
         CancellationToken cancellationToken = default)
         => SendRemoteAccessAsync(ProductIpcProtocol.RemoteAccessReconnectMethod, cancellationToken);
 
+    public async Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteAsync(
+        string publicUrl,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(publicUrl);
+        var response = await SendAsync(
+                CreateRequest(ProductIpcProtocol.RemoteAccessRoutePrepareMethod) with
+                {
+                    ClientMinimumApiVersion = ProductApiProtocol.PersistentRemoteRouteVersion,
+                    RemoteAccessPublicUrl = publicUrl,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+        return response.RemoteAccessRouteChallenge
+               ?? throw MissingPayload("remote access route challenge");
+    }
+
+    public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => CommitRemoteAccessRouteOperationAsync(
+            ProductIpcProtocol.RemoteAccessRouteCommitMethod,
+            operationId,
+            verifiedAtUtc,
+            cancellationToken);
+
+    public async Task<ProductRemoteAccessRouteChallenge> PrepareRemoteAccessRouteRemovalAsync(
+        string? publicUrl,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+                CreateRequest(ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod) with
+                {
+                    ClientMinimumApiVersion = ProductApiProtocol.PersistentRemoteRouteVersion,
+                    RemoteAccessPublicUrl = publicUrl,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+        return response.RemoteAccessRouteChallenge
+               ?? throw MissingPayload("remote access route removal challenge");
+    }
+
+    public Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteRemovalAsync(
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken = default)
+        => CommitRemoteAccessRouteOperationAsync(
+            ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod,
+            operationId,
+            verifiedAtUtc,
+            cancellationToken);
+
     public async Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -1288,6 +1341,33 @@ public sealed class ProductServiceClient : IProductServiceClient
         return response.RemoteAccess ?? throw MissingPayload("remote-access status");
     }
 
+    private async Task<ProductRemoteAccessStatus> CommitRemoteAccessRouteOperationAsync(
+        string method,
+        Guid operationId,
+        DateTimeOffset verifiedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        if (operationId == Guid.Empty)
+        {
+            throw new ArgumentException("Remote access operation id must not be empty.", nameof(operationId));
+        }
+        if (verifiedAtUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("Remote access verification time must use UTC.", nameof(verifiedAtUtc));
+        }
+
+        var response = await SendAsync(
+                CreateRequest(method) with
+                {
+                    ClientMinimumApiVersion = ProductApiProtocol.PersistentRemoteRouteVersion,
+                    RemoteAccessOperationId = operationId,
+                    RemoteAccessVerifiedAtUtc = verifiedAtUtc,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+        return response.RemoteAccess ?? throw MissingPayload("remote-access status");
+    }
+
     private async Task<ProductIpcResponse> SendAsync(
         ProductIpcRequest request,
         CancellationToken cancellationToken)
@@ -1441,6 +1521,10 @@ public sealed class ProductServiceClient : IProductServiceClient
             ProductIpcProtocol.RemoteAccessStartMethod or
             ProductIpcProtocol.RemoteAccessStopMethod or
             ProductIpcProtocol.RemoteAccessReconnectMethod or
+            ProductIpcProtocol.RemoteAccessRoutePrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteCommitMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod or
             ProductIpcProtocol.ProviderInstallMethod or
             ProductIpcProtocol.ProviderUninstallMethod)
         {

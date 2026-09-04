@@ -85,6 +85,10 @@ public sealed class ProductLocalIpcAuditPolicyTests : IDisposable
     [InlineData(ProductIpcProtocol.ProviderInstallMethod)]
     [InlineData(ProductIpcProtocol.ProviderPublisherPinMethod)]
     [InlineData(ProductIpcProtocol.ProviderPublisherRemoveMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRoutePrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteCommitMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod)]
     public void SensitiveAdministrationMethods_AreClassified(string method)
     {
         var descriptor = ProductLocalIpcAuditPolicy.Describe(Request(method));
@@ -92,6 +96,16 @@ public sealed class ProductLocalIpcAuditPolicyTests : IDisposable
         Assert.StartsWith("ipc.", descriptor.ActionCode, StringComparison.Ordinal);
         Assert.NotEmpty(descriptor.PermissionCode);
     }
+
+    [Theory]
+    [InlineData(ProductIpcProtocol.RemoteAccessRoutePrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteCommitMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod)]
+    [InlineData(ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod)]
+    public void PersistentRouteMutations_RequireServiceManageAudit(string method)
+        => Assert.Equal(
+            ProductPermissionCodes.ServiceManage,
+            ProductLocalIpcAuditPolicy.Describe(Request(method))!.PermissionCode);
 
     [Fact]
     public void ServerPropertiesAudit_DistinguishesReadFromWritePermission()

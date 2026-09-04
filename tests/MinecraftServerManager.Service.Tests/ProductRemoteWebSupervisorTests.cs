@@ -168,6 +168,305 @@ public sealed class ProductRemoteWebSupervisorTests
         Assert.Equal(running.PublicUrl, disconnected.PublicUrl);
     }
 
+    [Fact]
+    public async Task ReceiptMode_NoReceiptRequestsInteractiveProvisioningWithoutClaimingLiveRoute()
+    {
+        var events = new List<string>();
+        var platform = new FakePlatform(events, []);
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, _, _, _) = CreateReceiptSupervisor(platform, hostFactory);
+
+        var status = await supervisor.EnableAsync(CancellationToken.None);
+
+        Assert.True(status.DesiredEnabled);
+        Assert.False(status.HostRunning);
+        Assert.False(status.FunnelRunning);
+        Assert.False(status.RouteConfigured);
+        Assert.False(status.RouteStatusCached);
+        Assert.Null(status.RouteLastVerifiedAtUtc);
+        Assert.Equal("awaiting_interactive_route", status.State);
+        Assert.Equal("tailscale.interactive_route_required", status.ErrorCode);
+        Assert.Equal(0, platform.NodeStatusCount);
+        Assert.Equal(0, platform.EnsureHostnameCount);
+        Assert.Equal(0, platform.StartCount);
+        Assert.Equal(0, hostFactory.StartCount);
+    }
+
+    [Fact]
+    public async Task ReceiptMode_PrepareCommitAndServiceRecreationRestoreOnlyCachedConfiguration()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var time = new FixedTimeProvider(now);
+        var events = new List<string>();
+        var platform = new FakePlatform(events, []);
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, _, routeStore, layout) = CreateReceiptSupervisor(
+            platform,
+            hostFactory,
+            timeProvider: time);
+
+        var challenge = await supervisor.PrepareRouteAsync(
+            "https://x-mcsv.tail123.ts.net/",
+            CancellationToken.None);
+
+        Assert.Equal("https://x-mcsv.tail123.ts.net/", challenge.PublicUrl);
+        Assert.Equal(ProductRemoteWebSupervisor.LocalWebPort, challenge.LocalPort);
+        Assert.Equal(now.AddMinutes(2), challenge.ExpiresAtUtc);
+        Assert.Null(routeStore.Read());
+        Assert.True(supervisor.Snapshot.HostRunning);
+        Assert.False(supervisor.Snapshot.RouteConfigured);
+
+        var committed = await supervisor.CommitRouteAsync(
+            challenge.OperationId,
+            now,
+            CancellationToken.None);
+
+        Assert.True(committed.HostRunning);
+        Assert.False(committed.FunnelRunning);
+        Assert.True(committed.RouteConfigured);
+        Assert.True(committed.RouteStatusCached);
+        Assert.Equal(now, committed.RouteLastVerifiedAtUtc);
+        Assert.Equal("https://x-mcsv.tail123.ts.net/", committed.PublicUrl);
+        Assert.Equal("configured", committed.State);
+        Assert.Equal(now, routeStore.Read()?.VerifiedAtUtc);
+        Assert.Equal(0, platform.NodeStatusCount);
+        Assert.Equal(0, platform.StartCount);
+
+        var restartedEvents = new List<string>();
+        var restartedPlatform = new FakePlatform(restartedEvents, []);
+        var restartedHostFactory = new FakeHostFactory(restartedEvents);
+        var (restarted, _, _, _) = CreateReceiptSupervisor(
+            restartedPlatform,
+            restartedHostFactory,
+            layout,
+            time);
+
+        var restored = await restarted.EnableAsync(CancellationToken.None);
+
+        Assert.True(restored.HostRunning);
+        Assert.False(restored.FunnelRunning);
+        Assert.True(restored.RouteConfigured);
+        Assert.True(restored.RouteStatusCached);
+        Assert.Equal(now, restored.RouteLastVerifiedAtUtc);
+        Assert.Equal("configured_cached", restored.State);
+        Assert.Equal("https://x-mcsv.tail123.ts.net/", restored.PublicUrl);
+        Assert.Equal(1, restartedHostFactory.StartCount);
+        Assert.Equal(0, restartedPlatform.NodeStatusCount);
+        Assert.Equal(0, restartedPlatform.StartCount);
+    }
+
+    [Fact]
+    public async Task ReceiptMode_RemovalRetainsHostAndReceiptUntilMatchingVerifiedCommit()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var time = new FixedTimeProvider(now);
+        var events = new List<string>();
+        var platform = new FakePlatform(events, []);
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, intentStore, routeStore, _) = CreateReceiptSupervisor(
+            platform,
+            hostFactory,
+            timeProvider: time);
+        routeStore.WriteVerified("https://x-mcsv.tail123.ts.net/", now);
+        var running = await supervisor.EnableAsync(CancellationToken.None);
+        var challenge = await supervisor.PrepareRouteRemovalAsync(null, CancellationToken.None);
+
+        Assert.True(running.HostRunning);
+        Assert.True(supervisor.Snapshot.HostRunning);
+        Assert.True(supervisor.Snapshot.RouteConfigured);
+        Assert.NotNull(routeStore.Read());
+
+        var mismatch = await Assert.ThrowsAsync<ProductRemoteRouteOperationException>(() =>
+            supervisor.CommitRouteRemovalAsync(
+                Guid.NewGuid(),
+                now,
+                CancellationToken.None));
+
+        Assert.Equal("remote.route_challenge_invalid", mismatch.Code);
+        Assert.True(supervisor.Snapshot.HostRunning);
+        Assert.True(supervisor.Snapshot.RouteConfigured);
+        Assert.NotNull(routeStore.Read());
+        Assert.DoesNotContain("host.dispose", events);
+
+        var disabled = await supervisor.CommitRouteRemovalAsync(
+            challenge.OperationId,
+            now,
+            CancellationToken.None);
+
+        Assert.False(disabled.DesiredEnabled);
+        Assert.False(disabled.HostRunning);
+        Assert.False(disabled.FunnelRunning);
+        Assert.False(disabled.RouteConfigured);
+        Assert.False(disabled.RouteStatusCached);
+        Assert.Null(disabled.PublicUrl);
+        Assert.Null(routeStore.Read());
+        Assert.False(intentStore.ReadDesiredEnabled());
+        AssertOrder(events, "host.revoke", "host.quiesce", "host.dispose");
+    }
+
+    [Fact]
+    public async Task ReceiptMode_DirectDisableCannotDeleteRouteOrStopHostBeforeDesktopReset()
+    {
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var events = new List<string>();
+        var platform = new FakePlatform(events, []);
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, intentStore, routeStore, _) = CreateReceiptSupervisor(
+            platform,
+            hostFactory,
+            timeProvider: new FixedTimeProvider(now));
+        routeStore.WriteVerified("https://x-mcsv.tail123.ts.net/", now);
+        await supervisor.EnableAsync(CancellationToken.None);
+
+        var blocked = await supervisor.DisableAsync(CancellationToken.None);
+
+        Assert.True(blocked.DesiredEnabled);
+        Assert.True(blocked.HostRunning);
+        Assert.True(blocked.RouteConfigured);
+        Assert.Equal("blocked", blocked.State);
+        Assert.Equal("tailscale.interactive_route_removal_required", blocked.ErrorCode);
+        Assert.NotNull(routeStore.Read());
+        Assert.True(intentStore.ReadDesiredEnabled());
+        Assert.DoesNotContain("host.dispose", events);
+    }
+
+    [Fact]
+    public async Task ReceiptMode_PrepareIsIdempotentAndCannotOverwriteUnexpiredOperation()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var time = new FixedTimeProvider(now);
+        var events = new List<string>();
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, _, _, _) = CreateReceiptSupervisor(
+            new FakePlatform(events, []),
+            hostFactory,
+            timeProvider: time);
+
+        var first = await supervisor.PrepareRouteAsync(publicUrl, CancellationToken.None);
+        var repeated = await supervisor.PrepareRouteAsync(publicUrl, CancellationToken.None);
+
+        Assert.Equal(first, repeated);
+        Assert.Equal(1, hostFactory.StartCount);
+        var otherOrigin = await Assert.ThrowsAsync<ProductRemoteRouteOperationException>(() =>
+            supervisor.PrepareRouteAsync(
+                "https://x-mcsv.other-tail.ts.net/",
+                CancellationToken.None));
+        Assert.Equal("remote.route_operation_in_progress", otherOrigin.Code);
+        var blocked = await Assert.ThrowsAsync<ProductRemoteRouteOperationException>(() =>
+            supervisor.PrepareRouteRemovalAsync(null, CancellationToken.None));
+        Assert.Equal("remote.route_operation_in_progress", blocked.Code);
+
+        time.UtcNow = now.AddMinutes(3);
+        var replacement = await supervisor.PrepareRouteAsync(publicUrl, CancellationToken.None);
+
+        Assert.NotEqual(first.OperationId, replacement.OperationId);
+        Assert.Equal(1, hostFactory.StartCount);
+    }
+
+    [Fact]
+    public async Task ReceiptMode_CorruptReceiptRequiresCanonicalTrustedClientRecoveryBeforeRemoval()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var events = new List<string>();
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, intentStore, routeStore, layout) = CreateReceiptSupervisor(
+            new FakePlatform(events, []),
+            hostFactory,
+            timeProvider: new FixedTimeProvider(now));
+        File.WriteAllText(
+            Path.Combine(layout.Operations, ProductRemoteWebRouteStore.FileName),
+            """
+            {
+              "schemaVersion": 1,
+              "publicOrigin": "https://x-mcsv.tail123.ts.net/",
+              "localPort": 25565,
+              "localTarget": "http://127.0.0.1:25565",
+              "verifiedAtUtc": "2026-09-05T01:02:03+00:00"
+            }
+            """);
+
+        var invalid = await supervisor.EnableAsync(CancellationToken.None);
+        Assert.Equal("remote.route_receipt_invalid", invalid.ErrorCode);
+        Assert.False(invalid.HostRunning);
+
+        var missing = await Assert.ThrowsAsync<ProductRemoteRouteOperationException>(() =>
+            supervisor.PrepareRouteRemovalAsync(null, CancellationToken.None));
+        Assert.Equal("remote.route_recovery_url_required", missing.Code);
+
+        var challenge = await supervisor.PrepareRouteRemovalAsync(publicUrl, CancellationToken.None);
+        var repeated = await supervisor.PrepareRouteRemovalAsync(publicUrl, CancellationToken.None);
+        Assert.Equal(challenge, repeated);
+        Assert.True(supervisor.Snapshot.HostRunning);
+        Assert.Equal(ProductRemoteWebSupervisor.LocalWebPort, hostFactory.Port);
+
+        var disabled = await supervisor.CommitRouteRemovalAsync(
+            challenge.OperationId,
+            now,
+            CancellationToken.None);
+
+        Assert.False(disabled.DesiredEnabled);
+        Assert.False(disabled.HostRunning);
+        Assert.Null(routeStore.Read());
+        Assert.False(intentStore.ReadDesiredEnabled());
+    }
+
+    [Theory]
+    [InlineData("https://x-mcsv.attacker.example/")]
+    [InlineData("https://x-mcsv.tail123.ts.net:8443/")]
+    public async Task ReceiptMode_CorruptReceiptRejectsUntrustedRecoveryOriginWithoutStartingHost(
+        string recoveryPublicUrl)
+    {
+        var events = new List<string>();
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, intentStore, _, layout) = CreateReceiptSupervisor(
+            new FakePlatform(events, []),
+            hostFactory);
+        var receiptPath = Path.Combine(
+            layout.Operations,
+            ProductRemoteWebRouteStore.FileName);
+        File.WriteAllText(
+            receiptPath,
+            """
+            {
+              "schemaVersion": 1,
+              "publicOrigin": "https://x-mcsv.tail123.ts.net/",
+              "localPort": 25565,
+              "localTarget": "http://127.0.0.1:25565",
+              "verifiedAtUtc": "2026-09-05T01:02:03+00:00"
+            }
+            """);
+
+        var invalid = await supervisor.EnableAsync(CancellationToken.None);
+        var rejected = await Assert.ThrowsAsync<ArgumentException>(() =>
+            supervisor.PrepareRouteRemovalAsync(recoveryPublicUrl, CancellationToken.None));
+
+        Assert.Equal("remote.route_receipt_invalid", invalid.ErrorCode);
+        Assert.Equal("publicOrigin", rejected.ParamName);
+        Assert.Equal(0, hostFactory.StartCount);
+        Assert.True(File.Exists(receiptPath));
+        Assert.True(intentStore.ReadDesiredEnabled());
+    }
+
+    [Fact]
+    public async Task ReceiptMode_ValidReceiptRejectsRecoveryUrl()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+        var now = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var events = new List<string>();
+        var (supervisor, _, routeStore, _) = CreateReceiptSupervisor(
+            new FakePlatform(events, []),
+            new FakeHostFactory(events),
+            timeProvider: new FixedTimeProvider(now));
+        routeStore.WriteVerified(publicUrl, now);
+
+        var rejected = await Assert.ThrowsAsync<ProductRemoteRouteOperationException>(() =>
+            supervisor.PrepareRouteRemovalAsync(publicUrl, CancellationToken.None));
+
+        Assert.Equal("remote.route_recovery_not_allowed", rejected.Code);
+    }
+
     private static (ProductRemoteWebSupervisor Supervisor, ProductRemoteWebIntentStore IntentStore)
         CreateSupervisor(FakePlatform platform, FakeHostFactory hostFactory)
     {
@@ -185,12 +484,47 @@ public sealed class ProductRemoteWebSupervisorTests
             },
             state,
             intentStore,
+            new ProductRemoteWebRouteStore(layout),
             hostFactory,
             platform,
             new FakeApplicationLifetime(),
             TimeProvider.System,
             NullLogger<ProductRemoteWebSupervisor>.Instance);
         return (supervisor, intentStore);
+    }
+
+    private static (
+        ProductRemoteWebSupervisor Supervisor,
+        ProductRemoteWebIntentStore IntentStore,
+        ProductRemoteWebRouteStore RouteStore,
+        ProductDataLayout Layout) CreateReceiptSupervisor(
+            FakePlatform platform,
+            FakeHostFactory hostFactory,
+            ProductDataLayout? layout = null,
+            TimeProvider? timeProvider = null)
+    {
+        layout ??= ProductServerRegistryTests.CreateLayout();
+        layout.EnsureCreated();
+        var intentStore = new ProductRemoteWebIntentStore(layout);
+        var routeStore = new ProductRemoteWebRouteStore(layout);
+        var state = new ProductServiceState(TimeProvider.System);
+        state.Initialize(Guid.NewGuid());
+        state.MarkReady();
+        var supervisor = new ProductRemoteWebSupervisor(
+            new ProductServiceOptions
+            {
+                DataRoot = layout.Root,
+                UseInteractiveTailscaleRouteReceipts = true,
+            },
+            state,
+            intentStore,
+            routeStore,
+            hostFactory,
+            platform,
+            new FakeApplicationLifetime(),
+            timeProvider ?? TimeProvider.System,
+            NullLogger<ProductRemoteWebSupervisor>.Instance);
+        return (supervisor, intentStore, routeStore, layout);
     }
 
     private static void AssertOrder(IReadOnlyList<string> events, params string[] expected)
@@ -331,5 +665,12 @@ public sealed class ProductRemoteWebSupervisorTests
         public CancellationToken ApplicationStopping => _stopping.Token;
         public CancellationToken ApplicationStopped => _stopped.Token;
         public void StopApplication() => _stopping.Cancel();
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
     }
 }

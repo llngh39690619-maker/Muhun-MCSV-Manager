@@ -45,6 +45,10 @@ public static class ProductIpcProtocol
     public const string RemoteAccessStartMethod = "remote.access.start";
     public const string RemoteAccessStopMethod = "remote.access.stop";
     public const string RemoteAccessReconnectMethod = "remote.access.reconnect";
+    public const string RemoteAccessRoutePrepareMethod = "remote.access.route.prepare";
+    public const string RemoteAccessRouteCommitMethod = "remote.access.route.commit";
+    public const string RemoteAccessRouteRemovalPrepareMethod = "remote.access.route-removal.prepare";
+    public const string RemoteAccessRouteRemovalCommitMethod = "remote.access.route-removal.commit";
     public const string RemoteAccountListMethod = "remote.account.list";
     public const string RemoteAccountCreateMethod = "remote.account.create";
     public const string RemoteAccountAuthorizationUpdateMethod = "remote.account.authorization.update";
@@ -126,6 +130,12 @@ public sealed record ProductIpcRequest(
 
     public ProductUpdateRemoteAccountPinRequest? RemoteAccountPin { get; init; }
 
+    public string? RemoteAccessPublicUrl { get; init; }
+
+    public Guid? RemoteAccessOperationId { get; init; }
+
+    public DateTimeOffset? RemoteAccessVerifiedAtUtc { get; init; }
+
     public ProductDiscordWebhookUpdateRequest? DiscordWebhook { get; init; }
 
     public ProductNotificationPreferences? NotificationPreferences { get; init; }
@@ -186,6 +196,8 @@ public sealed record ProductIpcResponse(
     public ProductUpdateOperationResult? Update { get; init; }
 
     public ProductRemoteAccessStatus? RemoteAccess { get; init; }
+
+    public ProductRemoteAccessRouteChallenge? RemoteAccessRouteChallenge { get; init; }
 
     public ProductRemoteAccountPage? RemoteAccountPage { get; init; }
 
@@ -449,6 +461,71 @@ public static class ProductIpcRequestValidator
             return new ProductIpcError(
                 "protocol.update_schedule_invalid",
                 "Update schedule time must use UTC.");
+        }
+
+        var preparesRemoteAccessRoute =
+            request.Method == ProductIpcProtocol.RemoteAccessRoutePrepareMethod;
+        var preparesRemoteAccessRouteRemoval =
+            request.Method == ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod;
+        if (preparesRemoteAccessRoute &&
+            (string.IsNullOrWhiteSpace(request.RemoteAccessPublicUrl) ||
+             request.RemoteAccessPublicUrl.Length > 512))
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_public_url_required",
+                "A bounded remote access public URL is required.");
+        }
+
+        if (preparesRemoteAccessRouteRemoval &&
+            request.RemoteAccessPublicUrl is { } recoveryPublicUrl &&
+            (string.IsNullOrWhiteSpace(recoveryPublicUrl) || recoveryPublicUrl.Length > 512))
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_recovery_public_url_invalid",
+                "A route-removal recovery URL must be non-empty and bounded when supplied.");
+        }
+
+        if (!preparesRemoteAccessRoute &&
+            !preparesRemoteAccessRouteRemoval &&
+            request.RemoteAccessPublicUrl is not null)
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_public_url_unexpected",
+                "A remote access public URL is valid only while preparing or recovering route removal.");
+        }
+
+        var commitsRemoteAccessRoute = request.Method is
+            ProductIpcProtocol.RemoteAccessRouteCommitMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod;
+        if (commitsRemoteAccessRoute &&
+            request.RemoteAccessOperationId.GetValueOrDefault() == Guid.Empty)
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_operation_id_required",
+                "A non-empty remote access operation id is required.");
+        }
+
+        if (!commitsRemoteAccessRoute && request.RemoteAccessOperationId is not null)
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_operation_id_unexpected",
+                "A remote access operation id is valid only while committing a route operation.");
+        }
+
+        if (commitsRemoteAccessRoute &&
+            (request.RemoteAccessVerifiedAtUtc is not { Offset: var verifiedOffset } ||
+             verifiedOffset != TimeSpan.Zero))
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_verification_time_invalid",
+                "A UTC remote access route verification time is required.");
+        }
+
+        if (!commitsRemoteAccessRoute && request.RemoteAccessVerifiedAtUtc is not null)
+        {
+            return new ProductIpcError(
+                "protocol.remote_access_verification_time_unexpected",
+                "A route verification time is valid only while committing a route operation.");
         }
 
         var requiresRemoteUsername = request.Method is
@@ -777,6 +854,10 @@ public static class ProductIpcRequestValidator
         ProductIpcProtocol.RemoteAccessStartMethod,
         ProductIpcProtocol.RemoteAccessStopMethod,
         ProductIpcProtocol.RemoteAccessReconnectMethod,
+        ProductIpcProtocol.RemoteAccessRoutePrepareMethod,
+        ProductIpcProtocol.RemoteAccessRouteCommitMethod,
+        ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod,
+        ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod,
         ProductIpcProtocol.RemoteAccountListMethod,
         ProductIpcProtocol.RemoteAccountCreateMethod,
         ProductIpcProtocol.RemoteAccountAuthorizationUpdateMethod,

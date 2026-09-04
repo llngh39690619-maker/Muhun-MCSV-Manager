@@ -5350,9 +5350,9 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        // In formal product mode the Windows Service is the only owner of Kestrel, Funnel,
-        // credentials, remembered devices, and remote desired state. Never construct the legacy
-        // in-process coordinator (or its WPF backend/security store) on this path.
+        // In formal product mode the Windows Service owns Kestrel, credentials, remembered
+        // devices, and remote desired state. The GUI only performs the narrowly scoped active-user
+        // Tailscale route handshake. Never construct the legacy coordinator on this path.
         if (_productServiceController is not null)
         {
             OpenRemoteManagementCommand.NotifyCanExecuteChanged();
@@ -5366,7 +5366,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             {
                 var status = await _productServiceController.GetRemoteAccessStatusAsync(
                     _applicationShutdownCancellation.Token);
-                return status.HostRunning && status.FunnelRunning
+                return status.HostRunning && status.RouteConfigured && status.RouteStatusCached
                     ? L("main.vm.remote.serviceRunning", status.PublicUrl ?? status.State)
                     : status.DesiredEnabled
                         ? L("main.vm.remote.serviceConnecting", status.ErrorCode ?? status.State)

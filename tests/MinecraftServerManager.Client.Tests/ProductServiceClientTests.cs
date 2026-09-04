@@ -447,6 +447,82 @@ public sealed class ProductServiceClientTests
     }
 
     [Fact]
+    public async Task PersistentRouteRequests_RequireApi112AndScopeRecoveryUrlToRemovalPrepare()
+    {
+        const string publicUrl = "https://x-mcsv.tail123.ts.net/";
+        var pipeName = $"muhun-test-{Guid.NewGuid():N}";
+        var provisionId = Guid.NewGuid();
+        var removalId = Guid.NewGuid();
+        var verifiedAtUtc = new DateTimeOffset(2026, 9, 5, 1, 2, 3, TimeSpan.Zero);
+        var server = RunServerAsync(pipeName, 4, request =>
+        {
+            Assert.Equal(
+                ProductApiProtocol.PersistentRemoteRouteVersion,
+                request.ClientMinimumApiVersion);
+            Assert.Equal(ProductApiProtocol.CurrentVersion, request.ClientMaximumApiVersion);
+            return request.Method switch
+            {
+                ProductIpcProtocol.RemoteAccessRoutePrepareMethod =>
+                    ChallengeResponse(request, provisionId, publicUrl),
+                ProductIpcProtocol.RemoteAccessRouteCommitMethod =>
+                    CommitResponse(request, provisionId, verifiedAtUtc, publicUrl),
+                ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod =>
+                    ChallengeResponse(request, removalId, publicUrl),
+                ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod =>
+                    CommitResponse(request, removalId, verifiedAtUtc, publicUrl),
+                _ => throw new InvalidOperationException("Unexpected persistent-route method."),
+            };
+        });
+        await using var client = new ProductServiceClient(pipeName);
+
+        var provision = await client.PrepareRemoteAccessRouteAsync(publicUrl);
+        await client.CommitRemoteAccessRouteAsync(provision.OperationId, verifiedAtUtc);
+        var removal = await client.PrepareRemoteAccessRouteRemovalAsync(publicUrl);
+        await client.CommitRemoteAccessRouteRemovalAsync(removal.OperationId, verifiedAtUtc);
+
+        await server;
+
+        static ProductIpcResponse ChallengeResponse(
+            ProductIpcRequest request,
+            Guid operationId,
+            string expectedPublicUrl)
+        {
+            Assert.Equal(expectedPublicUrl, request.RemoteAccessPublicUrl);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                RemoteAccessRouteChallenge = new ProductRemoteAccessRouteChallenge(
+                    operationId,
+                    expectedPublicUrl,
+                    DateTimeOffset.UtcNow.AddMinutes(2),
+                    42871),
+            };
+        }
+
+        static ProductIpcResponse CommitResponse(
+            ProductIpcRequest request,
+            Guid expectedOperationId,
+            DateTimeOffset expectedVerifiedAtUtc,
+            string expectedPublicUrl)
+        {
+            Assert.Equal(expectedOperationId, request.RemoteAccessOperationId);
+            Assert.Equal(expectedVerifiedAtUtc, request.RemoteAccessVerifiedAtUtc);
+            Assert.Null(request.RemoteAccessPublicUrl);
+            return new ProductIpcResponse(1, request.RequestId, true, null, null)
+            {
+                RemoteAccess = new ProductRemoteAccessStatus(
+                    true,
+                    true,
+                    false,
+                    expectedPublicUrl,
+                    "configured",
+                    null,
+                    expectedVerifiedAtUtc,
+                    null),
+            };
+        }
+    }
+
+    [Fact]
     public async Task RemoteAccountList_PaginatesOneMaximumGrantAccountPerFrame()
     {
         var pipeName = $"muhun-test-{Guid.NewGuid():N}";

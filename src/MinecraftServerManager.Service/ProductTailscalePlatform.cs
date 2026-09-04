@@ -96,7 +96,10 @@ internal sealed class ProductTailscalePlatform(
                 null,
                 result.TimedOut
                     ? "tailscale.status_timeout"
-                    : "tailscale.status_failed");
+                    : ClassifyLocalApiFailure(
+                        result.StandardOutput,
+                        result.StandardError,
+                        "tailscale.status_failed"));
         }
 
         return ProductTailscaleProtocol.ParseNodeStatus(result.StandardOutput);
@@ -128,7 +131,10 @@ internal sealed class ProductTailscalePlatform(
                 ProductFunnelRouteDisposition.Indeterminate,
                 result.TimedOut
                     ? "tailscale.funnel_status_timeout"
-                    : "tailscale.funnel_status_failed");
+                    : ClassifyLocalApiFailure(
+                        result.StandardOutput,
+                        result.StandardError,
+                        "tailscale.funnel_status_failed"));
         }
 
         return ProductTailscaleProtocol.ParseFunnelStatus(
@@ -167,7 +173,10 @@ internal sealed class ProductTailscalePlatform(
                 false,
                 current.TimedOut
                     ? "tailscale.hostname_status_timeout"
-                    : "tailscale.hostname_status_failed");
+                    : ClassifyLocalApiFailure(
+                        current.StandardOutput,
+                        current.StandardError,
+                        "tailscale.hostname_status_failed"));
         }
 
         if (!TryParseMachineHostnameOutput(current.StandardOutput, out var configuredHostname))
@@ -196,10 +205,45 @@ internal sealed class ProductTailscalePlatform(
                 false,
                 update.TimedOut
                     ? "tailscale.hostname_set_timeout"
-                    : "tailscale.hostname_set_failed");
+                    : ClassifyLocalApiFailure(
+                        update.StandardOutput,
+                        update.StandardError,
+                        "tailscale.hostname_set_failed"));
         }
 
         return new ProductTailscaleHostnameUpdateResult(true, true, null);
+    }
+
+    /// <summary>
+    /// Reduces Tailscale's local diagnostic text to a small public error vocabulary. The raw
+    /// stderr is never copied into Service status or IPC responses because it can contain local
+    /// account and process details. Windows Tailscale permits only one active local user identity;
+    /// its tray process normally holds a long-running request, so a virtual Service SID receives
+    /// the stable "Tailscale already in use" rejection even though the daemon is healthy.
+    /// </summary>
+    internal static string ClassifyLocalApiFailure(
+        string standardOutput,
+        string standardError,
+        string fallbackErrorCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fallbackErrorCode);
+        var diagnostic = string.Concat(standardError, "\n", standardOutput);
+        if (diagnostic.Contains("Tailscale already in use", StringComparison.OrdinalIgnoreCase) ||
+            diagnostic.Contains("401 Unauthorized", StringComparison.OrdinalIgnoreCase))
+        {
+            return "tailscale.localapi_identity_conflict";
+        }
+
+        var namesLocalApi = diagnostic.Contains("local-tailscaled.sock", StringComparison.OrdinalIgnoreCase) ||
+                            diagnostic.Contains("ProtectedPrefix", StringComparison.OrdinalIgnoreCase) ||
+                            diagnostic.Contains(@"\\.\pipe\", StringComparison.OrdinalIgnoreCase);
+        var namesAccessDenied = diagnostic.Contains("access is denied", StringComparison.OrdinalIgnoreCase) ||
+                                diagnostic.Contains("access denied", StringComparison.OrdinalIgnoreCase) ||
+                                diagnostic.Contains("拒絕存取", StringComparison.Ordinal) ||
+                                diagnostic.Contains("存取被拒", StringComparison.Ordinal);
+        return namesLocalApi && namesAccessDenied
+            ? "tailscale.localapi_access_denied"
+            : fallbackErrorCode;
     }
 
     public Task<IProductOwnedFunnelProcess> StartFunnelAsync(

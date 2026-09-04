@@ -57,6 +57,57 @@ public sealed class ProductTailscalePlatformTests
         Assert.DoesNotContain("secret", route.ErrorCode, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(
+        "Tailscale already in use by another Windows user",
+        "tailscale.localapi_identity_conflict")]
+    [InlineData(
+        "401 Unauthorized",
+        "tailscale.localapi_identity_conflict")]
+    [InlineData(
+        @"open \\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled: Access is denied.",
+        "tailscale.localapi_access_denied")]
+    public async Task LocalApiIdentityFailures_AreClassifiedAcrossEveryBoundedCommand(
+        string standardError,
+        string expectedErrorCode)
+    {
+        var denied = new ProductTailscaleCommandResult(1, string.Empty, standardError, false);
+        var runner = new RecordingRunner
+        {
+            CommandResults = new Queue<ProductTailscaleCommandResult>(
+            [
+                denied,
+                denied,
+                denied,
+                new ProductTailscaleCommandResult(0, "old-machine\n", string.Empty, false),
+                denied,
+            ]),
+        };
+        var platform = new ProductTailscalePlatform(new FixedLocator(), runner);
+
+        var node = await platform.GetNodeStatusAsync(CancellationToken.None);
+        var route = await platform.GetFunnelStatusAsync(
+            "x-mcsv.tail.ts.net",
+            42871,
+            CancellationToken.None);
+        var getHostname = await platform.EnsureMachineHostnameAsync(
+            "x-mcsv",
+            CancellationToken.None);
+        var setHostname = await platform.EnsureMachineHostnameAsync(
+            "x-mcsv",
+            CancellationToken.None);
+
+        Assert.Equal(expectedErrorCode, node.ErrorCode);
+        Assert.Equal(ProductFunnelRouteDisposition.Indeterminate, route.Disposition);
+        Assert.Equal(expectedErrorCode, route.ErrorCode);
+        Assert.False(getHostname.Succeeded);
+        Assert.False(getHostname.Changed);
+        Assert.Equal(expectedErrorCode, getHostname.ErrorCode);
+        Assert.False(setHostname.Succeeded);
+        Assert.False(setHostname.Changed);
+        Assert.Equal(expectedErrorCode, setHostname.ErrorCode);
+    }
+
     [Fact]
     public async Task EnsureMachineHostname_LeavesExactXMcsvNameUnchanged()
     {

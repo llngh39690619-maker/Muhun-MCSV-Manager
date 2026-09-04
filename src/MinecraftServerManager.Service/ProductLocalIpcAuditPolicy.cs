@@ -97,7 +97,11 @@ public sealed class ProductLocalIpcAuditPolicy(
             ProductIpcProtocol.UpdateScheduleMethod => ProductPermissionCodes.UpdateManage,
             ProductIpcProtocol.RemoteAccessStartMethod or
             ProductIpcProtocol.RemoteAccessStopMethod or
-            ProductIpcProtocol.RemoteAccessReconnectMethod => ProductPermissionCodes.ServiceManage,
+            ProductIpcProtocol.RemoteAccessReconnectMethod or
+            ProductIpcProtocol.RemoteAccessRoutePrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteCommitMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalPrepareMethod or
+            ProductIpcProtocol.RemoteAccessRouteRemovalCommitMethod => ProductPermissionCodes.ServiceManage,
             ProductIpcProtocol.RemoteAccountCreateMethod or
             ProductIpcProtocol.RemoteAccountPinUpdateMethod or
             ProductIpcProtocol.RemoteAccountPinRevealMethod or
