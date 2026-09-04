@@ -121,6 +121,272 @@ public sealed class ProductServiceRemoteAccessViewModelTests
     }
 
     [Fact]
+    public async Task Reconnect_WhenSignedOut_LaunchesTailscaleAndDoesNotReportFalseSuccess()
+    {
+        var launchCalls = 0;
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: false,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "unavailable",
+                errorCode: "tailscale.backend_not_running"),
+            ReconnectRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: false,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "unavailable",
+                errorCode: "tailscale.backend_not_running"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () =>
+            {
+                launchCalls++;
+                return true;
+            },
+            delayAsync: (_, cancellationToken) =>
+                Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken),
+            tailscaleRecoveryPollInterval: TimeSpan.Zero,
+            tailscaleRecoveryAttempts: 1);
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.True(viewModel.RemoteStatus?.DesiredEnabled);
+        Assert.False(viewModel.RemoteStatus?.HostRunning);
+        Assert.False(viewModel.RemoteStatus?.FunnelRunning);
+        Assert.False(viewModel.HasPublicUrl);
+        Assert.True(viewModel.HasError);
+        Assert.True(viewModel.IsTailscaleRecoveryActive);
+        Assert.Equal(1, launchCalls);
+        Assert.Contains("tailscale", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("已要求", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("固定 HTTPS 網址已建立", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reconnect_AfterTailscaleSignIn_RetriesAndShowsFixedXMcsvUrl()
+    {
+        var signedOut = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "unavailable",
+            errorCode: "tailscale.backend_not_running");
+        var waiting = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "waiting",
+            errorCode: null);
+        var running = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: true,
+            funnelRunning: true,
+            publicUrl: "https://x-mcsv.tail123.ts.net/",
+            state: "running",
+            errorCode: null);
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = signedOut,
+            ReconnectRemoteStatus = running,
+        };
+        client.StatusResponses.Enqueue(signedOut);
+        client.StatusResponses.Enqueue(waiting);
+        client.ReconnectResponses.Enqueue(signedOut);
+        client.ReconnectResponses.Enqueue(running);
+        var launchCalls = 0;
+        var delayCalls = 0;
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () =>
+            {
+                launchCalls++;
+                return true;
+            },
+            delayAsync: (_, _) =>
+            {
+                delayCalls++;
+                return Task.CompletedTask;
+            },
+            tailscaleRecoveryPollInterval: TimeSpan.Zero,
+            tailscaleRecoveryAttempts: 2);
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => client.ReconnectCalls >= 2);
+        await viewModel.TailscaleRecoveryTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy && !viewModel.IsTailscaleRecoveryActive);
+
+        Assert.Equal(1, launchCalls);
+        Assert.Equal(1, delayCalls);
+        Assert.Equal(2, client.ReconnectCalls);
+        Assert.True(viewModel.RemoteStatus?.HostRunning);
+        Assert.True(viewModel.RemoteStatus?.FunnelRunning);
+        Assert.True(viewModel.HasPublicUrl);
+        Assert.Equal("https://x-mcsv.tail123.ts.net/", viewModel.PublicUrl);
+        Assert.False(viewModel.HasError);
+        Assert.Contains(viewModel.PublicUrl, viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Refresh_WhenDesiredRuntimeIsUnavailable_ShowsDiagnosticInsteadOfGenericSuccess()
+    {
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = RemoteStatus(
+                desiredEnabled: true,
+                hostRunning: false,
+                funnelRunning: false,
+                publicUrl: null,
+                state: "unavailable",
+                errorCode: "tailscale.backend_not_running"),
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () => throw new InvalidOperationException("Refresh must not launch Tailscale."));
+
+        await viewModel.InitializeAsync();
+
+        Assert.True(viewModel.HasError);
+        Assert.True(viewModel.HasLifecycleDiagnostic);
+        Assert.Contains("Tailscale", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(
+            LocalizationService.Current.Get("remote.service.refreshed"),
+            viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Start_WhenRuntimeRemainsUnavailable_DoesNotReportFalseSuccess()
+    {
+        var unavailable = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "unavailable",
+            errorCode: "tailscale.not_installed");
+        var client = new StubRemoteClient
+        {
+            StartRemoteStatus = unavailable,
+        };
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () => throw new InvalidOperationException("Start must not launch an absent client."));
+        await viewModel.InitializeAsync();
+
+        viewModel.StartCommand.Execute(null);
+        await client.StartObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.True(viewModel.HasError);
+        Assert.False(viewModel.HasPublicUrl);
+        Assert.Contains("Tailscale", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(
+            LocalizationService.Current.Get("remote.service.started"),
+            viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Reconnect_SchemaInvalid_DoesNotLaunchInteractiveTailscale()
+    {
+        var malformed = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "unavailable",
+            errorCode: "tailscale.status_schema_invalid");
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = malformed,
+            ReconnectRemoteStatus = malformed,
+        };
+        var launchCalls = 0;
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () =>
+            {
+                launchCalls++;
+                return true;
+            });
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.Equal(0, launchCalls);
+        Assert.False(viewModel.IsTailscaleRecoveryActive);
+        Assert.True(viewModel.HasError);
+        Assert.Contains("tailscale.status_schema_invalid", viewModel.StatusMessage,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Reconnect_HostnameUnavailable_ExplainsRequiredXMcsvName()
+    {
+        var unavailable = RemoteStatus(
+            desiredEnabled: true,
+            hostRunning: false,
+            funnelRunning: false,
+            publicUrl: null,
+            state: "blocked",
+            errorCode: "tailscale.hostname_unavailable");
+        var client = new StubRemoteClient
+        {
+            InitialRemoteStatus = unavailable,
+            ReconnectRemoteStatus = unavailable,
+        };
+        var launchCalls = 0;
+        using var viewModel = new ProductServiceRemoteAccessViewModel(
+            client,
+            [],
+            copyText: _ => { },
+            openUrl: _ => { },
+            launchTailscale: () =>
+            {
+                launchCalls++;
+                return true;
+            });
+        await viewModel.InitializeAsync();
+
+        viewModel.ReconnectCommand.Execute(null);
+        await client.ReconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => !viewModel.IsBusy);
+
+        Assert.Equal(0, launchCalls);
+        Assert.True(viewModel.HasError);
+        Assert.Contains("x-mcsv", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tailscale.hostname_unavailable", viewModel.StatusMessage,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task AccountEditor_SendsEnabledStateAndGlobalOrPerServerGrants()
     {
         var serverId = Guid.NewGuid();
@@ -266,9 +532,17 @@ public sealed class ProductServiceRemoteAccessViewModelTests
     private sealed class StubRemoteClient : IProductRemoteManagementClient
     {
         public IReadOnlyList<ProductRemoteAccountSummary> Accounts { get; set; } = [];
+        public ProductRemoteAccessStatus InitialRemoteStatus { get; set; } = Status(false);
+        public ProductRemoteAccessStatus StartRemoteStatus { get; set; } = Status(true);
+        public ProductRemoteAccessStatus ReconnectRemoteStatus { get; set; } = Status(true);
+        public Queue<ProductRemoteAccessStatus> StatusResponses { get; } = [];
+        public Queue<ProductRemoteAccessStatus> ReconnectResponses { get; } = [];
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
+        public int ReconnectCalls { get; private set; }
         public TaskCompletionSource StartObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReconnectObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<ProductUpdateRemoteAccountAuthorizationRequest>
             AuthorizationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -277,14 +551,16 @@ public sealed class ProductServiceRemoteAccessViewModelTests
 
         public Task<ProductRemoteAccessStatus> GetRemoteAccessStatusAsync(
             CancellationToken cancellationToken = default)
-            => Task.FromResult(Status(false));
+            => Task.FromResult(StatusResponses.Count > 0
+                ? StatusResponses.Dequeue()
+                : InitialRemoteStatus);
 
         public Task<ProductRemoteAccessStatus> StartRemoteAccessAsync(
             CancellationToken cancellationToken = default)
         {
             StartCalls++;
             StartObserved.TrySetResult();
-            return Task.FromResult(Status(true));
+            return Task.FromResult(StartRemoteStatus);
         }
 
         public Task<ProductRemoteAccessStatus> StopRemoteAccessAsync(
@@ -296,7 +572,13 @@ public sealed class ProductServiceRemoteAccessViewModelTests
 
         public Task<ProductRemoteAccessStatus> ReconnectRemoteAccessAsync(
             CancellationToken cancellationToken = default)
-            => Task.FromResult(Status(true));
+        {
+            ReconnectCalls++;
+            ReconnectObserved.TrySetResult();
+            return Task.FromResult(ReconnectResponses.Count > 0
+                ? ReconnectResponses.Dequeue()
+                : ReconnectRemoteStatus);
+        }
 
         public Task<IReadOnlyList<ProductRemoteAccountSummary>> ListRemoteAccountsAsync(
             CancellationToken cancellationToken = default)
@@ -372,4 +654,21 @@ public sealed class ProductServiceRemoteAccessViewModelTests
                 DateTimeOffset.UtcNow,
                 null);
     }
+
+    private static ProductRemoteAccessStatus RemoteStatus(
+        bool desiredEnabled,
+        bool hostRunning,
+        bool funnelRunning,
+        string? publicUrl,
+        string state,
+        string? errorCode)
+        => new(
+            desiredEnabled,
+            hostRunning,
+            funnelRunning,
+            publicUrl,
+            state,
+            errorCode,
+            DateTimeOffset.UtcNow,
+            null);
 }

@@ -236,7 +236,7 @@
       "minecraftservermanager.client": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.15, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.16, )"
         }
       },
       "minecraftservermanager.contracts": {
@@ -245,7 +245,7 @@
       "minecraftservermanager.core": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.15, )"
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.16, )"
         }
       },
       "minecraftservermanager.gameclient": {
@@ -255,8 +255,8 @@
           "CmlLib.Core.Auth.Microsoft": "[3.3.1, )",
           "Microsoft.Identity.Client": "[4.88.0, )",
           "Microsoft.Identity.Client.Extensions.Msal": "[4.88.0, )",
-          "MinecraftServerManager.Core": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.15, )",
+          "MinecraftServerManager.Core": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.16, )",
           "XboxAuthNet.Game.Msal": "[0.1.3, )"
         }
       },
@@ -266,19 +266,19 @@
       "minecraftservermanager.remote": {
         "type": "Project",
         "dependencies": {
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.15, )"
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.16, )"
         }
       },
       "Muhun MCSV Manager": {
         "type": "Project",
         "dependencies": {
           "MailKit": "[4.17.0, )",
-          "MinecraftServerManager.Client": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.Contracts": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.Core": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.GameClient": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.15, )",
-          "MinecraftServerManager.Remote": "[1.2.9-beta.15, )",
+          "MinecraftServerManager.Client": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.Contracts": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.Core": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.GameClient": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.GameClient.Contracts": "[1.2.9-beta.16, )",
+          "MinecraftServerManager.Remote": "[1.2.9-beta.16, )",
           "SkiaSharp": "[4.151.1, )"
         }
       }

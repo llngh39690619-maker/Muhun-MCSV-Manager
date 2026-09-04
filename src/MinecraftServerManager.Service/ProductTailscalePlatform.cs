@@ -15,6 +15,11 @@ internal sealed record ProductTailscaleCommandResult(
     public bool Succeeded => !TimedOut && ExitCode == 0;
 }
 
+internal sealed record ProductTailscaleHostnameUpdateResult(
+    bool Succeeded,
+    bool Changed,
+    string? ErrorCode);
+
 internal interface IProductOwnedFunnelProcess : IAsyncDisposable
 {
     bool HasExited { get; }
@@ -51,6 +56,10 @@ internal interface IProductTailscalePlatform
     Task<ProductFunnelRouteStatus> GetFunnelStatusAsync(
         string dnsName,
         int localPort,
+        CancellationToken cancellationToken);
+
+    Task<ProductTailscaleHostnameUpdateResult> EnsureMachineHostnameAsync(
+        string expectedHostname,
         CancellationToken cancellationToken);
 
     Task<IProductOwnedFunnelProcess> StartFunnelAsync(
@@ -128,6 +137,71 @@ internal sealed class ProductTailscalePlatform(
             CreateTarget(localPort));
     }
 
+    public async Task<ProductTailscaleHostnameUpdateResult> EnsureMachineHostnameAsync(
+        string expectedHostname,
+        CancellationToken cancellationToken)
+    {
+        ValidateMachineHostname(expectedHostname);
+        var executable = locator.FindTrustedExecutable();
+        if (executable is null)
+        {
+            return new ProductTailscaleHostnameUpdateResult(
+                false,
+                false,
+                "tailscale.not_installed");
+        }
+
+        // Query the preference first. This prevents every Service retry or restart from issuing a
+        // control-plane mutation after the requested name has already been accepted. It also
+        // distinguishes a delayed/conflicting MagicDNS assignment from a failed set operation.
+        var current = await runner.RunAsync(
+                executable,
+                ["get", "hostname"],
+                CommandTimeout,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!current.Succeeded)
+        {
+            return new ProductTailscaleHostnameUpdateResult(
+                false,
+                false,
+                current.TimedOut
+                    ? "tailscale.hostname_status_timeout"
+                    : "tailscale.hostname_status_failed");
+        }
+
+        if (!TryParseMachineHostnameOutput(current.StandardOutput, out var configuredHostname))
+        {
+            return new ProductTailscaleHostnameUpdateResult(
+                false,
+                false,
+                "tailscale.hostname_status_invalid");
+        }
+
+        if (string.Equals(configuredHostname, expectedHostname, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ProductTailscaleHostnameUpdateResult(true, false, null);
+        }
+
+        var update = await runner.RunAsync(
+                executable,
+                ["set", $"--hostname={expectedHostname}"],
+                CommandTimeout,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!update.Succeeded)
+        {
+            return new ProductTailscaleHostnameUpdateResult(
+                false,
+                false,
+                update.TimedOut
+                    ? "tailscale.hostname_set_timeout"
+                    : "tailscale.hostname_set_failed");
+        }
+
+        return new ProductTailscaleHostnameUpdateResult(true, true, null);
+    }
+
     public Task<IProductOwnedFunnelProcess> StartFunnelAsync(
         int localPort,
         CancellationToken cancellationToken)
@@ -152,6 +226,53 @@ internal sealed class ProductTailscalePlatform(
         if (localPort is < 1024 or > 65535)
         {
             throw new ArgumentOutOfRangeException(nameof(localPort));
+        }
+    }
+
+    private static void ValidateMachineHostname(string hostname)
+    {
+        if (hostname.Length is < 1 or > 63 ||
+            hostname[0] == '-' ||
+            hostname[^1] == '-' ||
+            hostname.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) && character != '-'))
+        {
+            throw new ArgumentException("Tailscale machine hostname is invalid.", nameof(hostname));
+        }
+    }
+
+    private static bool TryParseMachineHostnameOutput(string output, out string hostname)
+    {
+        hostname = string.Empty;
+        if (output.Length > 256)
+        {
+            return false;
+        }
+
+        var candidate = output.TrimEnd('\r', '\n');
+        // Tailscale 1.102 returns an empty successful value when no explicit hostname override
+        // has been configured. That is a valid "not configured" state and should lead to one set.
+        if (candidate.Length == 0)
+        {
+            return true;
+        }
+
+        if (candidate.Contains('\r') ||
+            candidate.Contains('\n') ||
+            !string.Equals(candidate, candidate.Trim(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            ValidateMachineHostname(candidate);
+            hostname = candidate;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 }

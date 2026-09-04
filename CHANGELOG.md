@@ -2,6 +2,17 @@
 
 ## 未發布
 
+## 1.2.9-beta.16 — Tailscale 固定網址自動恢復版（研發中）
+
+- 修正 Tailscale 已安裝但尚未登入時，`BackendState=NoState` 因缺少 `Self.DNSName` 被誤判為狀態格式損壞，導致 GUI 只顯示 `unavailable` 且固定 HTTPS 網址保持空白的問題。
+- 遠端管理的「重新連線」在精確確認尚未登入時，會直接開啟 `Program Files` 中受信任、非 reparse point 的官方 `tailscale-ipn.exe`；登入後 GUI 以有界、可取消且低頻的背景流程自動重試，不新增按鈕，也不再顯示假的重新連線成功訊息。
+- Windows Service 會在啟動 Web／Funnel 前把 Tailscale 裝置名稱固定為 `x-mcsv`；只有控制平面實際回傳並通過 MagicDNS、`.ts.net` 與 HTTPS 憑證驗證的 `https://x-mcsv.<tailnet>.ts.net/` 才會成為公開網址。同名衝突、設定未生效或狀態無法驗證時一律停止並顯示明確診斷，不會默認接受 `x-mcsv-1` 或自行猜測 DNS。
+- 同一 Service 生命週期會保留最近一次已嚴格驗證的固定網址供暫時離線時辨識；偵測到不同裝置身分時立即清除，且首次未取得可信 DNS 時仍保持空白。
+- 連線狀態與失敗原因已改為繁體中文／英文可操作提示；重新整理、啟用或重新連線失敗時不再用一般成功訊息覆蓋實際錯誤。
+- 本機 Android 驗證建置使用 `versionCode 35`；Windows 正式發行流程共 `3,288 / 3,288` 項測試通過，沒有建置警告、錯誤或已知 NuGet 弱點。單一 EXE 安裝器 SHA-256 為 `5BED2A9BC08AE748B4B0B6D0D9F1522AAD880AFB760AFBDAC28C99E373874CFE`，Authenticode 與 DigiCert 時間戳記驗證有效。
+- 1.2.9-beta.16 目前只進行本機驗證，不發布；若日後建立 GitHub Release，仍只發布原始碼與技術文件，不附上 EXE、安裝包、APK、簽章、雜湊或其他二進位成品。
+- **狀態：Beta，研發中。**
+
 ## 1.2.9-beta.15 — Service 即時控制台版（研發中）
 
 - Windows Service 與 GUI 新增 API 1.11 的有界 `server.console.wait` 通道；新輸出會直接喚醒目前選取伺服器的 cursor 訂閱，不再等候 2 秒狀態輪詢，無輸出時則保持休眠。

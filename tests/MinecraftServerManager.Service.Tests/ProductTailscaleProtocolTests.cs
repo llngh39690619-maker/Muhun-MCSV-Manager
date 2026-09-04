@@ -25,6 +25,23 @@ public sealed class ProductTailscaleProtocolTests
         Assert.Null(status.ErrorCode);
     }
 
+    [Fact]
+    public void NodeStatus_NoStateWithoutSelf_ReportsBackendNotRunningPrecisely()
+    {
+        var status = ProductTailscaleProtocol.ParseNodeStatus(
+            """
+            {
+              "BackendState": "NoState",
+              "SelfOnline": false
+            }
+            """);
+
+        Assert.False(status.IsConnected);
+        Assert.Null(status.DnsName);
+        Assert.Null(status.PublicOrigin);
+        Assert.Equal("tailscale.backend_not_running", status.ErrorCode);
+    }
+
     [Theory]
     [InlineData("{\"BackendState\":\"Running\",\"BackendState\":\"Running\",\"Self\":{\"DNSName\":\"box.tail.ts.net\"},\"CertDomains\":[\"box.tail.ts.net\"]}")]
     [InlineData("{\"BackendState\":\"Running\",\"Self\":{\"DNSName\":\"attacker.example\"},\"CertDomains\":[\"attacker.example\"]}")]

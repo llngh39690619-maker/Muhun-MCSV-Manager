@@ -39,9 +39,12 @@ internal sealed class ProductRemoteWebSupervisor(
     ILogger<ProductRemoteWebSupervisor> logger) : BackgroundService, IProductRemoteWebSupervisor
 {
     public const int LocalWebPort = 42871;
+    internal const string RequiredMachineHostname = "x-mcsv";
     private const int StartupProbeAttempts = 20;
+    private const int HostnameProbeAttempts = 20;
     private const int RemovalProbeAttempts = 4;
     private static readonly TimeSpan StartupProbeDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan HostnameProbeDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RemovalProbeDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RunningProbeInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
@@ -62,6 +65,7 @@ internal sealed class ProductRemoteWebSupervisor(
     private string? _dnsName;
     private string? _target;
     private string? _guardedDnsName;
+    private Uri? _knownPublicOrigin;
     private bool _intentLoaded;
     private bool _desiredEnabled = true;
     private int _stopping;
@@ -278,10 +282,59 @@ internal sealed class ProductRemoteWebSupervisor(
         }
 
         var node = await tailscale.GetNodeStatusAsync(cancellationToken).ConfigureAwait(false);
-        if (!node.IsConnected || node.DnsName is null || node.PublicOrigin is null)
+        if (!node.IsConnected || node.DnsName is null)
         {
             return Publish("unavailable", node.ErrorCode ?? "tailscale.status_unavailable");
         }
+
+        var hasRequiredMachineHostname = HasRequiredMachineHostname(node.DnsName);
+        if (!hasRequiredMachineHostname)
+        {
+            // A connected node with another identity proves that a previously remembered origin
+            // no longer describes this node. Do not show a stale URL while the rename is pending.
+            _knownPublicOrigin = null;
+        }
+
+        // Even when MagicDNS currently happens to expose x-mcsv, query the explicit preference.
+        // An empty override is not durable against a later Windows computer-name change. The
+        // platform performs a read first and issues `set` only when the override is absent/different.
+        var hostname = await tailscale.EnsureMachineHostnameAsync(
+                RequiredMachineHostname,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!hostname.Succeeded)
+        {
+            return Publish(
+                hostname.ErrorCode?.EndsWith("_timeout", StringComparison.Ordinal) == true
+                    ? "retrying"
+                    : "blocked",
+                hostname.ErrorCode ?? "tailscale.hostname_set_failed");
+        }
+
+        if (hostname.Changed || !hasRequiredMachineHostname)
+        {
+            node = await WaitForRequiredMachineHostnameAsync(node, cancellationToken)
+                .ConfigureAwait(false);
+            if (!node.IsConnected || node.DnsName is null)
+            {
+                return Publish("unavailable", node.ErrorCode ?? "tailscale.hostname_verification_failed");
+            }
+
+            if (!HasRequiredMachineHostname(node.DnsName))
+            {
+                // The requested preference is already set at this point. A different MagicDNS
+                // label therefore indicates a conflicting/unavailable name or control-plane
+                // propagation that never completed within the bounded verification window.
+                return Publish("blocked", "tailscale.hostname_unavailable");
+            }
+        }
+
+        if (node.PublicOrigin is null)
+        {
+            return Publish("unavailable", node.ErrorCode ?? "tailscale.https_not_enabled");
+        }
+
+        RememberCanonicalPublicOrigin(node.PublicOrigin);
 
         var target = ProductTailscalePlatform.CreateTarget(LocalWebPort);
         var before = await tailscale.GetFunnelStatusAsync(node.DnsName, LocalWebPort, cancellationToken)
@@ -545,6 +598,37 @@ internal sealed class ProductRemoteWebSupervisor(
         return false;
     }
 
+    private async Task<ProductTailscaleNodeStatus> WaitForRequiredMachineHostnameAsync(
+        ProductTailscaleNodeStatus initial,
+        CancellationToken cancellationToken)
+    {
+        var current = initial;
+        for (var attempt = 0; attempt < HostnameProbeAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            current = await tailscale.GetNodeStatusAsync(cancellationToken).ConfigureAwait(false);
+            if (current.IsConnected &&
+                current.DnsName is not null &&
+                HasRequiredMachineHostname(current.DnsName))
+            {
+                return current;
+            }
+
+            if (current.ErrorCode is "tailscale.backend_not_running" or "tailscale.not_installed")
+            {
+                return current;
+            }
+
+            if (attempt + 1 < HostnameProbeAttempts)
+            {
+                await Task.Delay(HostnameProbeDelay, timeProvider, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        return current;
+    }
+
     private static void QuiesceHost(IProductRemoteWebHost? host)
     {
         if (host is null)
@@ -646,7 +730,7 @@ internal sealed class ProductRemoteWebSupervisor(
                 _desiredEnabled,
                 _host is not null,
                 _funnelProcess is { HasExited: false },
-                publicUrl ?? (_status.FunnelRunning ? _status.PublicUrl : null),
+                publicUrl ?? _knownPublicOrigin?.ToString(),
                 state,
                 errorCode,
                 timeProvider.GetUtcNow(),
@@ -668,6 +752,36 @@ internal sealed class ProductRemoteWebSupervisor(
         => string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
            string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
            left.Port == right.Port;
+
+    private static bool HasRequiredMachineHostname(string dnsName)
+    {
+        if (!ProductTailscaleProtocol.TryNormalizeDnsName(dnsName, out var normalized))
+        {
+            return false;
+        }
+
+        var separator = normalized.IndexOf('.');
+        return separator == RequiredMachineHostname.Length &&
+               normalized.AsSpan(0, separator).Equals(
+                   RequiredMachineHostname.AsSpan(),
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void RememberCanonicalPublicOrigin(Uri origin)
+    {
+        if (origin.Scheme != Uri.UriSchemeHttps ||
+            origin.UserInfo.Length != 0 ||
+            origin.Port != 443 ||
+            (origin.AbsolutePath.Length != 0 && origin.AbsolutePath != "/") ||
+            origin.Query.Length != 0 ||
+            origin.Fragment.Length != 0 ||
+            !HasRequiredMachineHostname(origin.Host))
+        {
+            throw new InvalidDataException("Tailscale public origin is not canonical for this product.");
+        }
+
+        _knownPublicOrigin = new Uri(origin.GetLeftPart(UriPartial.Authority) + "/", UriKind.Absolute);
+    }
 
     private static bool HasExactForegroundSuccessMarker(
         IProductOwnedFunnelProcess process,

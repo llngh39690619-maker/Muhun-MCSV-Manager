@@ -57,6 +57,75 @@ public sealed class ProductTailscalePlatformTests
         Assert.DoesNotContain("secret", route.ErrorCode, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task EnsureMachineHostname_LeavesExactXMcsvNameUnchanged()
+    {
+        var runner = new RecordingRunner
+        {
+            CommandResults = new Queue<ProductTailscaleCommandResult>(
+            [
+                new ProductTailscaleCommandResult(0, "x-mcsv\r\n", string.Empty, false),
+            ]),
+        };
+        var platform = new ProductTailscalePlatform(new FixedLocator(), runner);
+
+        var result = await platform.EnsureMachineHostnameAsync("x-mcsv", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.Changed);
+        Assert.Null(result.ErrorCode);
+        Assert.Collection(
+            runner.Commands,
+            command => Assert.Equal(["get", "hostname"], command));
+    }
+
+    [Fact]
+    public async Task EnsureMachineHostname_ReplacesDifferentNameWithExactXMcsvName()
+    {
+        var runner = new RecordingRunner
+        {
+            CommandResults = new Queue<ProductTailscaleCommandResult>(
+            [
+                new ProductTailscaleCommandResult(0, "old-machine\n", string.Empty, false),
+                new ProductTailscaleCommandResult(0, string.Empty, string.Empty, false),
+            ]),
+        };
+        var platform = new ProductTailscalePlatform(new FixedLocator(), runner);
+
+        var result = await platform.EnsureMachineHostnameAsync("x-mcsv", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.Changed);
+        Assert.Null(result.ErrorCode);
+        Assert.Collection(
+            runner.Commands,
+            command => Assert.Equal(["get", "hostname"], command),
+            command => Assert.Equal(["set", "--hostname=x-mcsv"], command));
+    }
+
+    [Fact]
+    public async Task EnsureMachineHostname_EmptyUnsetPreferenceSetsExactXMcsvNameOnce()
+    {
+        var runner = new RecordingRunner
+        {
+            CommandResults = new Queue<ProductTailscaleCommandResult>(
+            [
+                new ProductTailscaleCommandResult(0, string.Empty, string.Empty, false),
+                new ProductTailscaleCommandResult(0, string.Empty, string.Empty, false),
+            ]),
+        };
+        var platform = new ProductTailscalePlatform(new FixedLocator(), runner);
+
+        var result = await platform.EnsureMachineHostnameAsync("x-mcsv", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.Changed);
+        Assert.Collection(
+            runner.Commands,
+            command => Assert.Equal(["get", "hostname"], command),
+            command => Assert.Equal(["set", "--hostname=x-mcsv"], command));
+    }
+
     private sealed class FixedLocator : IProductTailscaleExecutableLocator
     {
         public string? FindTrustedExecutable() => @"C:\Program Files\Tailscale\tailscale.exe";

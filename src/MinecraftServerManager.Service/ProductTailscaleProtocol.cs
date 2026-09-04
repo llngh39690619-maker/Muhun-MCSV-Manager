@@ -46,23 +46,31 @@ internal static class ProductTailscaleProtocol
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
                 !TryGetUnique(root, "BackendState", out var backend) ||
-                backend.ValueKind != JsonValueKind.String ||
-                !TryGetUnique(root, "Self", out var self) ||
+                backend.ValueKind != JsonValueKind.String)
+            {
+                return NodeFailure("tailscale.status_schema_invalid");
+            }
+
+            // A signed-out Windows client reports BackendState=NoState and may omit Self or
+            // expose an empty DNSName. Classify that lifecycle state before requiring fields that
+            // exist only for a connected node, otherwise the UI receives a misleading schema
+            // failure instead of an actionable sign-in/offline status.
+            if (!string.Equals(backend.GetString(), "Running", StringComparison.Ordinal))
+            {
+                return new ProductTailscaleNodeStatus(
+                    false,
+                    null,
+                    null,
+                    "tailscale.backend_not_running");
+            }
+
+            if (!TryGetUnique(root, "Self", out var self) ||
                 self.ValueKind != JsonValueKind.Object ||
                 !TryGetUnique(self, "DNSName", out var dnsElement) ||
                 dnsElement.ValueKind != JsonValueKind.String ||
                 !TryNormalizeDnsName(dnsElement.GetString(), out var dnsName))
             {
                 return NodeFailure("tailscale.status_schema_invalid");
-            }
-
-            if (!string.Equals(backend.GetString(), "Running", StringComparison.Ordinal))
-            {
-                return new ProductTailscaleNodeStatus(
-                    false,
-                    dnsName,
-                    null,
-                    "tailscale.backend_not_running");
             }
 
             if (!TryGetUnique(root, "CertDomains", out var certDomains) ||

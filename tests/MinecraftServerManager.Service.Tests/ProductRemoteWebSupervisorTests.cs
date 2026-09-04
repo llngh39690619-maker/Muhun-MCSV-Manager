@@ -60,14 +60,15 @@ public sealed class ProductRemoteWebSupervisorTests
         Assert.True(enabled.DesiredEnabled);
         Assert.True(enabled.HostRunning);
         Assert.True(enabled.FunnelRunning);
-        Assert.Equal("https://box.tail.ts.net/", enabled.PublicUrl);
+        Assert.Equal("https://x-mcsv.tail.ts.net/", enabled.PublicUrl);
         Assert.False(disabled.DesiredEnabled);
         Assert.False(disabled.HostRunning);
         Assert.False(disabled.FunnelRunning);
         Assert.Equal("disabled", disabled.State);
         Assert.False(intentStore.ReadDesiredEnabled());
         Assert.Equal(ProductRemoteWebSupervisor.LocalWebPort, hostFactory.Port);
-        Assert.Equal("https://box.tail.ts.net/", hostFactory.Origin?.ToString());
+        Assert.Equal("https://x-mcsv.tail.ts.net/", hostFactory.Origin?.ToString());
+        Assert.Equal(1, platform.EnsureHostnameCount);
         Assert.Equal(
             ["funnel", "--yes", "--https=443", "http://127.0.0.1:42871"],
             platform.StartArguments);
@@ -112,6 +113,61 @@ public sealed class ProductRemoteWebSupervisorTests
         AssertOrder(events, "host.start", "host.revoke", "host.quiesce", "host.dispose");
     }
 
+    [Fact]
+    public async Task ConnectedNode_IsRenamedToXMcsvBeforePublishingFixedUrl()
+    {
+        var events = new List<string>();
+        var platform = new FakePlatform(events,
+        [
+            ProductFunnelRouteDisposition.Absent,
+            ProductFunnelRouteDisposition.Absent,
+            ProductFunnelRouteDisposition.ExactTarget,
+        ]);
+        platform.NodeStatuses.Enqueue(Node("old-machine.tail.ts.net"));
+        platform.NodeStatuses.Enqueue(Node("x-mcsv.tail.ts.net"));
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, _) = CreateSupervisor(platform, hostFactory);
+
+        var status = await supervisor.EnableAsync(CancellationToken.None);
+
+        Assert.Equal(1, platform.EnsureHostnameCount);
+        Assert.True(status.HostRunning);
+        Assert.True(status.FunnelRunning);
+        Assert.Equal("https://x-mcsv.tail.ts.net/", status.PublicUrl);
+        Assert.Equal("https://x-mcsv.tail.ts.net/", hostFactory.Origin?.ToString());
+    }
+
+    [Fact]
+    public async Task VerifiedFixedUrl_RemainsVisibleDuringTemporaryNodeDisconnect()
+    {
+        var events = new List<string>();
+        var platform = new FakePlatform(events,
+        [
+            ProductFunnelRouteDisposition.Absent,
+            ProductFunnelRouteDisposition.Absent,
+            ProductFunnelRouteDisposition.ExactTarget,
+            ProductFunnelRouteDisposition.Absent,
+        ]);
+        var hostFactory = new FakeHostFactory(events);
+        var (supervisor, _) = CreateSupervisor(platform, hostFactory);
+        var running = await supervisor.EnableAsync(CancellationToken.None);
+        platform.NodeStatuses.Enqueue(new ProductTailscaleNodeStatus(
+            false,
+            null,
+            null,
+            "tailscale.backend_not_running"));
+
+        var disconnected = await supervisor.ReconnectAsync(CancellationToken.None);
+
+        Assert.Equal("https://x-mcsv.tail.ts.net/", running.PublicUrl);
+        Assert.True(disconnected.DesiredEnabled);
+        Assert.False(disconnected.HostRunning);
+        Assert.False(disconnected.FunnelRunning);
+        Assert.Equal("unavailable", disconnected.State);
+        Assert.Equal("tailscale.backend_not_running", disconnected.ErrorCode);
+        Assert.Equal(running.PublicUrl, disconnected.PublicUrl);
+    }
+
     private static (ProductRemoteWebSupervisor Supervisor, ProductRemoteWebIntentStore IntentStore)
         CreateSupervisor(FakePlatform platform, FakeHostFactory hostFactory)
     {
@@ -148,6 +204,13 @@ public sealed class ProductRemoteWebSupervisorTests
         }
     }
 
+    private static ProductTailscaleNodeStatus Node(string dnsName)
+        => new(
+            true,
+            dnsName,
+            new Uri($"https://{dnsName}"),
+            null);
+
     private sealed class FakePlatform(
         List<string> events,
         IEnumerable<ProductFunnelRouteDisposition> dispositions) : IProductTailscalePlatform
@@ -156,16 +219,16 @@ public sealed class ProductRemoteWebSupervisorTests
 
         public int StartCount { get; private set; }
         public int NodeStatusCount { get; private set; }
+        public int EnsureHostnameCount { get; private set; }
+        public Queue<ProductTailscaleNodeStatus> NodeStatuses { get; } = [];
         public IReadOnlyList<string>? StartArguments { get; private set; }
 
         public Task<ProductTailscaleNodeStatus> GetNodeStatusAsync(CancellationToken cancellationToken)
         {
             NodeStatusCount++;
-            return Task.FromResult(new ProductTailscaleNodeStatus(
-                true,
-                "box.tail.ts.net",
-                new Uri("https://box.tail.ts.net"),
-                null));
+            return Task.FromResult(NodeStatuses.Count > 0
+                ? NodeStatuses.Dequeue()
+                : Node("x-mcsv.tail.ts.net"));
         }
 
         public Task<ProductFunnelRouteStatus> GetFunnelStatusAsync(
@@ -182,6 +245,15 @@ public sealed class ProductRemoteWebSupervisorTests
                 disposition == ProductFunnelRouteDisposition.Conflict
                     ? "tailscale.funnel_route_conflict"
                     : null));
+        }
+
+        public Task<ProductTailscaleHostnameUpdateResult> EnsureMachineHostnameAsync(
+            string expectedHostname,
+            CancellationToken cancellationToken)
+        {
+            EnsureHostnameCount++;
+            Assert.Equal("x-mcsv", expectedHostname);
+            return Task.FromResult(new ProductTailscaleHostnameUpdateResult(true, false, null));
         }
 
         public Task<IProductOwnedFunnelProcess> StartFunnelAsync(
@@ -231,7 +303,7 @@ public sealed class ProductRemoteWebSupervisorTests
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool HasExited { get; private set; }
         public int? ExitCode => HasExited ? 0 : null;
-        public string StandardOutput => "https://box.tail.ts.net";
+        public string StandardOutput => "https://x-mcsv.tail.ts.net";
         public string StandardError => string.Empty;
         public Task Completion => _completion.Task;
 

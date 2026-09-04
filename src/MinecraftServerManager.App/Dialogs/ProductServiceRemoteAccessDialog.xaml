@@ -82,6 +82,16 @@
                                                Style="{StaticResource MutedText}" />
                                 </StackPanel>
                                 <TextBlock Text="{Binding RetryText}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
+                                <Border Background="{DynamicResource PanelRaisedBrush}"
+                                        BorderBrush="{DynamicResource WarningBrush}"
+                                        BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,8,0,0"
+                                        Visibility="{Binding HasLifecycleDiagnostic, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="{Binding LifecycleDiagnosticText, Mode=OneWay}"
+                                               Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" />
+                                </Border>
+                                <ProgressBar Height="3" IsIndeterminate="True" Margin="0,8,0,0"
+                                             Foreground="{DynamicResource AccentBrush}"
+                                             Visibility="{Binding IsTailscaleRecoveryActive, Converter={StaticResource BoolToVisibility}}" />
                                 <WrapPanel Margin="0,18,0,0">
                                     <Button Content="{DynamicResource L10n.remote.service.enableWeb}" Command="{Binding StartCommand}" Style="{StaticResource PrimaryButton}" />
                                     <Button Content="{DynamicResource L10n.common.reconnect}" Command="{Binding ReconnectCommand}" Margin="8,0,0,0" />

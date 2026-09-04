@@ -292,12 +292,23 @@ internal sealed class ProductServiceRemoteAccountViewModel : ObservableObject
 /// </summary>
 internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, IDisposable
 {
+    private const int DefaultTailscaleRecoveryAttempts = 60;
+    private static readonly TimeSpan DefaultTailscaleRecoveryPollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan DefaultTailscaleRecoveryTimeout = TimeSpan.FromMinutes(2);
     private readonly IProductRemoteManagementClient _client;
     private readonly IReadOnlyList<ProductServiceRemoteServerOption> _servers;
     private readonly Func<string, bool> _confirmDestructiveAction;
     private readonly Action<string> _copyText;
     private readonly Action<string> _openUrl;
+    private readonly Func<bool> _launchTailscale;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
+    private readonly TimeSpan _tailscaleRecoveryPollInterval;
+    private readonly TimeSpan _tailscaleRecoveryTimeout;
+    private readonly int _tailscaleRecoveryAttempts;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly object _tailscaleRecoveryGate = new();
+    private CancellationTokenSource? _tailscaleRecoveryCancellation;
+    private Task _tailscaleRecoveryTask = Task.CompletedTask;
     private ProductRemoteAccessStatus? _remoteStatus;
     private ProductServiceRemoteAccountViewModel? _selectedAccount;
     private ProductRememberedDeviceSummary? _selectedDevice;
@@ -309,6 +320,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     private string _newPin = string.Empty;
     private string _confirmedNewPin = string.Empty;
     private bool _grantAllToNewAccount;
+    private bool _isTailscaleRecoveryActive;
     private ProductRemoteAccountRole _newRole = ProductRemoteAccountRole.Viewer;
     private int _disposed;
 
@@ -317,8 +329,36 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         IEnumerable<ProductServiceRemoteServerOption> servers,
         Func<string, bool>? confirmDestructiveAction = null,
         Action<string>? copyText = null,
-        Action<string>? openUrl = null)
+        Action<string>? openUrl = null,
+        Func<bool>? launchTailscale = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        TimeSpan? tailscaleRecoveryPollInterval = null,
+        TimeSpan? tailscaleRecoveryTimeout = null,
+        int tailscaleRecoveryAttempts = DefaultTailscaleRecoveryAttempts)
     {
+        if (tailscaleRecoveryAttempts is < 1 or > 60)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tailscaleRecoveryAttempts),
+                "Tailscale recovery attempts must be between 1 and 60.");
+        }
+
+        var recoveryPollInterval = tailscaleRecoveryPollInterval ?? DefaultTailscaleRecoveryPollInterval;
+        if (recoveryPollInterval < TimeSpan.Zero || recoveryPollInterval > TimeSpan.FromSeconds(30))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tailscaleRecoveryPollInterval),
+                "Tailscale recovery polling interval must be between zero and 30 seconds.");
+        }
+
+        var recoveryTimeout = tailscaleRecoveryTimeout ?? DefaultTailscaleRecoveryTimeout;
+        if (recoveryTimeout <= TimeSpan.Zero || recoveryTimeout > TimeSpan.FromMinutes(5))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(tailscaleRecoveryTimeout),
+                "Tailscale recovery timeout must be greater than zero and no longer than five minutes.");
+        }
+
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _servers = (servers ?? throw new ArgumentNullException(nameof(servers)))
             .Where(server => server.Id != Guid.Empty)
@@ -329,12 +369,19 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         _confirmDestructiveAction = confirmDestructiveAction ?? (_ => true);
         _copyText = copyText ?? CopyToClipboard;
         _openUrl = openUrl ?? OpenBrowser;
+        _launchTailscale = launchTailscale ?? TailscaleInteractiveLauncher.TryLaunch;
+        _delayAsync = delayAsync ?? ((delay, token) => Task.Delay(delay, token));
+        _tailscaleRecoveryPollInterval = recoveryPollInterval;
+        _tailscaleRecoveryTimeout = recoveryTimeout;
+        _tailscaleRecoveryAttempts = tailscaleRecoveryAttempts;
         LocalizationService.Current.CultureChanged += OnCultureChanged;
 
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsBusy);
         StartCommand = new AsyncRelayCommand(StartAsync, () => !IsBusy && RemoteStatus?.DesiredEnabled != true);
         StopCommand = new AsyncRelayCommand(StopAsync, () => !IsBusy && RemoteStatus?.DesiredEnabled == true);
-        ReconnectCommand = new AsyncRelayCommand(ReconnectAsync, () => !IsBusy);
+        ReconnectCommand = new AsyncRelayCommand(
+            ReconnectAsync,
+            () => !IsBusy && !IsTailscaleRecoveryActive);
         CopyUrlCommand = new RelayCommand(CopyUrl, () => HasPublicUrl && !IsBusy);
         OpenUrlCommand = new RelayCommand(OpenUrl, () => HasPublicUrl && !IsBusy);
         CreateAccountCommand = new AsyncRelayCommand(CreateAccountAsync, CanCreateAccount);
@@ -371,11 +418,23 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             OnPropertyChanged(nameof(FunnelStateText));
             OnPropertyChanged(nameof(LastUpdatedText));
             OnPropertyChanged(nameof(RetryText));
+            OnPropertyChanged(nameof(LifecycleDiagnosticText));
+            OnPropertyChanged(nameof(HasLifecycleDiagnostic));
             NotifyCommands();
         }
     }
 
-    public string ConnectionStateText => RemoteStatus?.State ?? L("remote.service.unknown");
+    public string ConnectionStateText => RemoteStatus?.State switch
+    {
+        "disabled" => L("remote.service.state.disabled"),
+        "waiting" => L("remote.service.state.waiting"),
+        "unavailable" => L("remote.service.state.unavailable"),
+        "blocked" => L("remote.service.state.blocked"),
+        "retrying" => L("remote.service.state.retrying"),
+        "running" => L("remote.service.state.running"),
+        { Length: > 0 } state => state,
+        _ => L("remote.service.unknown"),
+    };
     public string PublicUrl => RemoteStatus?.PublicUrl ?? string.Empty;
     public bool HasPublicUrl => Uri.TryCreate(PublicUrl, UriKind.Absolute, out var uri)
                                 && uri.Scheme == Uri.UriSchemeHttps;
@@ -394,6 +453,8 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     public string RetryText => RemoteStatus?.NextRetryAtUtc is { } retry
         ? L("remote.service.retryAt", retry.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))
         : string.Empty;
+    public string LifecycleDiagnosticText => FormatLifecycleDiagnostic(RemoteStatus);
+    public bool HasLifecycleDiagnostic => LifecycleDiagnosticText.Length > 0;
     public string SelectedAccountNameText => SelectedAccount?.Username
                                              ?? L("remote.service.selectAccount");
 
@@ -442,6 +503,27 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     {
         get => _hasError;
         private set => SetProperty(ref _hasError, value);
+    }
+
+    public bool IsTailscaleRecoveryActive
+    {
+        get => _isTailscaleRecoveryActive;
+        private set
+        {
+            if (!SetProperty(ref _isTailscaleRecoveryActive, value)) return;
+            NotifyCommands();
+        }
+    }
+
+    internal Task TailscaleRecoveryTask
+    {
+        get
+        {
+            lock (_tailscaleRecoveryGate)
+            {
+                return _tailscaleRecoveryTask;
+            }
+        }
     }
 
     public string StatusMessage
@@ -543,6 +625,7 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        CancelTailscaleRecovery();
         if (_selectedAccount is not null)
         {
             _selectedAccount.PropertyChanged -= OnSelectedAccountPropertyChanged;
@@ -565,29 +648,225 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
             RemoteStatus = status;
             ReplaceAccounts(accounts, selectedUsername);
             ReplaceDevices(devices, selectedDeviceId);
-            StatusMessage = L("remote.service.refreshed");
+            HasError = status.DesiredEnabled && !IsRemoteAccessReady(status);
+            StatusMessage = HasError
+                ? FormatLifecycleDiagnostic(status)
+                : L("remote.service.refreshed");
         });
     }
 
     private Task StartAsync() => ChangeRuntimeAsync(
         token => _client.StartRemoteAccessAsync(token),
-        "remote.service.started");
+        "remote.service.started",
+        requireReady: true);
 
-    private Task StopAsync() => ChangeRuntimeAsync(
-        token => _client.StopRemoteAccessAsync(token),
-        "remote.service.stopped");
+    private Task StopAsync()
+    {
+        CancelTailscaleRecovery();
+        return ChangeRuntimeAsync(
+            token => _client.StopRemoteAccessAsync(token),
+            "remote.service.stopped",
+            requireReady: false);
+    }
 
-    private Task ReconnectAsync() => ChangeRuntimeAsync(
-        token => _client.ReconnectRemoteAccessAsync(token),
-        "remote.service.reconnected");
+    private async Task ReconnectAsync()
+    {
+        CancelTailscaleRecovery();
+        await RunAsync(async cancellationToken =>
+        {
+            var status = await _client.ReconnectRemoteAccessAsync(cancellationToken);
+            RemoteStatus = status;
+            if (IsRemoteAccessReady(status))
+            {
+                HasError = false;
+                StatusMessage = L("remote.service.tailscale.connected", status.PublicUrl!);
+                return;
+            }
+
+            HasError = true;
+            var errorCode = GetLifecycleErrorCode(status);
+            if (!RequiresTailscaleLogin(status))
+            {
+                var diagnostic = FormatLifecycleDiagnostic(status);
+                StatusMessage = diagnostic.Length > 0
+                    ? diagnostic
+                    : L("remote.service.lifecycleFailure", errorCode);
+                return;
+            }
+
+            if (!_launchTailscale())
+            {
+                StatusMessage = L("remote.service.tailscale.loginLaunchFailed", errorCode);
+                return;
+            }
+
+            StatusMessage = L("remote.service.tailscale.loginOpening", errorCode);
+            StartTailscaleRecovery();
+        });
+    }
+
+    private void StartTailscaleRecovery()
+    {
+        CancellationTokenSource cancellation;
+        lock (_tailscaleRecoveryGate)
+        {
+            cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            cancellation.CancelAfter(_tailscaleRecoveryTimeout);
+            _tailscaleRecoveryCancellation = cancellation;
+        }
+
+        var recoveryTask = RecoverTailscaleAsync(cancellation);
+        lock (_tailscaleRecoveryGate)
+        {
+            _tailscaleRecoveryTask = ReferenceEquals(_tailscaleRecoveryCancellation, cancellation)
+                ? recoveryTask
+                : Task.CompletedTask;
+        }
+    }
+
+    private async Task RecoverTailscaleAsync(CancellationTokenSource cancellation)
+    {
+        IsTailscaleRecoveryActive = true;
+        ProductRemoteAccessStatus? latest = RemoteStatus;
+        Exception? latestException = null;
+        try
+        {
+            for (var attempt = 0; attempt < _tailscaleRecoveryAttempts; attempt++)
+            {
+                await _delayAsync(_tailscaleRecoveryPollInterval, cancellation.Token);
+
+                try
+                {
+                    latest = await _client.GetRemoteAccessStatusAsync(cancellation.Token);
+                    RemoteStatus = latest;
+                    if (IsRemoteAccessReady(latest))
+                    {
+                        HasError = false;
+                        StatusMessage = L("remote.service.tailscale.connected", latest.PublicUrl!);
+                        return;
+                    }
+
+                    if (!CanContinueTailscaleRecovery(latest))
+                    {
+                        HasError = true;
+                        StatusMessage = FormatLifecycleDiagnostic(latest);
+                        return;
+                    }
+
+                    latest = await _client.ReconnectRemoteAccessAsync(cancellation.Token);
+                    RemoteStatus = latest;
+                    if (IsRemoteAccessReady(latest))
+                    {
+                        HasError = false;
+                        StatusMessage = L("remote.service.tailscale.connected", latest.PublicUrl!);
+                        return;
+                    }
+
+                    if (!CanContinueTailscaleRecovery(latest))
+                    {
+                        HasError = true;
+                        StatusMessage = FormatLifecycleDiagnostic(latest);
+                        return;
+                    }
+
+                    latestException = null;
+                    StatusMessage = L(
+                        "remote.service.tailscale.waiting",
+                        GetLifecycleErrorCode(latest));
+                }
+                catch (ProductServiceClientException error) when (
+                    error.Code is "service.timeout" or "service.connection_failed")
+                {
+                    latestException = error;
+                }
+            }
+
+            HasError = true;
+            var finalErrorCode = latestException is ProductServiceClientException service
+                ? service.Code
+                : GetLifecycleErrorCode(latest);
+            StatusMessage = L("remote.service.tailscale.recoveryTimedOut", finalErrorCode);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Closing the dialog, stopping Web, or starting a newer recovery attempt owns the
+            // cancellation. No stale recovery result may replace the newer UI state.
+            if (!_lifetime.IsCancellationRequested && IsCurrentTailscaleRecovery(cancellation))
+            {
+                HasError = true;
+                StatusMessage = L(
+                    "remote.service.tailscale.recoveryTimedOut",
+                    GetLifecycleErrorCode(latest));
+            }
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            HasError = true;
+            StatusMessage = FormatError(error);
+        }
+        finally
+        {
+            var isCurrent = false;
+            lock (_tailscaleRecoveryGate)
+            {
+                if (ReferenceEquals(_tailscaleRecoveryCancellation, cancellation))
+                {
+                    _tailscaleRecoveryCancellation = null;
+                    isCurrent = true;
+                }
+            }
+
+            if (isCurrent)
+            {
+                IsTailscaleRecoveryActive = false;
+            }
+
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelTailscaleRecovery()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_tailscaleRecoveryGate)
+        {
+            cancellation = _tailscaleRecoveryCancellation;
+            _tailscaleRecoveryCancellation = null;
+            _tailscaleRecoveryTask = Task.CompletedTask;
+        }
+
+        IsTailscaleRecoveryActive = false;
+        cancellation?.Cancel();
+    }
+
+    private bool IsCurrentTailscaleRecovery(CancellationTokenSource cancellation)
+    {
+        lock (_tailscaleRecoveryGate)
+        {
+            return ReferenceEquals(_tailscaleRecoveryCancellation, cancellation);
+        }
+    }
 
     private async Task ChangeRuntimeAsync(
         Func<CancellationToken, Task<ProductRemoteAccessStatus>> operation,
-        string successMessageKey)
+        string successMessageKey,
+        bool requireReady)
     {
         await RunAsync(async cancellationToken =>
         {
-            RemoteStatus = await operation(cancellationToken);
+            var status = await operation(cancellationToken);
+            RemoteStatus = status;
+            if (requireReady && !IsRemoteAccessReady(status))
+            {
+                HasError = true;
+                var diagnostic = FormatLifecycleDiagnostic(status);
+                StatusMessage = diagnostic.Length > 0
+                    ? diagnostic
+                    : L("remote.service.lifecycleFailure", GetLifecycleErrorCode(status));
+                return;
+            }
+
+            HasError = false;
             StatusMessage = L(successMessageKey);
         });
     }
@@ -931,6 +1210,90 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         return error.Message;
     }
 
+    private static bool IsRemoteAccessReady(ProductRemoteAccessStatus status)
+        => status.DesiredEnabled &&
+           status.HostRunning &&
+           status.FunnelRunning &&
+           Uri.TryCreate(status.PublicUrl, UriKind.Absolute, out var uri) &&
+           uri.Scheme == Uri.UriSchemeHttps;
+
+    private static bool RequiresTailscaleLogin(ProductRemoteAccessStatus status)
+        => status.ErrorCode is "tailscale.backend_not_running";
+
+    private static bool CanContinueTailscaleRecovery(ProductRemoteAccessStatus status)
+    {
+        if (!status.DesiredEnabled)
+        {
+            return false;
+        }
+
+        return (status.ErrorCode is null or
+                "tailscale.backend_not_running" or
+                "tailscale.status_failed" or
+                "tailscale.status_timeout" or
+                "tailscale.funnel_status_failed" or
+                "tailscale.funnel_status_timeout" or
+                "tailscale.funnel_process_exited" or
+                "tailscale.funnel_start_timeout" or
+                "remote.start_timeout" or
+                "remote.start_failed") ||
+               status.State is "waiting" or "retrying";
+    }
+
+    private static string GetLifecycleErrorCode(ProductRemoteAccessStatus? status)
+    {
+        if (!string.IsNullOrWhiteSpace(status?.ErrorCode))
+        {
+            return status.ErrorCode!;
+        }
+
+        if (status is null)
+        {
+            return "remote.status_unavailable";
+        }
+
+        if (!status.DesiredEnabled)
+        {
+            return "remote.disabled";
+        }
+
+        return status.HostRunning && status.FunnelRunning
+            ? "remote.public_url_missing"
+            : "remote.lifecycle_not_ready";
+    }
+
+    private static string FormatLifecycleDiagnostic(ProductRemoteAccessStatus? status)
+    {
+        if (status is null || IsRemoteAccessReady(status) || !status.DesiredEnabled)
+        {
+            return string.Empty;
+        }
+
+        var errorCode = GetLifecycleErrorCode(status);
+        return errorCode switch
+        {
+            "tailscale.backend_not_running" =>
+                L("remote.service.tailscale.loginRequired", errorCode),
+            "tailscale.not_installed" =>
+                L("remote.service.tailscale.notInstalled", errorCode),
+            "tailscale.status_schema_invalid" or "tailscale.status_payload_invalid" or
+                "tailscale.status_json_invalid" =>
+                L("remote.service.tailscale.statusInvalid", errorCode),
+            "tailscale.https_not_enabled" =>
+                L("remote.service.tailscale.httpsRequired", errorCode),
+            "tailscale.hostname_unavailable" =>
+                L("remote.service.tailscale.hostnameUnavailable", errorCode),
+            "tailscale.hostname_set_failed" or "tailscale.hostname_set_timeout" =>
+                L("remote.service.tailscale.hostnameSetFailed", errorCode),
+            "tailscale.hostname_status_failed" or "tailscale.hostname_status_timeout" or
+                "tailscale.hostname_status_invalid" or "tailscale.hostname_verification_failed" =>
+                L("remote.service.tailscale.hostnameStatusFailed", errorCode),
+            "tailscale.funnel_route_conflict" or "tailscale.precondition_changed" =>
+                L("remote.service.tailscale.routeConflict", errorCode),
+            _ => L("remote.service.lifecycleFailure", errorCode),
+        };
+    }
+
     private static void CopyToClipboard(string value) => Clipboard.SetText(value);
 
     private static void OpenBrowser(string value)
@@ -948,9 +1311,15 @@ internal sealed class ProductServiceRemoteAccessViewModel : ObservableObject, ID
         OnPropertyChanged(nameof(HostStateText));
         OnPropertyChanged(nameof(FunnelStateText));
         OnPropertyChanged(nameof(RetryText));
+        OnPropertyChanged(nameof(LifecycleDiagnosticText));
+        OnPropertyChanged(nameof(HasLifecycleDiagnostic));
         OnPropertyChanged(nameof(SelectedAccountNameText));
         OnPropertyChanged(nameof(AvailableRoles));
-        StatusMessage = L("remote.service.refreshed");
+        StatusMessage = IsTailscaleRecoveryActive
+            ? L("remote.service.tailscale.waiting", GetLifecycleErrorCode(RemoteStatus))
+            : HasLifecycleDiagnostic
+                ? LifecycleDiagnosticText
+                : L("remote.service.refreshed");
     }
 
     private static string L(string key, params object?[] arguments)
