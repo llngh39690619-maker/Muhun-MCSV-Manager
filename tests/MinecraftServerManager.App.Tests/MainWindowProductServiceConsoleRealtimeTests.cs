@@ -214,8 +214,21 @@ public sealed class MainWindowProductServiceConsoleRealtimeTests
         client.PublishHistoryGap(server.Id);
         await client.PlayersListed.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await WaitUntilAsync(
-            () => server.Players.Any(player => player.Name == "Bob" && player.IsOnline) &&
-                  server.Players.All(player => player.Name != "Alice" || !player.IsOnline),
+            () =>
+            {
+                try
+                {
+                    var players = server.Players.ToArray();
+                    return players.Any(player => player.Name == "Bob" && player.IsOnline) &&
+                           players.All(player => player.Name != "Alice" || !player.IsOnline);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The dispatcher-free test host can observe the brief replacement window.
+                    // Retry against a fresh snapshot instead of enumerating a mutating collection.
+                    return false;
+                }
+            },
             TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, client.PlayerListCallCount);

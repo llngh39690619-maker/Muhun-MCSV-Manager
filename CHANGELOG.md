@@ -2,6 +2,16 @@
 
 ## 未發布
 
+## 1.2.9-beta.18 — CurseForge 每使用者安全憑證版（研發中）
+
+- Server 線上模組包的 CurseForge BYOK 可繼續只使用當次輸入，也可由使用者明確選擇保存；保存時只把 Key 以 Windows DPAPI CurrentUser 密文寫入受管理的每使用者 `ClientSecrets`，相同 Windows 使用者後續的目錄查詢與模組包更新可自動取得單次唯讀副本。
+- 目錄視窗提供保存、清除與狀態提示；已保存的 Key 不會回填到 `PasswordBox`。更新流程若已有保存值便直接使用，沒有保存值時才顯示輸入視窗，並由使用者決定是否保存。
+- Key 不嵌入 EXE、原始碼或 repository，也不進入一般設定、日誌、URI、命令列、環境變數、背景工作定義或 Windows Service IPC；每位 Windows 使用者與每台電腦應使用自己的 Key。客戶端 CurseForge 內容中心仍不可用，也不會重用 Server 憑證。
+- 本機正式發行驗證通過：11 個測試專案共 `3374 / 3374` 通過；Release 建置 `0` 警告、`0` 錯誤；26 個專案的 NuGet 弱點稽核為 `0` advisories；正式套件 manifest 驗證 `30` 個檔案。
+- Android 驗證成品使用 `versionCode 37`，簽署 APK SHA-256 為 `AF9A4C52F48C76E3E2BDE9721D2F81A94928A6419B1D52D5B0EE4360F7EAB096`。單一 Windows 安裝器大小 `259,810,408` bytes，SHA-256 為 `496D39E3998DB11248F2B833CF7F30BA718203AE7DD19694EA4E4AD57BADA11E`；本機自簽 Authenticode 驗證為 `Valid`，並具 DigiCert RFC 3161 時間戳記。
+- 1.2.9-beta.18 已完成本機發行驗證，未發布。
+- **狀態：Beta，研發中。**
+
 ## 1.2.9-beta.17 — 使用者工作階段固定 Funnel 版（研發中）
 
 - 修正 beta.16 在正式 Windows Service 虛擬帳號下無法存取目前登入使用者的 Tailscale LocalAPI，導致遠端管理畫面顯示 `tailscale.status_failed`、固定網址無法建立的問題；Service 不再假裝能直接查詢另一個 Windows SID 的 Tailscale 工作階段。

@@ -68,13 +68,16 @@ internal interface IBackgroundOnlineModpackDialogService
 
 internal sealed class BackgroundOnlineModpackDialogService(
     IOnlineModpackWorkflow workflow,
-    BackgroundServerJobCoordinator coordinator)
+    BackgroundServerJobCoordinator coordinator,
+    ICurseForgeCredentialStore? curseForgeCredentialStore = null)
     : IBackgroundOnlineModpackDialogService
 {
     private readonly IOnlineModpackWorkflow _workflow = workflow
         ?? throw new ArgumentNullException(nameof(workflow));
     private readonly BackgroundServerJobCoordinator _coordinator = coordinator
         ?? throw new ArgumentNullException(nameof(coordinator));
+    private readonly ICurseForgeCredentialStore? _curseForgeCredentialStore =
+        curseForgeCredentialStore;
 
     public bool ShowInstallDialog(Window? owner)
     {
@@ -82,7 +85,9 @@ internal sealed class BackgroundOnlineModpackDialogService(
         var dialog = new OnlineModpackDialog(
             viewModel,
             loadFeaturedOnOpen: true,
-            backgroundSubmitter: Submit);
+            backgroundSubmitter: Submit,
+            catalogRefreshDebounce: null,
+            curseForgeCredentialStore: _curseForgeCredentialStore);
         if (owner is not null)
         {
             dialog.Owner = owner;

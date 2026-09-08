@@ -4,6 +4,7 @@ using System.Windows.Media;
 using MinecraftServerManager.App.Infrastructure;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.Core.Models;
+using MinecraftServerManager.Core.Providers;
 
 namespace MinecraftServerManager.App.ViewModels;
 
@@ -562,6 +563,8 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
 
     public ServerInstance? InstalledServer { get; private set; }
 
+    internal bool WasLastCurseForgeKeyRejected { get; private set; }
+
     public async Task LoadFeaturedAsync(SecureString? transientApiKey)
     {
         ThrowIfDisposed();
@@ -875,6 +878,12 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             return;
         }
 
+        CancelArtworkHydration();
+        Results.Clear();
+        CatalogItems.Clear();
+        Versions.Clear();
+        SelectedResult = null;
+        SelectedVersion = null;
         ErrorMessage = string.Empty;
         ProgressDetailText = string.Empty;
         StageText = L("online.status.curseForgeKeyRequired");
@@ -916,6 +925,7 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
         _operationCancellation = cancellation;
         var generation = ++_operationGeneration;
         _isInstallOperation = isInstall;
+        WasLastCurseForgeKeyRejected = false;
         OnPropertyChanged(nameof(IsInstalling));
         OnPropertyChanged(nameof(CanChangeProvider));
         ProgressPercentage = 0;
@@ -991,6 +1001,12 @@ public sealed class OnlineModpackViewModel : ObservableObject, IDisposable
             return;
         }
 
+        WasLastCurseForgeKeyRejected =
+            SelectedProvider.Provider == OnlineModpackProvider.CurseForge &&
+            exception is CurseForgeApiException
+            {
+                ErrorCode: CurseForgeApiErrorCode.InvalidApiKey
+            };
         ErrorMessage = L("common.errorWithDetail", prefix, GetSafeErrorMessage(exception));
         ProgressDetailText = string.Empty;
         StageText = L("common.operationFailed", prefix);

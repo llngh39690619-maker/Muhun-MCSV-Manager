@@ -74,6 +74,37 @@ public sealed class CurseForgeUpdateCredentialTests
     }
 
     [Fact]
+    public async Task CurseForgeUpdate_AutomaticallyUsesSavedCredentialAndDisposesOperationCopy()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var paths = new ApplicationPaths(directory.Path);
+        paths.EnsureCreated();
+        var credentialStore = new RecordingCredentialStore(hasCredential: true);
+        var workflow = new RecordingUpdateWorkflow(OnlineModpackProvider.CurseForge);
+        var selection = new FirstUpdateSelectionService();
+        await using var viewModel = new MainWindowViewModel(
+            paths,
+            new AlwaysConfirmRemovalService(),
+            workflow,
+            onlineModpackDialogService: null,
+            modpackUpdateSelectionService: selection,
+            curseForgeCredentialStore: credentialStore);
+        var server = CreateServer(paths, ModpackSourceKind.CurseForge);
+        viewModel.Servers.Add(server);
+
+        await Assert.ThrowsAsync<ExpectedInstallException>(() =>
+            viewModel.SelectAndUpdateModpackAsync(server, CancellationToken.None));
+
+        Assert.Equal(1, credentialStore.AcquireCount);
+        Assert.Equal(1, workflow.VersionRequestCount);
+        Assert.Equal(1, workflow.InstallRequestCount);
+        Assert.True(workflow.CredentialWasReadOnlyAtVersionQuery);
+        Assert.True(workflow.CredentialWasReadOnlyAtInstall);
+        var disposedCredential = Assert.IsType<SecureString>(workflow.VersionCredential);
+        Assert.Throws<ObjectDisposedException>(() => _ = disposedCredential.Length);
+    }
+
+    [Fact]
     public async Task NonCurseForgeUpdate_DoesNotRequestCredentialAndPassesNullToWorkflow()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();
@@ -129,6 +160,9 @@ public sealed class CurseForgeUpdateCredentialTests
     [Fact]
     public void CredentialDialog_UsesDarkPasswordInputWithoutPlainTextBinding()
     {
+        var promptCode = File.ReadAllText(GetAppSourcePath(Path.Combine(
+            "Services",
+            "CurseForgeUpdateCredentialPrompt.cs")));
         var document = XDocument.Load(GetAppSourcePath(Path.Combine(
             "Dialogs",
             "CurseForgeUpdateCredentialDialog.xaml")));
@@ -136,6 +170,16 @@ public sealed class CurseForgeUpdateCredentialTests
         Assert.Equal("{StaticResource AppWindowStyle}", (string?)window.Attribute("Style"));
         Assert.NotNull(document.Descendants(Presentation + "PasswordBox").SingleOrDefault());
         Assert.Empty(document.Descendants(Presentation + "TextBox"));
+        var remember = Assert.Single(document.Descendants(Presentation + "CheckBox"));
+        Assert.Equal("False", (string?)remember.Attribute("IsChecked"));
+        Assert.Contains(
+            "curseForgeCredential.remember",
+            (string?)remember.Attribute("Content") ?? string.Empty,
+            StringComparison.Ordinal);
+        Assert.Contains("_credentialStore?.AcquireReadOnly()", promptCode, StringComparison.Ordinal);
+        Assert.Contains("if (dialog.RememberCredential)", promptCode, StringComparison.Ordinal);
+        Assert.Contains("_credentialStore.Save(ownedCredential)", promptCode, StringComparison.Ordinal);
+        Assert.Contains("ownedCredential?.Dispose()", promptCode, StringComparison.Ordinal);
         Assert.All(
             document.Descendants().SelectMany(element => element.Attributes()),
             attribute => Assert.DoesNotContain("Password=", attribute.Value, StringComparison.Ordinal));
@@ -190,6 +234,37 @@ public sealed class CurseForgeUpdateCredentialTests
         {
             _credential?.Dispose();
             _credential = null;
+        }
+    }
+
+    private sealed class RecordingCredentialStore(bool hasCredential)
+        : ICurseForgeCredentialStore
+    {
+        public int AcquireCount { get; private set; }
+
+        public bool HasCredential { get; private set; } = hasCredential;
+
+        public SecureString? AcquireReadOnly()
+        {
+            AcquireCount++;
+            if (!HasCredential)
+            {
+                return null;
+            }
+
+            var credential = CreateSecureString("saved-test-key");
+            credential.MakeReadOnly();
+            return credential;
+        }
+
+        public void Save(SecureString credential)
+            => HasCredential = true;
+
+        public bool Delete()
+        {
+            var deleted = HasCredential;
+            HasCredential = false;
+            return deleted;
         }
     }
 

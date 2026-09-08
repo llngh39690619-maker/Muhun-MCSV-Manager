@@ -21,6 +21,8 @@ internal partial class CurseForgeUpdateCredentialDialog : Window
         return credential;
     }
 
+    internal bool RememberCredential => RememberCredentialInput.IsChecked == true;
+
     internal void DisposeUnclaimedCredential()
     {
         ApiKeyInput.Clear();

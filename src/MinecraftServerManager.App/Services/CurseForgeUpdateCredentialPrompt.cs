@@ -6,18 +6,47 @@ using MinecraftServerManager.Core.Models;
 namespace MinecraftServerManager.App.Services;
 
 /// <summary>
-/// Transfers ownership of a single-operation CurseForge credential to the caller. Implementations
-/// must never persist, log, cache, or convert the credential to a managed string.
+/// Transfers ownership of a single-operation CurseForge credential to the caller. A configured
+/// credential may be copied from the CurrentUser DPAPI store, but the returned copy must never be
+/// logged, serialized, cached by the caller, or converted to a managed string outside the provider
+/// request boundary.
 /// </summary>
 internal interface ICurseForgeUpdateCredentialPrompt
 {
     SecureString? RequestCredential(Window? owner);
 }
 
-internal sealed class CurseForgeUpdateCredentialPrompt : ICurseForgeUpdateCredentialPrompt
+internal sealed class CurseForgeUpdateCredentialPrompt(
+    ICurseForgeCredentialStore? credentialStore = null) : ICurseForgeUpdateCredentialPrompt
 {
+    private readonly ICurseForgeCredentialStore? _credentialStore = credentialStore;
+
     public SecureString? RequestCredential(Window? owner)
     {
+        try
+        {
+            var stored = _credentialStore?.AcquireReadOnly();
+            if (stored is not null)
+            {
+                if (!stored.IsReadOnly())
+                {
+                    stored.MakeReadOnly();
+                }
+
+                return stored;
+            }
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DarkMessageBox.Show(
+                owner,
+                LocalizationService.Current.Get(
+                    "modpackUpdate.curseForgeCredential.storeReadFailed"),
+                LocalizationService.Current.Get("modpackUpdate.curseForgeCredential.title"),
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
         var dialog = new CurseForgeUpdateCredentialDialog();
         if (owner is { IsLoaded: true, IsVisible: true })
         {
@@ -30,9 +59,47 @@ internal sealed class CurseForgeUpdateCredentialPrompt : ICurseForgeUpdateCreden
 
         try
         {
-            return dialog.ShowDialog() == true
-                ? dialog.TakeCredential()
-                : null;
+            SecureString? ownedCredential = null;
+            if (dialog.ShowDialog() != true)
+            {
+                return null;
+            }
+
+            try
+            {
+                ownedCredential = dialog.TakeCredential();
+                if (dialog.RememberCredential)
+                {
+                    try
+                    {
+                        if (_credentialStore is null)
+                        {
+                            throw new InvalidOperationException(
+                                "The CurseForge credential store is unavailable.");
+                        }
+
+                        _credentialStore.Save(ownedCredential);
+                    }
+                    catch (Exception exception) when (exception is not OutOfMemoryException)
+                    {
+                        DarkMessageBox.Show(
+                            owner,
+                            LocalizationService.Current.Get(
+                                "modpackUpdate.curseForgeCredential.storeSaveFailed"),
+                            LocalizationService.Current.Get("modpackUpdate.curseForgeCredential.title"),
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                }
+
+                var transferred = ownedCredential;
+                ownedCredential = null;
+                return transferred;
+            }
+            finally
+            {
+                ownedCredential?.Dispose();
+            }
         }
         finally
         {

@@ -64,6 +64,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly ServerDirectoryDeletionService _serverDirectoryDeletionService;
     private readonly IOnlineModpackWorkflow _onlineModpackWorkflow;
     private readonly IOnlineModpackDialogService _onlineModpackDialogService;
+    private readonly ICurseForgeCredentialStore _curseForgeCredentialStore;
     private readonly ICurseForgeUpdateCredentialPrompt _curseForgeUpdateCredentialPrompt;
     private readonly IModpackUpdateSelectionService _modpackUpdateSelectionService;
     private readonly ICoreServerCreationDialogService _coreServerCreationDialogService;
@@ -291,7 +292,8 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ICurseForgeUpdateCredentialPrompt? curseForgeUpdateCredentialPrompt = null,
         IModpackUpdateSelectionService? modpackUpdateSelectionService = null,
         IJsonSettingsStore<ManagerSettings>? settingsStore = null,
-        IBundledProductServiceUpdateLauncher? productServiceUpdateLauncher = null)
+        IBundledProductServiceUpdateLauncher? productServiceUpdateLauncher = null,
+        ICurseForgeCredentialStore? curseForgeCredentialStore = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(serverRemovalConfirmationService);
@@ -310,8 +312,10 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _serverDirectoryDeletionService = new ServerDirectoryDeletionService(paths);
         _capturePortOccupancy = capturePortOccupancy ?? SystemPortOccupancy.Capture;
         _onlineModpackWorkflow = onlineModpackWorkflow;
+        _curseForgeCredentialStore = curseForgeCredentialStore
+            ?? new DpapiCurseForgeCredentialStore(paths);
         _curseForgeUpdateCredentialPrompt = curseForgeUpdateCredentialPrompt
-            ?? new CurseForgeUpdateCredentialPrompt();
+            ?? new CurseForgeUpdateCredentialPrompt(_curseForgeCredentialStore);
         _modpackUpdateSelectionService = modpackUpdateSelectionService
             ?? new ModpackUpdateSelectionService();
         _backgroundJobs = new BackgroundServerJobCoordinator(
@@ -322,11 +326,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             serverName => SafePath.CreateUniqueDirectoryPath(_paths.Servers, serverName));
         _backgroundJobs.PropertyChanged += OnBackgroundJobsPropertyChanged;
         _onlineModpackDialogService = onlineModpackDialogService
-            ?? new OnlineModpackDialogService(_onlineModpackWorkflow);
+            ?? new OnlineModpackDialogService(
+                _onlineModpackWorkflow,
+                _curseForgeCredentialStore);
         if (onlineModpackDialogService is null)
         {
             _backgroundOnlineModpackDialogService =
-                new BackgroundOnlineModpackDialogService(_onlineModpackWorkflow, _backgroundJobs);
+                new BackgroundOnlineModpackDialogService(
+                    _onlineModpackWorkflow,
+                    _backgroundJobs,
+                    _curseForgeCredentialStore);
         }
         if (coreServerCreationDialogService is null)
         {

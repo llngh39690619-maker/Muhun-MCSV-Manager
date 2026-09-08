@@ -1,13 +1,52 @@
+using System.Net;
 using System.Security;
 using System.Windows.Media;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Core.Models;
+using MinecraftServerManager.Core.Providers;
 
 namespace MinecraftServerManager.App.Tests;
 
 public sealed class OnlineModpackViewModelTests
 {
+    [Fact]
+    public async Task CurseForgeInvalidKey_IsClassifiedWithoutMisclassifyingForbidden()
+    {
+        var invalidWorkflow = new FakeWorkflow
+        {
+            FeaturedTask = Task.FromException<IReadOnlyList<OnlineModpackSearchResult>>(
+                new CurseForgeApiException(
+                    CurseForgeApiErrorCode.InvalidApiKey,
+                    HttpStatusCode.Unauthorized))
+        };
+        var invalidViewModel = new OnlineModpackViewModel(invalidWorkflow);
+        invalidViewModel.SelectedProvider = Assert.Single(
+            invalidViewModel.Providers,
+            item => item.Provider == OnlineModpackProvider.CurseForge);
+
+        await invalidViewModel.LoadFeaturedAsync(transientApiKey: null);
+
+        Assert.True(invalidViewModel.WasLastCurseForgeKeyRejected);
+        Assert.Contains("API Key 無效", invalidViewModel.ErrorMessage, StringComparison.Ordinal);
+
+        var forbiddenWorkflow = new FakeWorkflow
+        {
+            FeaturedTask = Task.FromException<IReadOnlyList<OnlineModpackSearchResult>>(
+                new CurseForgeApiException(
+                    CurseForgeApiErrorCode.Forbidden,
+                    HttpStatusCode.Forbidden))
+        };
+        var forbiddenViewModel = new OnlineModpackViewModel(forbiddenWorkflow);
+        forbiddenViewModel.SelectedProvider = Assert.Single(
+            forbiddenViewModel.Providers,
+            item => item.Provider == OnlineModpackProvider.CurseForge);
+
+        await forbiddenViewModel.LoadFeaturedAsync(transientApiKey: null);
+
+        Assert.False(forbiddenViewModel.WasLastCurseForgeKeyRejected);
+    }
+
     [Fact]
     public void Providers_ExposeAllBuiltInSourcesAndMarkCurseForgeAsRequiringTransientCredential()
     {
@@ -140,7 +179,8 @@ public sealed class OnlineModpackViewModelTests
         Assert.True(viewModel.IsCurseForgeSelected);
         Assert.True(viewModel.CanLoadFeatured);
         Assert.Contains("官方 API Key", viewModel.ProviderAvailabilityText, StringComparison.Ordinal);
-        Assert.Contains("不會儲存", viewModel.ProviderAvailabilityText, StringComparison.Ordinal);
+        Assert.Contains("Windows DPAPI", viewModel.ProviderAvailabilityText, StringComparison.Ordinal);
+        Assert.Contains("不會寫入 EXE", viewModel.ProviderAvailabilityText, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -169,7 +169,7 @@ public sealed class OnlineModpackDialogContractTests
     }
 
     [Fact]
-    public void Dialog_UsesOnlyAnOperationScopedSecureCurseForgeCredential()
+    public void Dialog_UsesOperationScopedCopiesAndNeverRefillsTheCurseForgePasswordBox()
     {
         var xamlPath = GetAppSourcePath(Path.Combine("Dialogs", "OnlineModpackDialog.xaml"));
         var codePath = GetAppSourcePath(Path.Combine("Dialogs", "OnlineModpackDialog.xaml.cs"));
@@ -184,10 +184,17 @@ public sealed class OnlineModpackDialogContractTests
             "OnCurseForgeApiKeyChanged",
             (string?)credentialInput.Attribute("PasswordChanged"));
         Assert.Contains("CurseForgeApiKeyBox", xaml, StringComparison.Ordinal);
-        Assert.Contains("SecurePassword.Copy()", code, StringComparison.Ordinal);
+        Assert.Contains("using var source = CurseForgeApiKeyBox.SecurePassword", code, StringComparison.Ordinal);
+        Assert.Contains("source.Copy()", code, StringComparison.Ordinal);
         Assert.Contains("credential.MakeReadOnly()", code, StringComparison.Ordinal);
         Assert.Contains("using var credential", code, StringComparison.Ordinal);
         Assert.Contains("CurseForgeApiKeyBox.Clear()", code, StringComparison.Ordinal);
+        Assert.Contains("_curseForgeCredentialStore?.AcquireReadOnly()", code, StringComparison.Ordinal);
+        Assert.Contains("_curseForgeCredentialStore.Save(credential)", code, StringComparison.Ordinal);
+        Assert.Contains("_curseForgeCredentialStore.Delete()", code, StringComparison.Ordinal);
+        Assert.Contains("OnSaveCurseForgeCredentialClick", xaml, StringComparison.Ordinal);
+        Assert.Contains("OnDeleteCurseForgeCredentialClick", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("CurseForgeApiKeyBox.Password =", code, StringComparison.Ordinal);
         Assert.DoesNotContain("Json", code, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("File.", code, StringComparison.Ordinal);
 

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Security;
 using System.Windows;
 using System.Windows.Controls;
@@ -461,6 +462,259 @@ public sealed class OnlineModpackDialogLifecycleTests
         });
     }
 
+    [Fact]
+    public void CurseForgeSelection_UsesSavedCredentialWithoutRefillingPasswordBox()
+    {
+        WpfStaTestHost.Run(() =>
+        {
+            var workflow = new RecordingBrowseWorkflow();
+            var credentialStore = new SavedCredentialStore();
+            var viewModel = new OnlineModpackViewModel(workflow);
+            var dialog = new OnlineModpackDialog(
+                viewModel,
+                loadFeaturedOnOpen: false,
+                backgroundSubmitter: null,
+                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
+                curseForgeCredentialStore: credentialStore);
+            var elapsed = TimeSpan.Zero;
+            var timedOut = false;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+            dialog.Loaded += (_, _) =>
+            {
+                viewModel.SelectedProvider = Assert.Single(
+                    viewModel.Providers,
+                    item => item.Provider == OnlineModpackProvider.CurseForge);
+            };
+            timer.Tick += (_, _) =>
+            {
+                elapsed += timer.Interval;
+                if (workflow.Requests.Count == 1)
+                {
+                    timer.Stop();
+                    dialog.Close();
+                    return;
+                }
+
+                if (elapsed < TimeSpan.FromSeconds(5))
+                {
+                    return;
+                }
+
+                timedOut = true;
+                timer.Stop();
+                dialog.Close();
+            };
+
+            timer.Start();
+            var result = dialog.ShowDialog();
+            timer.Stop();
+
+            Assert.False(timedOut);
+            Assert.False(result);
+            Assert.Equal(1, credentialStore.AcquireCount);
+            Assert.Equal(9, Assert.Single(workflow.CredentialLengths));
+            var passwordBox = Assert.IsType<PasswordBox>(
+                dialog.FindName("CurseForgeApiKeyBox"));
+            Assert.Empty(passwordBox.Password);
+        });
+    }
+
+    [Fact]
+    public void CurseForgeSelection_CorruptSavedCredentialFailsClosedWithoutRefillingPasswordBox()
+    {
+        WpfStaTestHost.Run(() =>
+        {
+            var workflow = new RecordingBrowseWorkflow();
+            var viewModel = new OnlineModpackViewModel(workflow);
+            var dialog = new OnlineModpackDialog(
+                viewModel,
+                loadFeaturedOnOpen: false,
+                backgroundSubmitter: null,
+                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
+                curseForgeCredentialStore: new ThrowingCredentialStore());
+            var elapsed = TimeSpan.Zero;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+            dialog.Loaded += (_, _) =>
+            {
+                viewModel.SelectedProvider = Assert.Single(
+                    viewModel.Providers,
+                    item => item.Provider == OnlineModpackProvider.CurseForge);
+            };
+            timer.Tick += (_, _) =>
+            {
+                elapsed += timer.Interval;
+                if (elapsed >= TimeSpan.FromMilliseconds(150))
+                {
+                    timer.Stop();
+                    dialog.Close();
+                }
+            };
+
+            timer.Start();
+            var result = dialog.ShowDialog();
+            timer.Stop();
+
+            Assert.False(result);
+            Assert.Empty(workflow.Requests);
+            var passwordBox = Assert.IsType<PasswordBox>(
+                dialog.FindName("CurseForgeApiKeyBox"));
+            Assert.Empty(passwordBox.Password);
+            var status = Assert.IsType<TextBlock>(
+                dialog.FindName("CurseForgeCredentialStatusText"));
+            Assert.Equal(
+                LocalizationService.Current.Get("online.curseForgeCredential.readFailed"),
+                status.Text);
+        });
+    }
+
+    [Fact]
+    public void CurseForgeTypedCredentialTakesPriorityAndIsSavedOnlyAfterExplicitButtonClick()
+    {
+        WpfStaTestHost.Run(() =>
+        {
+            var workflow = new RecordingBrowseWorkflow();
+            var credentialStore = new SavedCredentialStore();
+            var viewModel = new OnlineModpackViewModel(workflow);
+            var dialog = new OnlineModpackDialog(
+                viewModel,
+                loadFeaturedOnOpen: false,
+                backgroundSubmitter: null,
+                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
+                curseForgeCredentialStore: credentialStore);
+            var elapsed = TimeSpan.Zero;
+            var timedOut = false;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+            dialog.Loaded += (_, _) =>
+            {
+                viewModel.SelectedProvider = Assert.Single(
+                    viewModel.Providers,
+                    item => item.Provider == OnlineModpackProvider.CurseForge);
+                var passwordBox = Assert.IsType<PasswordBox>(
+                    dialog.FindName("CurseForgeApiKeyBox"));
+                passwordBox.Password = "typed";
+            };
+            timer.Tick += (_, _) =>
+            {
+                elapsed += timer.Interval;
+                if (workflow.Requests.Count == 1)
+                {
+                    Assert.Equal(5, Assert.Single(workflow.CredentialLengths));
+                    Assert.Equal(0, credentialStore.AcquireCount);
+                    Assert.Equal(0, credentialStore.SaveCount);
+
+                    var saveButton = Assert.IsType<Button>(
+                        dialog.FindName("SaveCurseForgeCredentialButton"));
+                    saveButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Equal(1, credentialStore.SaveCount);
+                    Assert.True(credentialStore.LastSavedWasReadOnly);
+                    var passwordBox = Assert.IsType<PasswordBox>(
+                        dialog.FindName("CurseForgeApiKeyBox"));
+                    Assert.Empty(passwordBox.Password);
+
+                    timer.Stop();
+                    dialog.Close();
+                    return;
+                }
+
+                if (elapsed < TimeSpan.FromSeconds(5))
+                {
+                    return;
+                }
+
+                timedOut = true;
+                timer.Stop();
+                dialog.Close();
+            };
+
+            timer.Start();
+            var result = dialog.ShowDialog();
+            timer.Stop();
+
+            Assert.False(timedOut);
+            Assert.False(result);
+        });
+    }
+
+    [Fact]
+    public void CurseForgeDeleteSavedCredentialClearsCredentialDependentResults()
+    {
+        WpfStaTestHost.Run(() =>
+        {
+            var workflow = new RecordingBrowseWorkflow
+            {
+                Results =
+                [
+                    new OnlineModpackSearchResult(
+                        OnlineModpackProvider.CurseForge,
+                        "123",
+                        "Test pack",
+                        "Test summary",
+                        "Test author")
+                ]
+            };
+            var credentialStore = new SavedCredentialStore();
+            var viewModel = new OnlineModpackViewModel(workflow);
+            var dialog = new OnlineModpackDialog(
+                viewModel,
+                loadFeaturedOnOpen: false,
+                backgroundSubmitter: null,
+                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
+                curseForgeCredentialStore: credentialStore);
+            var elapsed = TimeSpan.Zero;
+            var timedOut = false;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+            dialog.Loaded += (_, _) =>
+            {
+                viewModel.SelectedProvider = Assert.Single(
+                    viewModel.Providers,
+                    item => item.Provider == OnlineModpackProvider.CurseForge);
+            };
+            timer.Tick += (_, _) =>
+            {
+                elapsed += timer.Interval;
+                if (viewModel.Results.Count == 1)
+                {
+                    var deleteButton = Assert.IsType<Button>(
+                        dialog.FindName("DeleteCurseForgeCredentialButton"));
+                    deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+                    Assert.False(credentialStore.HasCredential);
+                    Assert.Equal(1, credentialStore.DeleteCount);
+                    Assert.Empty(viewModel.Results);
+                    Assert.Empty(viewModel.CatalogItems);
+                    Assert.Empty(viewModel.Versions);
+                    Assert.Null(viewModel.SelectedResult);
+                    Assert.Null(viewModel.SelectedVersion);
+                    Assert.Single(workflow.Requests);
+                    Assert.Equal(
+                        LocalizationService.Current.Get("online.curseForgeCredential.deleted"),
+                        Assert.IsType<TextBlock>(
+                            dialog.FindName("CurseForgeCredentialStatusText")).Text);
+
+                    timer.Stop();
+                    dialog.Close();
+                    return;
+                }
+
+                if (elapsed < TimeSpan.FromSeconds(5))
+                {
+                    return;
+                }
+
+                timedOut = true;
+                timer.Stop();
+                dialog.Close();
+            };
+
+            timer.Start();
+            var result = dialog.ShowDialog();
+            timer.Stop();
+
+            Assert.False(timedOut);
+            Assert.False(result);
+        });
+    }
+
     private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent)
         where T : DependencyObject
     {
@@ -623,6 +877,8 @@ public sealed class OnlineModpackDialogLifecycleTests
 
         public List<int?> CredentialLengths { get; } = [];
 
+        public IReadOnlyList<OnlineModpackSearchResult> Results { get; init; } = [];
+
         public Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseAsync(
             OnlineModpackBrowseRequest request,
             SecureString? transientApiKey,
@@ -631,7 +887,7 @@ public sealed class OnlineModpackDialogLifecycleTests
             cancellationToken.ThrowIfCancellationRequested();
             Requests.Add(request);
             CredentialLengths.Add(transientApiKey?.Length);
-            return Task.FromResult<IReadOnlyList<OnlineModpackSearchResult>>([]);
+            return Task.FromResult(Results);
         }
 
         public Task<IReadOnlyList<OnlineModpackSearchResult>> SearchAsync(
@@ -652,6 +908,62 @@ public sealed class OnlineModpackDialogLifecycleTests
             SecureString? transientApiKey,
             IProgress<OnlineModpackInstallProgress> progress,
             CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class SavedCredentialStore : ICurseForgeCredentialStore
+    {
+        public int AcquireCount { get; private set; }
+
+        public int SaveCount { get; private set; }
+
+        public int DeleteCount { get; private set; }
+
+        public bool LastSavedWasReadOnly { get; private set; }
+
+        public bool HasCredential { get; private set; } = true;
+
+        public SecureString AcquireReadOnly()
+        {
+            AcquireCount++;
+            var credential = new SecureString();
+            foreach (var character in "saved-key")
+            {
+                credential.AppendChar(character);
+            }
+
+            credential.MakeReadOnly();
+            return credential;
+        }
+
+        public void Save(SecureString credential)
+        {
+            SaveCount++;
+            LastSavedWasReadOnly = credential.IsReadOnly();
+            HasCredential = true;
+        }
+
+        public bool Delete()
+        {
+            DeleteCount++;
+            var deleted = HasCredential;
+            HasCredential = false;
+            return deleted;
+        }
+    }
+
+    private sealed class ThrowingCredentialStore : ICurseForgeCredentialStore
+    {
+        public bool HasCredential
+            => throw new InvalidDataException("corrupt test credential");
+
+        public SecureString? AcquireReadOnly()
+            => throw new InvalidDataException("corrupt test credential");
+
+        public void Save(SecureString credential)
+            => throw new NotSupportedException();
+
+        public bool Delete()
             => throw new NotSupportedException();
     }
 
