@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Security;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,10 +17,10 @@ public partial class OnlineModpackDialog : Window
     private readonly OnlineModpackViewModel _viewModel;
     private readonly Func<OnlineModpackInstallRequest, BackgroundJobSubmissionResult>? _backgroundSubmitter;
     private readonly ICurseForgeCredentialStore? _curseForgeCredentialStore;
+    private readonly ICurseForgeCredentialFileImportService? _curseForgeCredentialFileImportService;
     private readonly bool _loadFeaturedOnOpen;
     private readonly TimeSpan _catalogRefreshDebounce;
     private CancellationTokenSource? _scheduledCatalogRefreshCancellation;
-    private bool _suppressCurseForgePasswordChanged;
     private bool _completed;
     private bool _hasLoaded;
 
@@ -45,7 +46,8 @@ public partial class OnlineModpackDialog : Window
         bool loadFeaturedOnOpen,
         Func<OnlineModpackInstallRequest, BackgroundJobSubmissionResult>? backgroundSubmitter,
         TimeSpan? catalogRefreshDebounce = null,
-        ICurseForgeCredentialStore? curseForgeCredentialStore = null)
+        ICurseForgeCredentialStore? curseForgeCredentialStore = null,
+        ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null)
     {
         ArgumentNullException.ThrowIfNull(viewModel);
         var refreshDebounce = catalogRefreshDebounce ?? DefaultCatalogRefreshDebounce;
@@ -59,6 +61,7 @@ public partial class OnlineModpackDialog : Window
         _loadFeaturedOnOpen = loadFeaturedOnOpen;
         _backgroundSubmitter = backgroundSubmitter;
         _curseForgeCredentialStore = curseForgeCredentialStore;
+        _curseForgeCredentialFileImportService = curseForgeCredentialFileImportService;
         _catalogRefreshDebounce = refreshDebounce;
         DataContext = viewModel;
         viewModel.Installed += OnInstalled;
@@ -210,70 +213,73 @@ public partial class OnlineModpackDialog : Window
 
     private void OnProviderSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ProviderBox.SelectedItem is OnlineModpackProviderChoice selected)
+        if (ProviderBox.SelectedItem is OnlineModpackProviderChoice)
         {
-            if (selected.Provider != OnlineModpackProvider.CurseForge)
-            {
-                ClearCurseForgeApiKeyBox();
-            }
-
             UpdateCurseForgeCredentialStatus();
         }
     }
 
-    private void OnCurseForgeApiKeyChanged(object sender, RoutedEventArgs e)
+    private void OnOpenCurseForgeCredentialFileClick(object sender, RoutedEventArgs e)
     {
-        if (_suppressCurseForgePasswordChanged ||
-            !_hasLoaded ||
-            !_viewModel.IsCurseForgeSelected)
-        {
-            return;
-        }
-
-        UpdateCurseForgeCredentialStatus();
-        if (!HasUsableCurseForgeCredential())
-        {
-            CancelScheduledCatalogRefresh();
-            _viewModel.SetTransientCredentialRequired();
-            return;
-        }
-
-        ScheduleCatalogRefresh();
-    }
-
-    private void OnSaveCurseForgeCredentialClick(object sender, RoutedEventArgs e)
-    {
-        if (_curseForgeCredentialStore is null)
+        if (_curseForgeCredentialFileImportService is null)
         {
             SetCurseForgeCredentialStatus("online.curseForgeCredential.unavailable");
             return;
         }
 
-        using var credential = CopyEnteredCurseForgeApiKey();
-        if (credential is null)
-        {
-            SetCurseForgeCredentialStatus("online.curseForgeCredential.enterToSave");
-            if (!HasUsableCurseForgeCredential())
-            {
-                _viewModel.SetTransientCredentialRequired();
-            }
-
-            CurseForgeApiKeyBox.Focus();
-            return;
-        }
-
         try
         {
-            _curseForgeCredentialStore.Save(credential);
-            // Never refill the PasswordBox from persistent storage. Once saved, future operations
-            // obtain a fresh read-only copy directly from the CurrentUser DPAPI store.
-            ClearCurseForgeApiKeyBox();
-            SetCurseForgeCredentialStatus("online.curseForgeCredential.saved");
+            var path = _curseForgeCredentialFileImportService.PrepareEditableFile();
+            using var process = Process.Start(new ProcessStartInfo(path)
+            {
+                UseShellExecute = true,
+            });
+            if (process is null)
+            {
+                throw new InvalidOperationException(
+                    "The Windows shell did not open the API key import file.");
+            }
+
+            SetCurseForgeCredentialStatus("online.curseForgeCredential.editingFile");
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            SetCurseForgeCredentialStatus("online.curseForgeCredential.saveFailed");
+            SetCurseForgeCredentialStatus("online.curseForgeCredential.openFileFailed");
         }
+    }
+
+    private bool TryImportCurseForgeCredentialFile()
+    {
+        if (_curseForgeCredentialFileImportService is null)
+        {
+            SetCurseForgeCredentialStatus("online.curseForgeCredential.unavailable");
+            return false;
+        }
+
+        CurseForgeCredentialImportResult result;
+        try
+        {
+            result = _curseForgeCredentialFileImportService.ImportIfPresent();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            SetCurseForgeCredentialStatus("online.curseForgeCredential.importFailed");
+            return false;
+        }
+
+        SetCurseForgeCredentialStatus(result switch
+        {
+            CurseForgeCredentialImportResult.Imported =>
+                "online.curseForgeCredential.imported",
+            CurseForgeCredentialImportResult.TemplateEmpty =>
+                "online.curseForgeCredential.fileEmpty",
+            CurseForgeCredentialImportResult.Invalid =>
+                "online.curseForgeCredential.fileInvalid",
+            CurseForgeCredentialImportResult.Failed =>
+                "online.curseForgeCredential.importFailed",
+            _ => "online.curseForgeCredential.fileMissing",
+        });
+        return result == CurseForgeCredentialImportResult.Imported;
     }
 
     private void OnDeleteCurseForgeCredentialClick(object sender, RoutedEventArgs e)
@@ -287,20 +293,12 @@ public partial class OnlineModpackDialog : Window
         try
         {
             var deleted = _curseForgeCredentialStore.Delete();
-            if (HasEnteredCurseForgeApiKey())
-            {
-                SetCurseForgeCredentialStatus(
-                    "online.curseForgeCredential.typedNotSaved");
-            }
-            else
-            {
-                SetCurseForgeCredentialStatus(
-                    deleted
-                        ? "online.curseForgeCredential.deleted"
-                        : "online.curseForgeCredential.notSaved");
-                CancelScheduledCatalogRefresh();
-                _viewModel.SetTransientCredentialRequired();
-            }
+            SetCurseForgeCredentialStatus(
+                deleted
+                    ? "online.curseForgeCredential.deleted"
+                    : "online.curseForgeCredential.notSaved");
+            CancelScheduledCatalogRefresh();
+            _viewModel.SetTransientCredentialRequired();
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -402,7 +400,6 @@ public partial class OnlineModpackDialog : Window
         CancelScheduledCatalogRefresh();
         _viewModel.Installed -= OnInstalled;
         _viewModel.BrowseCriteriaChanged -= OnBrowseCriteriaChanged;
-        ClearCurseForgeApiKeyBox();
         _viewModel.Dispose();
         _completed = true;
     }
@@ -432,12 +429,6 @@ public partial class OnlineModpackDialog : Window
             return null;
         }
 
-        var entered = CopyEnteredCurseForgeApiKey();
-        if (entered is not null)
-        {
-            return entered;
-        }
-
         try
         {
             var stored = _curseForgeCredentialStore?.AcquireReadOnly();
@@ -455,48 +446,16 @@ public partial class OnlineModpackDialog : Window
         }
     }
 
-    private SecureString? CopyEnteredCurseForgeApiKey()
-    {
-        using var source = CurseForgeApiKeyBox.SecurePassword;
-        if (source.Length == 0)
-        {
-            return null;
-        }
-
-        var credential = source.Copy();
-        credential.MakeReadOnly();
-        return credential;
-    }
-
-    private bool HasEnteredCurseForgeApiKey()
-    {
-        using var source = CurseForgeApiKeyBox.SecurePassword;
-        return source.Length > 0;
-    }
-
-    private void ClearCurseForgeApiKeyBox()
-    {
-        _suppressCurseForgePasswordChanged = true;
-        try
-        {
-            CurseForgeApiKeyBox.Clear();
-        }
-        finally
-        {
-            _suppressCurseForgePasswordChanged = false;
-        }
-    }
-
     private bool HasUsableCurseForgeCredential()
     {
-        if (HasEnteredCurseForgeApiKey())
-        {
-            return true;
-        }
-
         try
         {
-            return _curseForgeCredentialStore?.HasCredential == true;
+            if (_curseForgeCredentialStore?.HasCredential == true)
+            {
+                return true;
+            }
+
+            return TryImportCurseForgeCredentialFile();
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -507,12 +466,6 @@ public partial class OnlineModpackDialog : Window
 
     private void UpdateCurseForgeCredentialStatus()
     {
-        if (HasEnteredCurseForgeApiKey())
-        {
-            SetCurseForgeCredentialStatus("online.curseForgeCredential.typedNotSaved");
-            return;
-        }
-
         try
         {
             SetCurseForgeCredentialStatus(

@@ -398,21 +398,24 @@ public sealed class OnlineModpackDialogLifecycleTests
     }
 
     [Fact]
-    public void CurseForgeSelection_DoesNotBrowseWithAnEmptyKeyAndLoadsAfterKeyEntry()
+    public void CurseForgeSelection_DoesNotBrowseWhenNoStoredOrImportFileCredentialExists()
     {
         WpfStaTestHost.Run(() =>
         {
             var workflow = new RecordingBrowseWorkflow();
+            var credentialStore = new SavedCredentialStore(hasCredential: false);
+            var credentialImporter = new RecordingCredentialFileImporter(
+                credentialStore,
+                CurseForgeCredentialImportResult.Missing);
             var viewModel = new OnlineModpackViewModel(workflow);
             var dialog = new OnlineModpackDialog(
                 viewModel,
                 loadFeaturedOnOpen: false,
                 backgroundSubmitter: null,
-                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20));
+                catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
+                curseForgeCredentialStore: credentialStore,
+                curseForgeCredentialFileImportService: credentialImporter);
             var elapsed = TimeSpan.Zero;
-            var enteredCredential = false;
-            var noRequestWasSentWithoutCredential = false;
-            var timedOut = false;
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
             dialog.Loaded += (_, _) =>
             {
@@ -423,47 +426,32 @@ public sealed class OnlineModpackDialogLifecycleTests
             timer.Tick += (_, _) =>
             {
                 elapsed += timer.Interval;
-                if (!enteredCredential && elapsed >= TimeSpan.FromMilliseconds(120))
-                {
-                    noRequestWasSentWithoutCredential = workflow.Requests.Count == 0;
-                    enteredCredential = true;
-                    var passwordBox = Assert.IsType<PasswordBox>(
-                        dialog.FindName("CurseForgeApiKeyBox"));
-                    passwordBox.Password = "secret";
-                }
-
-                if (enteredCredential && workflow.Requests.Count == 1)
+                if (elapsed >= TimeSpan.FromMilliseconds(150))
                 {
                     timer.Stop();
                     dialog.Close();
-                    return;
                 }
-
-                if (elapsed < TimeSpan.FromSeconds(5))
-                {
-                    return;
-                }
-
-                timedOut = true;
-                timer.Stop();
-                dialog.Close();
             };
 
             timer.Start();
             var result = dialog.ShowDialog();
             timer.Stop();
 
-            Assert.False(timedOut);
             Assert.False(result);
-            Assert.True(noRequestWasSentWithoutCredential);
-            var request = Assert.Single(workflow.Requests);
-            Assert.Equal(OnlineModpackProvider.CurseForge, request.Provider);
-            Assert.Equal(6, Assert.Single(workflow.CredentialLengths));
+            Assert.Empty(workflow.Requests);
+            Assert.Empty(workflow.CredentialLengths);
+            Assert.True(credentialImporter.ImportCount >= 1);
+            Assert.Equal(0, credentialStore.AcquireCount);
+            Assert.Null(dialog.FindName("CurseForgeApiKeyBox"));
+            Assert.Equal(
+                LocalizationService.Current.Get("online.curseForgeCredential.fileMissing"),
+                Assert.IsType<TextBlock>(
+                    dialog.FindName("CurseForgeCredentialStatusText")).Text);
         });
     }
 
     [Fact]
-    public void CurseForgeSelection_UsesSavedCredentialWithoutRefillingPasswordBox()
+    public void CurseForgeSelection_UsesSavedDpapiCredentialWithoutRenderingASecretInput()
     {
         WpfStaTestHost.Run(() =>
         {
@@ -513,14 +501,13 @@ public sealed class OnlineModpackDialogLifecycleTests
             Assert.False(result);
             Assert.Equal(1, credentialStore.AcquireCount);
             Assert.Equal(9, Assert.Single(workflow.CredentialLengths));
-            var passwordBox = Assert.IsType<PasswordBox>(
-                dialog.FindName("CurseForgeApiKeyBox"));
-            Assert.Empty(passwordBox.Password);
+            Assert.Null(dialog.FindName("CurseForgeApiKeyBox"));
+            Assert.Empty(FindVisualChildren<PasswordBox>(dialog));
         });
     }
 
     [Fact]
-    public void CurseForgeSelection_CorruptSavedCredentialFailsClosedWithoutRefillingPasswordBox()
+    public void CurseForgeSelection_CorruptSavedCredentialFailsClosedWithoutASecretInputFallback()
     {
         WpfStaTestHost.Run(() =>
         {
@@ -556,9 +543,8 @@ public sealed class OnlineModpackDialogLifecycleTests
 
             Assert.False(result);
             Assert.Empty(workflow.Requests);
-            var passwordBox = Assert.IsType<PasswordBox>(
-                dialog.FindName("CurseForgeApiKeyBox"));
-            Assert.Empty(passwordBox.Password);
+            Assert.Null(dialog.FindName("CurseForgeApiKeyBox"));
+            Assert.Empty(FindVisualChildren<PasswordBox>(dialog));
             var status = Assert.IsType<TextBlock>(
                 dialog.FindName("CurseForgeCredentialStatusText"));
             Assert.Equal(
@@ -568,19 +554,23 @@ public sealed class OnlineModpackDialogLifecycleTests
     }
 
     [Fact]
-    public void CurseForgeTypedCredentialTakesPriorityAndIsSavedOnlyAfterExplicitButtonClick()
+    public void CurseForgeSelection_AutomaticallyImportsFileIntoDpapiStoreAndBrowsesWithAReadOnlyCopy()
     {
         WpfStaTestHost.Run(() =>
         {
             var workflow = new RecordingBrowseWorkflow();
-            var credentialStore = new SavedCredentialStore();
+            var credentialStore = new SavedCredentialStore(hasCredential: false);
+            var credentialImporter = new RecordingCredentialFileImporter(
+                credentialStore,
+                CurseForgeCredentialImportResult.Imported);
             var viewModel = new OnlineModpackViewModel(workflow);
             var dialog = new OnlineModpackDialog(
                 viewModel,
                 loadFeaturedOnOpen: false,
                 backgroundSubmitter: null,
                 catalogRefreshDebounce: TimeSpan.FromMilliseconds(20),
-                curseForgeCredentialStore: credentialStore);
+                curseForgeCredentialStore: credentialStore,
+                curseForgeCredentialFileImportService: credentialImporter);
             var elapsed = TimeSpan.Zero;
             var timedOut = false;
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
@@ -589,27 +579,21 @@ public sealed class OnlineModpackDialogLifecycleTests
                 viewModel.SelectedProvider = Assert.Single(
                     viewModel.Providers,
                     item => item.Provider == OnlineModpackProvider.CurseForge);
-                var passwordBox = Assert.IsType<PasswordBox>(
-                    dialog.FindName("CurseForgeApiKeyBox"));
-                passwordBox.Password = "typed";
             };
             timer.Tick += (_, _) =>
             {
                 elapsed += timer.Interval;
                 if (workflow.Requests.Count == 1)
                 {
-                    Assert.Equal(5, Assert.Single(workflow.CredentialLengths));
-                    Assert.Equal(0, credentialStore.AcquireCount);
-                    Assert.Equal(0, credentialStore.SaveCount);
-
-                    var saveButton = Assert.IsType<Button>(
-                        dialog.FindName("SaveCurseForgeCredentialButton"));
-                    saveButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Assert.Equal(1, credentialStore.SaveCount);
                     Assert.True(credentialStore.LastSavedWasReadOnly);
-                    var passwordBox = Assert.IsType<PasswordBox>(
-                        dialog.FindName("CurseForgeApiKeyBox"));
-                    Assert.Empty(passwordBox.Password);
+                    Assert.Equal(1, credentialStore.AcquireCount);
+                    Assert.Equal(12, Assert.Single(workflow.CredentialLengths));
+                    Assert.Null(dialog.FindName("CurseForgeApiKeyBox"));
+                    Assert.Equal(
+                        LocalizationService.Current.Get("online.curseForgeCredential.imported"),
+                        Assert.IsType<TextBlock>(
+                            dialog.FindName("CurseForgeCredentialStatusText")).Text);
 
                     timer.Stop();
                     dialog.Close();
@@ -632,6 +616,7 @@ public sealed class OnlineModpackDialogLifecycleTests
 
             Assert.False(timedOut);
             Assert.False(result);
+            Assert.Equal(1, credentialImporter.ImportCount);
         });
     }
 
@@ -913,6 +898,16 @@ public sealed class OnlineModpackDialogLifecycleTests
 
     private sealed class SavedCredentialStore : ICurseForgeCredentialStore
     {
+        private string _credentialText;
+
+        public SavedCredentialStore(
+            bool hasCredential = true,
+            string credentialText = "saved-key")
+        {
+            HasCredential = hasCredential;
+            _credentialText = credentialText;
+        }
+
         public int AcquireCount { get; private set; }
 
         public int SaveCount { get; private set; }
@@ -921,13 +916,13 @@ public sealed class OnlineModpackDialogLifecycleTests
 
         public bool LastSavedWasReadOnly { get; private set; }
 
-        public bool HasCredential { get; private set; } = true;
+        public bool HasCredential { get; private set; }
 
         public SecureString AcquireReadOnly()
         {
             AcquireCount++;
             var credential = new SecureString();
-            foreach (var character in "saved-key")
+            foreach (var character in _credentialText)
             {
                 credential.AppendChar(character);
             }
@@ -949,6 +944,51 @@ public sealed class OnlineModpackDialogLifecycleTests
             var deleted = HasCredential;
             HasCredential = false;
             return deleted;
+        }
+
+        public void ImportCredential(string credentialText)
+        {
+            _credentialText = credentialText;
+            using var credential = new SecureString();
+            foreach (var character in credentialText)
+            {
+                credential.AppendChar(character);
+            }
+
+            credential.MakeReadOnly();
+            Save(credential);
+        }
+    }
+
+    private sealed class RecordingCredentialFileImporter(
+        SavedCredentialStore credentialStore,
+        CurseForgeCredentialImportResult result) : ICurseForgeCredentialFileImportService
+    {
+        public string ImportFilePath { get; } = Path.Combine(
+            Path.GetTempPath(),
+            "x-mcsv-test-curseforge-api-key.import.txt");
+
+        public CurseForgeCredentialImportResult Result { get; } = result;
+
+        public int PrepareCount { get; private set; }
+
+        public int ImportCount { get; private set; }
+
+        public string PrepareEditableFile()
+        {
+            PrepareCount++;
+            return ImportFilePath;
+        }
+
+        public CurseForgeCredentialImportResult ImportIfPresent()
+        {
+            ImportCount++;
+            if (Result == CurseForgeCredentialImportResult.Imported)
+            {
+                credentialStore.ImportCredential("imported-key");
+            }
+
+            return Result;
         }
     }
 

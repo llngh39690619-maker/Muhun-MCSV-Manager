@@ -65,9 +65,39 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
         SubscribeToCultureChanges();
     }
 
+    public ClientModpackProjectItemViewModel(OnlineModpackSearchResult project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (project.Provider != OnlineModpackProvider.CurseForge)
+        {
+            throw new ArgumentException(
+                "The provider-neutral client catalogue constructor accepts CurseForge projects only.",
+                nameof(project));
+        }
+
+        CurseForgeProject = project;
+        SourceId = "curseforge";
+        SourceLabel = "CURSEFORGE";
+        ProjectId = project.ProjectId;
+        Title = project.Name;
+        _description = project.Summary;
+        _fullDescription = project.Summary;
+        _author = project.Authors;
+        Downloads = Math.Max(0, project.DownloadCount ?? 0);
+        _metricLocalizationKey = "client.vm.catalog.downloads";
+        UpdatedAt = project.UpdatedAtUtc ?? DateTimeOffset.MinValue;
+        GameVersions = [];
+        Categories = [];
+        IconUri = project.IconUri;
+        PreviewImageUri = project.PreviewImageUri;
+        SubscribeToCultureChanges();
+    }
+
     public ModrinthClientModpackProject? Project { get; }
 
     public FtbClientCatalogProject? FtbProject { get; }
+
+    public OnlineModpackSearchResult? CurseForgeProject { get; }
 
     public string SourceId { get; }
 
@@ -115,6 +145,8 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
     public Uri? IconUri { get; }
 
     public Uri? PreviewImageUri { get; }
+
+    public Uri? ProjectPageUri => CurseForgeProject?.ProjectPageUri;
 
     public string DownloadText => Downloads switch
     {
@@ -228,9 +260,28 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
         SubscribeToCultureChanges();
     }
 
+    public ClientCatalogVersionItemViewModel(OnlineModpackVersion version)
+    {
+        ArgumentNullException.ThrowIfNull(version);
+        if (version.Provider != OnlineModpackProvider.CurseForge)
+        {
+            throw new ArgumentException(
+                "The provider-neutral client version constructor accepts CurseForge versions only.",
+                nameof(version));
+        }
+
+        CurseForgeVersion = version;
+        GameVersions = string.IsNullOrWhiteSpace(version.MinecraftVersion)
+            ? []
+            : [version.MinecraftVersion];
+        SubscribeToCultureChanges();
+    }
+
     public ModrinthClientModpackVersion? ModrinthVersion { get; }
 
     public FtbClientCatalogVersion? FtbVersion { get; }
+
+    public OnlineModpackVersion? CurseForgeVersion { get; }
 
     public string Name
     {
@@ -239,6 +290,17 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
             if (ModrinthVersion is not null)
             {
                 return ModrinthVersion.Name;
+            }
+
+            if (CurseForgeVersion is { } curseForgeVersion)
+            {
+                var minecraftVersion = string.IsNullOrWhiteSpace(curseForgeVersion.MinecraftVersion)
+                    ? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion")
+                    : curseForgeVersion.MinecraftVersion;
+                var curseForgeLoader = string.IsNullOrWhiteSpace(curseForgeVersion.Loader)
+                    ? LocalizationService.Current.Get("client.vm.loader.unknown")
+                    : curseForgeVersion.Loader;
+                return $"{curseForgeVersion.VersionName} · Minecraft {minecraftVersion} · {curseForgeLoader}";
             }
 
             var version = FtbVersion!;

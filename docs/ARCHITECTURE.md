@@ -13,7 +13,7 @@ MinecraftServerManager.App (WPF/MVVM)
 ├─ 可取消的外觀設定交易（預覽 / 還原 / 儲存 / 恢復預設）
 ├─ ExistingServerImportChoiceDialog / 700×500 可縮放、對齊且不裁切的資料夾與單一 JAR 安全匯入分流
 ├─ OnlineModpackDialog / FTB、Modrinth、CurseForge BYOK 熱門推薦、搜尋與 provider-neutral workflow
-├─ CurseForge CurrentUser DPAPI credential store / 每使用者 ClientSecrets、明確保存與清除
+├─ CurseForge CurrentUser DPAPI credential store / Server 明確保存與清除、客戶端一次性設定檔匯入
 ├─ CoreServerCreationDialog / 12 核心目錄、版本搜尋、進度、取消與 provider-neutral workflow
 ├─ Official / Hybrid / Spigot Core Creation Backends
 ├─ 每個 Instance / Session 的 Crash、Hang Watchdog、恢復點與生命週期協調
@@ -88,7 +88,7 @@ Spigot／CraftBukkit 目錄分成兩種明確證據模式。現代 12 個 stable
 
 資料夾與管理記錄是兩階段提交。背景 workflow 及單一 JAR 匯入先在管理器擁有、名稱不可預測的 staging 完成；共同 registry gate 內重新檢查 NFKC／case-insensitive 名稱與 canonical target identity，再以單次 `Directory.Move` promotion，持有 gate 完成 Port、設定保存與清單加入。清理只能作用於流程確定擁有的 staging 或已成功 promotion 的 final，不得因同名碰撞刪除其他工作已提交的資料夾。Adoptium 另以 canonical Runtime destination 作跨 provider instance gate；同目的地 waiter 會重用並重新驗證第一筆安裝，不同 Java 種類／版本仍可並行。
 
-網路工作採 workload-aware parallelism。Modrinth 依 manifest 檔案數及總大小選擇 1／2／4／8／12／16 workers，FTB 使用高吞吐固定工作數；第一個不可恢復錯誤會取消同批工作，但仍等待已啟動工作清理 `.partial` 與 staging。正式 Server UI 與 production workflow 支援 FTB、Modrinth 及使用者自備 Key 的 CurseForge；客戶端 CurseForge 內容中心仍不可用。
+網路工作採 workload-aware parallelism。Modrinth 依 manifest 檔案數及總大小選擇 1／2／4／8／12／16 workers，FTB 使用高吞吐固定工作數；第一個不可恢復錯誤會取消同批工作，但仍等待已啟動工作清理 `.partial` 與 staging。正式 Server UI 與 production workflow 支援 FTB、Modrinth 及使用者自備 Key 的 CurseForge；客戶端 CurseForge 目錄使用相同的每使用者 DPAPI 憑證經官方 API 搜尋與查看正式版本，但直接安裝尚未接線，按鈕只開啟官方專案頁。
 
 ## 0.4.5 BuildTools JVM 與官方 Loader 子程序邊界
 
@@ -110,7 +110,7 @@ Windows 可重現性是工具鏈契約的一部分。受管理 MinGit 以固定 
 
 這些關卡修正 Windows CRLF checkout／commit 對 Maven POM 與 patch 輸入的改寫；舊行為可能先完成約 5–7 分鐘本機編譯，最後才得到與官方可重現輸出不同的 JAR。0.4.4 仍把官方逐版 JSON 的 Spigot／CraftBukkit output SHA-256 equality 當成 blocking gate：實際輸出 hash 只用於比對與診斷，不得以「JAR 可開啟」、本機 refs 大致正確或編譯 exit code 0 取代官方 hash。
 
-線上模組包的 production surface 只有 FTB 與 Modrinth。ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站。Core 內既有 CurseForge Provider 可以留作低階相容程式碼與安全測試，但不能構成隱藏的產品入口。
+以下描述僅是 0.4.4 當時的歷史 production 限制，已被 1.2.9-beta.19 的第 23 條現行規則取代：當時線上模組包 surface 只有 FTB 與 Modrinth，ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。當時的 UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站；Core 內既有 CurseForge Provider 只保留作低階相容程式碼與安全測試，不能構成隱藏的產品入口。
 
 ## 0.4.3 BuildTools 工具鏈、清理與刪除邊界
 
@@ -158,7 +158,7 @@ WPF busy 狀態不能依賴作業系統的預設 Disabled theme。Core／Online 
 20. 全域背景圖片必須是實際可解碼的允許格式，檔案不得超過 64 MB、解碼結果不得超過 64,000,000 pixels，來源檔本身不得是 reparse point，`themes` 根目錄及受管理目的地不得是或經過 reparse point。應用程式只保存 `themes` 內的受管理副本路徑，不修改使用者原圖；取消未提交圖片或替換已提交圖片時，只能刪除再次通過受管理根目錄驗證的副本。
 21. `manager.json` schema 3 引入 `Appearance`，schema 4 引入可靠性設定，schema 5 引入 nullable `SeparateDiagnosticOutput`；三者都是向後相容擴充。讀取 schema 1–4、缺少欄位、無效色碼、超界透明度或不可再驗證的背景路徑時，不得丟失既有 Instance；外觀服務逐欄修復為安全預設值，Hang Watchdog／自動健康恢復點採 opt-in 關閉，舊 Server 的 diagnostic 缺值／`null` 以 false 呈現且不在載入時改寫；只有新建與匯入流程會將缺值預設為 true。下一次明確儲存時寫回 schema 5。
 22. 線上模組包安裝必須在 `servers/.installing-*` 的管理器擁有 staging 完成。下載、archive entries、hash、Pack／Version 身分、Minecraft／Loader 版本及標準啟動結構全部驗證成功後，才可用單次目錄搬移提交並加入 `manager.json`；取消或失敗不得註冊半成品。
-23. Server 線上模組包 production surface 允許 FTB、Modrinth 與 CurseForge BYOK。CurseForge 憑證只可由目前 Windows 使用者輸入，並以單次唯讀 `SecureString` 傳入 provider；使用者明確選擇保存時，僅能以 DPAPI CurrentUser 密文寫入受管理的每使用者 `ClientSecrets`，不得進入 EXE、repository、一般設定、日誌、URI、命令列、環境變數、背景工作定義或 Service IPC。密碼欄不得從保存值回填；取得的副本在作業後必須釋放。客戶端 CurseForge 內容中心仍不可用，且不得藉此 Server vault 繞過該 application boundary。
+23. Server 線上模組包 production surface 允許 FTB、Modrinth 與 CurseForge BYOK。CurseForge 憑證只可由目前 Windows 使用者提供，並以單次唯讀 `SecureString` 傳入 provider；Server 使用者明確選擇保存，或客戶端成功讀取一次性設定檔時，才可用 DPAPI CurrentUser 密文寫入共用的每使用者 `ClientSecrets`。客戶端不得顯示 API Key 輸入框；成功匯入後必須清除明文設定檔，失敗不得覆寫原有憑證。Key 不得進入 EXE、repository、一般設定、日誌、URI、命令列、環境變數、背景工作定義或 Service IPC，取得的副本在作業後必須釋放。客戶端只可透過官方 API 搜尋及查看正式版本；直接安裝尚未啟用，按鈕只開啟官方專案頁，且不得爬取、繞過授權或重新託管檔案。
 24. Pack 自帶的 BAT／SH／PS1、自訂安裝腳本及 JAR wrapper 一律不執行。線上流程可執行的外部程式只限管理器從固定官方來源下載並驗證的 FTB Server Installer 或 Mojang／Fabric／Forge／NeoForge Loader Installer，而且必須以 `UseShellExecute=false`、固定 executable 與 `ArgumentList` 直接啟動。Quilt 因無法強制建立相同的成功證據而在 0.3.0 fail closed。
 25. Crash 與 Hang 不可混為單一猜測。Crash 由目前 Java Session 的非正常程序退出觸發；Hang 只在使用者啟用後，以 Minecraft status protocol、啟動寬限及連續失敗門檻判定，`enable-status=false` 時停用該 Session 的探測，絕不改用 `list`。Watchdog 必須先送 `stop`，等待 30 秒，逾時才 kill Process Tree，並將實際 stop mode 寫入診斷。
 26. 所有 Crash／Hang 自動重啟都受每 Instance 的 10 分鐘視窗限制：三次允許的延遲依序為 5／15／45 秒，第四次開啟 circuit breaker；穩定運行 10 分鐘重設。Generation、Session ID、live policy 與手動停止 epoch 必須在延遲後及真正啟動前再次驗證，舊 Session 不得重啟新 Session 或造成重複 Faulted 事件。

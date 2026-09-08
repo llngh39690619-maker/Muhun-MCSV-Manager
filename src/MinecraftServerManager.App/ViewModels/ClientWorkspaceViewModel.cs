@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Reflection;
+using System.Security;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -65,6 +66,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly FtbClientCatalog _ftbCatalog;
     private readonly FtbMinecraftClientPackInstaller _ftbInstaller;
     private readonly FtbMinecraftClientPackInstaller _legacyFtbRecovery;
+    private readonly IOnlineModpackWorkflow _onlineModpackWorkflow;
+    private readonly bool _ownsOnlineModpackWorkflow;
+    private readonly ICurseForgeCredentialStore _curseForgeCredentialStore;
+    private readonly ICurseForgeCredentialFileImportService _curseForgeCredentialFileImportService;
     private readonly ClientOperationDiagnosticStore _clientOperationDiagnosticStore;
     private readonly IOnlineModpackArtworkCache _artworkCache;
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
@@ -199,6 +204,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private ClientCatalogInstallJobViewModel? _activeCatalogInstallJob;
     private string _catalogInstanceName = string.Empty;
     private bool _includeOptionalPackFiles;
+    private bool _hasCurseForgeCredential;
     private bool _disposed;
     private readonly HashSet<ClientCatalogInstallJobViewModel> _observedCatalogInstallJobs = [];
     private readonly HashSet<ClientContentInstallJobViewModel> _observedContentDownloadJobs = [];
@@ -221,7 +227,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ApplicationPaths paths,
         Func<NewMinecraftClientDefaultsSettings> getGlobalDefaults,
         IMinecraftReleaseCatalog? releaseCatalog,
-        IReadOnlyList<IMinecraftLoaderCatalogProvider>? loaderCatalogs)
+        IReadOnlyList<IMinecraftLoaderCatalogProvider>? loaderCatalogs,
+        IOnlineModpackWorkflow? onlineModpackWorkflow = null,
+        ICurseForgeCredentialStore? curseForgeCredentialStore = null,
+        ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _getGlobalDefaults = getGlobalDefaults ?? throw new ArgumentNullException(nameof(getGlobalDefaults));
@@ -300,6 +309,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _ftbCatalog,
             _gameHttpClient,
             recoverUnreceiptedStagingOperations: false);
+        _onlineModpackWorkflow = onlineModpackWorkflow ?? new OnlineModpackWorkflow(_paths);
+        _ownsOnlineModpackWorkflow = onlineModpackWorkflow is null;
+        _curseForgeCredentialStore = curseForgeCredentialStore
+            ?? new DpapiCurseForgeCredentialStore(_paths);
+        _curseForgeCredentialFileImportService = curseForgeCredentialFileImportService
+            ?? new CurseForgeCredentialFileImportService(_paths, _curseForgeCredentialStore);
+        _hasCurseForgeCredential = ReadCurseForgeCredentialState();
         _clientOperationDiagnosticStore = new ClientOperationDiagnosticStore(_paths);
         _artworkCache = new OnlineModpackArtworkCache(_paths);
         _bedrockOfficialHandoff = new BedrockOfficialHandoffService();
@@ -337,7 +353,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             () => IsBrowsableCatalogSource && !IsCatalogBusy);
         LoadMoreCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(() => LoadCatalogAsync(append: true)),
-            () => IsModrinthCatalogSource && !IsCatalogBusy && HasMoreCatalogResults);
+            () => (IsModrinthCatalogSource || IsCurseForgeCatalogSource) &&
+                  !IsCatalogBusy && HasMoreCatalogResults);
+        OpenCurseForgeCredentialFileCommand = new RelayCommand(
+            OpenCurseForgeCredentialFile,
+            () => IsCurseForgeCatalogSource && !IsCatalogBusy);
+        DeleteCurseForgeCredentialCommand = new RelayCommand(
+            DeleteCurseForgeCredential,
+            () => IsCurseForgeCatalogSource && !IsCatalogBusy && HasCurseForgeCredential);
         InstallCatalogPackCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(InstallSelectedCatalogPackAsync),
             CanInstallCatalogPack);
@@ -570,6 +593,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand SelectCatalogSourceCommand { get; }
     public AsyncRelayCommand SearchCatalogCommand { get; }
     public AsyncRelayCommand LoadMoreCatalogCommand { get; }
+    public RelayCommand OpenCurseForgeCredentialFileCommand { get; }
+    public RelayCommand DeleteCurseForgeCredentialCommand { get; }
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
     public AsyncRelayCommand OpenFtbFallbackCommand { get; }
     public RelayCommand OpenClientDiagnosticsFolderCommand { get; }
@@ -1191,6 +1216,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             SearchCatalogCommand.NotifyCanExecuteChanged();
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+            OpenCurseForgeCredentialFileCommand.NotifyCanExecuteChanged();
+            DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
         }
     }
@@ -1206,6 +1233,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             OnPropertyChanged(nameof(IsModrinthCatalogSource));
+            OnPropertyChanged(nameof(IsCurseForgeCatalogSource));
             OnPropertyChanged(nameof(IsFtbCatalogSource));
             OnPropertyChanged(nameof(ShowsFtbInstallDiagnostic));
             OnPropertyChanged(nameof(IsBrowsableCatalogSource));
@@ -1213,6 +1241,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(IsCatalogResultsView));
             OnPropertyChanged(nameof(ShowsCatalogSortFilter));
             OnPropertyChanged(nameof(ShowsCatalogCategoryFilter));
+            OnPropertyChanged(nameof(ShowsCatalogLoadMore));
             OnPropertyChanged(nameof(CatalogResultsHeading));
             OnPropertyChanged(nameof(CatalogInstallHeading));
             OnPropertyChanged(nameof(CatalogInstallActionText));
@@ -1222,6 +1251,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 #pragma warning restore CS0618
             SearchCatalogCommand.NotifyCanExecuteChanged();
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+            OpenCurseForgeCredentialFileCommand.NotifyCanExecuteChanged();
+            DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
             OpenFtbFallbackCommand.NotifyCanExecuteChanged();
         }
@@ -1229,7 +1260,33 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool IsModrinthCatalogSource => CatalogSourceId == "modrinth";
 
+    public bool IsCurseForgeCatalogSource => CatalogSourceId == "curseforge";
+
     public bool IsFtbCatalogSource => CatalogSourceId == "ftb";
+
+    public bool HasCurseForgeCredential
+    {
+        get => _hasCurseForgeCredential;
+        private set
+        {
+            if (!SetProperty(ref _hasCurseForgeCredential, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(IsUnavailableCatalogSource));
+            OnPropertyChanged(nameof(CurseForgeCredentialStatusText));
+            SearchCatalogCommand.NotifyCanExecuteChanged();
+            DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    public string CurseForgeCredentialImportFilePath =>
+        _curseForgeCredentialFileImportService.ImportFilePath;
+
+    public string CurseForgeCredentialStatusText => HasCurseForgeCredential
+        ? L("client.vm.catalog.curseForge.credentialReady")
+        : L("client.vm.catalog.curseForge.credentialRequired");
 
     public bool HasFtbInstallDiagnostic
     {
@@ -1246,22 +1303,28 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool ShowsFtbInstallDiagnostic => IsFtbCatalogSource && HasFtbInstallDiagnostic;
 
-    public bool IsBrowsableCatalogSource => IsModrinthCatalogSource || IsFtbCatalogSource;
+    public bool IsBrowsableCatalogSource =>
+        IsModrinthCatalogSource || IsCurseForgeCatalogSource || IsFtbCatalogSource;
 
-    public bool IsUnavailableCatalogSource => !IsBrowsableCatalogSource;
+    public bool IsUnavailableCatalogSource =>
+        !IsBrowsableCatalogSource || IsCurseForgeCatalogSource && !HasCurseForgeCredential;
 
-    public bool ShowsCatalogSortFilter => IsModrinthCatalogSource;
+    public bool ShowsCatalogSortFilter => IsModrinthCatalogSource || IsCurseForgeCatalogSource;
 
     public bool ShowsCatalogCategoryFilter => IsModrinthCatalogSource;
 
-    public bool ShowsCatalogInstallOptions => IsBrowsableCatalogSource;
+    public bool ShowsCatalogLoadMore => IsModrinthCatalogSource || IsCurseForgeCatalogSource;
+
+    public bool ShowsCatalogInstallOptions => IsBrowsableCatalogSource && !IsCurseForgeCatalogSource;
 
     [Obsolete("Use ShowsCatalogInstallOptions.")]
     public bool ShowsModrinthInstallOptions => ShowsCatalogInstallOptions;
 
     public string CatalogResultsHeading => IsFtbCatalogSource
         ? L("client.catalog.ftbProjects")
-        : L("client.catalog.projects");
+        : IsCurseForgeCatalogSource
+            ? L("client.catalog.curseForgeProjects")
+            : L("client.catalog.projects");
 
     public string CatalogInstallHeading => IsFtbCatalogSource
         ? L("client.catalog.ftbInstallHeading")
@@ -1269,7 +1332,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public string CatalogInstallActionText => IsFtbCatalogSource
         ? L("client.catalog.ftbInstallAction")
-        : L("client.action.install");
+        : IsCurseForgeCatalogSource
+            ? L("client.catalog.curseForgeOpenProject")
+            : L("client.action.install");
 
     public string CatalogSearchText
     {
@@ -2377,6 +2442,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             return;
         }
 
+        if (IsCurseForgeCatalogSource && !EnsureCurseForgeCredentialAvailable())
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+            return;
+        }
+
         if (CatalogProjects.Count == 0)
         {
             await LoadCatalogAsync(append: false);
@@ -2398,6 +2469,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         if (string.Equals(CatalogSourceId, source, StringComparison.Ordinal))
         {
+            if (IsCurseForgeCatalogSource && !EnsureCurseForgeCredentialAvailable())
+            {
+                CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+                return;
+            }
+
             if (IsBrowsableCatalogSource && CatalogProjects.Count == 0)
             {
                 await LoadCatalogAsync(append: false);
@@ -2409,7 +2486,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         CancelCatalogRequests();
         CatalogSourceId = source;
         ClearCatalogResults();
-        if (source is "modrinth" or "ftb")
+        if (source == "curseforge" && !EnsureCurseForgeCredentialAvailable())
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+            return;
+        }
+
+        if (source is "modrinth" or "curseforge" or "ftb")
         {
             await LoadCatalogAsync(append: false);
             return;
@@ -2420,10 +2503,125 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private static string GetUnavailableCatalogMessage(string source) => source switch
     {
-        "curseforge" => L("client.vm.catalog.unavailable.curseForge"),
+        "curseforge" => L("client.vm.catalog.curseForge.credentialRequired"),
         "ftb" => L("client.vm.catalog.ftb.unavailable"),
         _ => L("client.vm.catalog.unavailable.default"),
     };
+
+    private void OpenCurseForgeCredentialFile()
+    {
+        try
+        {
+            var path = _curseForgeCredentialFileImportService.PrepareEditableFile();
+            using var process = Process.Start(new ProcessStartInfo(path)
+            {
+                UseShellExecute = true,
+            });
+            if (process is null)
+            {
+                throw new InvalidOperationException("The Windows shell did not open the API key import file.");
+            }
+
+            CatalogStatusText = L("client.vm.catalog.curseForge.editingCredentialFile");
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.openCredentialFileFailed");
+            ErrorText = $"{CatalogStatusText} {error.Message}";
+        }
+    }
+
+    private void DeleteCurseForgeCredential()
+    {
+        try
+        {
+            _curseForgeCredentialStore.Delete();
+            HasCurseForgeCredential = false;
+            CancelCatalogRequests();
+            ClearCatalogResults();
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialDeleted");
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.deleteCredentialFailed");
+            ErrorText = $"{CatalogStatusText} {error.Message}";
+        }
+    }
+
+    private bool EnsureCurseForgeCredentialAvailable()
+    {
+        if (ReadCurseForgeCredentialState())
+        {
+            HasCurseForgeCredential = true;
+            return true;
+        }
+
+        return ImportCurseForgeCredentialIfPresent() ==
+               CurseForgeCredentialImportResult.Imported;
+    }
+
+    private CurseForgeCredentialImportResult ImportCurseForgeCredentialIfPresent()
+    {
+        CurseForgeCredentialImportResult result;
+        try
+        {
+            result = _curseForgeCredentialFileImportService.ImportIfPresent();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            HasCurseForgeCredential = false;
+            CatalogStatusText = L("client.vm.catalog.curseForge.importFailed");
+            ErrorText = $"{CatalogStatusText} {error.Message}";
+            return CurseForgeCredentialImportResult.Failed;
+        }
+
+        HasCurseForgeCredential = ReadCurseForgeCredentialState();
+        CatalogStatusText = result switch
+        {
+            CurseForgeCredentialImportResult.Imported =>
+                L("client.vm.catalog.curseForge.credentialImported"),
+            CurseForgeCredentialImportResult.TemplateEmpty =>
+                L("client.vm.catalog.curseForge.credentialFileEmpty"),
+            CurseForgeCredentialImportResult.Invalid =>
+                L("client.vm.catalog.curseForge.credentialFileInvalid"),
+            CurseForgeCredentialImportResult.Failed =>
+                L("client.vm.catalog.curseForge.importFailed"),
+            _ => L("client.vm.catalog.curseForge.credentialRequired"),
+        };
+        return result;
+    }
+
+    private bool ReadCurseForgeCredentialState()
+    {
+        try
+        {
+            return _curseForgeCredentialStore.HasCredential;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            return false;
+        }
+    }
+
+    private SecureString? AcquireCurseForgeCredential()
+    {
+        try
+        {
+            var credential = _curseForgeCredentialStore.AcquireReadOnly();
+            if (credential is not null && !credential.IsReadOnly())
+            {
+                credential.MakeReadOnly();
+            }
+
+            return credential;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.readCredentialFailed");
+            ErrorText = $"{CatalogStatusText} {error.Message}";
+            return null;
+        }
+    }
 
     private void ScheduleCatalogRefresh()
     {
@@ -2441,6 +2639,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         try
         {
             await Task.Delay(TimeSpan.FromMilliseconds(350), cancellation.Token);
+            if (IsCurseForgeCatalogSource && !EnsureCurseForgeCredentialAvailable())
+            {
+                return;
+            }
+
             await LoadCatalogPageCoreAsync(append: false, cancellation);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -2458,6 +2661,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         if (!IsBrowsableCatalogSource)
         {
             CatalogStatusText = GetUnavailableCatalogMessage(CatalogSourceId);
+            return;
+        }
+
+        if (IsCurseForgeCatalogSource && !EnsureCurseForgeCredentialAvailable())
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
             return;
         }
 
@@ -2483,6 +2692,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (IsFtbCatalogSource)
             {
                 await LoadFtbCatalogPageAsync(requestCancellation);
+                return;
+            }
+
+            if (IsCurseForgeCatalogSource)
+            {
+                await LoadCurseForgeCatalogPageAsync(requestCancellation, append);
                 return;
             }
 
@@ -2586,6 +2801,139 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    private async Task LoadCurseForgeCatalogPageAsync(
+        CancellationTokenSource requestCancellation,
+        bool append)
+    {
+        var cancellationToken = requestCancellation.Token;
+        using var credential = AcquireCurseForgeCredential();
+        if (credential is null)
+        {
+            HasCurseForgeCredential = false;
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+            return;
+        }
+
+        var offset = append ? _catalogNextOffset : 0;
+        CatalogStatusText = string.IsNullOrWhiteSpace(CatalogSearchText)
+            ? L("client.vm.catalog.curseForge.loadingFeatured")
+            : L("client.vm.catalog.curseForge.searching", CatalogSearchText.Trim());
+        IReadOnlyList<OnlineModpackSearchResult> projects;
+        try
+        {
+            projects = await _onlineModpackWorkflow.BrowseAsync(
+                new OnlineModpackBrowseRequest(
+                    OnlineModpackProvider.CurseForge,
+                    Query: CatalogSearchText.Trim(),
+                    Sort: MapCurseForgeCatalogSort(SelectedCatalogSort?.Sort),
+                    GameVersion: SelectedCatalogGameVersion?.Version,
+                    Loader: MapCurseForgeCatalogLoader(SelectedCatalogLoader?.Loader),
+                    Offset: offset,
+                    Limit: CatalogResultLimit),
+                credential,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Replacing a query, filter, source, or the workspace lifetime cancels this request.
+            // The replacement request owns the visible status and busy state.
+            return;
+        }
+        catch (CurseForgeApiException error)
+        {
+            if (!IsCurrentCurseForgeCatalogRequest(requestCancellation))
+            {
+                return;
+            }
+
+            CatalogStatusText = error.ErrorCode switch
+            {
+                CurseForgeApiErrorCode.InvalidApiKey =>
+                    L("client.vm.catalog.curseForge.invalidCredential"),
+                CurseForgeApiErrorCode.Forbidden =>
+                    L("client.vm.catalog.curseForge.forbidden"),
+                CurseForgeApiErrorCode.RateLimited =>
+                    L("client.vm.catalog.curseForge.rateLimited"),
+                _ => L("client.vm.catalog.curseForge.loadFailed"),
+            };
+            ErrorText = CatalogStatusText;
+            return;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (!IsCurrentCurseForgeCatalogRequest(requestCancellation))
+            {
+                return;
+            }
+
+            CatalogStatusText = L("client.vm.catalog.curseForge.loadFailed");
+            ErrorText = $"{CatalogStatusText} {error.Message}";
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!ReferenceEquals(_catalogBrowseCancellation, requestCancellation)
+            || !IsCurseForgeCatalogSource)
+        {
+            return;
+        }
+
+        var knownIds = CatalogProjects
+            .Select(item => item.ProjectId)
+            .ToHashSet(StringComparer.Ordinal);
+        var additions = projects
+            .Where(project => knownIds.Add(project.ProjectId))
+            .Select(project => new ClientModpackProjectItemViewModel(project))
+            .ToArray();
+        foreach (var item in additions)
+        {
+            CatalogProjects.Add(item);
+        }
+
+        _catalogNextOffset = checked(offset + projects.Count);
+        // CurseForge's provider-neutral workflow intentionally does not expose a potentially
+        // stale total. Keep one sentinel result while a full page was returned so infinite scroll
+        // remains available without claiming an exact count.
+        CatalogTotalHits = projects.Count == CatalogResultLimit
+            ? checked(_catalogNextOffset + 1)
+            : _catalogNextOffset;
+        OnPropertyChanged(nameof(CatalogResultsSummary));
+        OnPropertyChanged(nameof(HasMoreCatalogResults));
+        LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+        CatalogStatusText = CatalogProjects.Count == 0
+            ? L("client.vm.catalog.curseForge.noResults")
+            : L("client.vm.catalog.curseForge.loaded", CatalogProjects.Count);
+
+        if (additions.Length > 0)
+        {
+            _catalogArtworkTask = CacheCatalogArtworkAsync(additions, cancellationToken);
+        }
+    }
+
+    private bool IsCurrentCurseForgeCatalogRequest(CancellationTokenSource requestCancellation) =>
+        ReferenceEquals(_catalogBrowseCancellation, requestCancellation) &&
+        !requestCancellation.IsCancellationRequested &&
+        IsCurseForgeCatalogSource;
+
+    private static OnlineModpackSort MapCurseForgeCatalogSort(
+        ModrinthClientModpackSort? sort) => sort switch
+    {
+        ModrinthClientModpackSort.Relevance => OnlineModpackSort.Relevance,
+        ModrinthClientModpackSort.Updated => OnlineModpackSort.RecentlyUpdated,
+        ModrinthClientModpackSort.Newest => OnlineModpackSort.Newest,
+        _ => OnlineModpackSort.Downloads,
+    };
+
+    private static string? MapCurseForgeCatalogLoader(MinecraftClientLoader? loader) => loader switch
+    {
+        null => null,
+        MinecraftClientLoader.Forge => "Forge",
+        MinecraftClientLoader.Fabric => "Fabric",
+        MinecraftClientLoader.NeoForge => "Neo-Forge",
+        MinecraftClientLoader.Quilt => "Quilt",
+        _ => null,
+    };
+
     private async Task CacheCatalogArtworkAsync(
         IReadOnlyList<ClientModpackProjectItemViewModel> items,
         CancellationToken cancellationToken)
@@ -2600,9 +2948,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                     .Take(OnlineModpackArtworkCache.MaximumConcurrentDownloads)
                     .Select(async item =>
                     {
-                        var provider = item.SourceId == "ftb"
-                            ? OnlineModpackProvider.Ftb
-                            : OnlineModpackProvider.Modrinth;
+                        var provider = item.SourceId switch
+                        {
+                            "ftb" => OnlineModpackProvider.Ftb,
+                            "curseforge" => OnlineModpackProvider.CurseForge,
+                            _ => OnlineModpackProvider.Modrinth,
+                        };
                         var icon = await _artworkCache.GetOrCacheAsync(
                             provider,
                             item.IconUri,
@@ -2655,6 +3006,61 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
+            if (project.CurseForgeProject is { } curseForgeProject)
+            {
+                using var credential = AcquireCurseForgeCredential();
+                if (credential is null)
+                {
+                    HasCurseForgeCredential = false;
+                    CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+                    return;
+                }
+
+                var curseForgeVersions = await _onlineModpackWorkflow.GetVersionsAsync(
+                    curseForgeProject,
+                    credential,
+                    cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(project, SelectedCatalogProject) ||
+                    !ReferenceEquals(cancellation, _catalogVersionCancellation))
+                {
+                    return;
+                }
+
+                CatalogVersions.Clear();
+                var selectedGameVersion = SelectedCatalogGameVersion?.Version?.Trim();
+                var selectedLoader = NormalizeCurseForgeLoaderName(
+                    MapCurseForgeCatalogLoader(SelectedCatalogLoader?.Loader));
+                foreach (var version in curseForgeVersions.Where(version =>
+                             string.Equals(
+                                 version.ProjectId,
+                                 curseForgeProject.ProjectId,
+                                 StringComparison.Ordinal) &&
+                             string.Equals(
+                                 version.ReleaseChannel,
+                                 "release",
+                                 StringComparison.OrdinalIgnoreCase) &&
+                             (string.IsNullOrWhiteSpace(selectedGameVersion) ||
+                              string.Equals(
+                                  version.MinecraftVersion?.Trim(),
+                                  selectedGameVersion,
+                                  StringComparison.OrdinalIgnoreCase)) &&
+                             (selectedLoader.Length == 0 ||
+                              NormalizeCurseForgeLoaderName(version.Loader) == selectedLoader)))
+                {
+                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version));
+                }
+
+                SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
+                CatalogStatusText = CatalogVersions.Count == 0
+                    ? L("client.vm.catalog.curseForge.noVersions", project.Title)
+                    : L(
+                        "client.vm.catalog.curseForge.versionsLoaded",
+                        project.Title,
+                        CatalogVersions.Count);
+                return;
+            }
+
             var detailsTask = LoadOptionalCatalogDetailsAsync(
                 token => _modrinthCatalog.GetProjectAsync(project.ProjectId, token),
                 cancellation.Token);
@@ -2691,12 +3097,38 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
         }
+        catch (Exception error) when (
+            error is not OutOfMemoryException &&
+            (!ReferenceEquals(project, SelectedCatalogProject) ||
+             !ReferenceEquals(cancellation, _catalogVersionCancellation)))
+        {
+            // A superseded project must not surface an error over the current project's state.
+        }
     }
 
-    private bool CanInstallCatalogPack() =>
-        IsBrowsableCatalogSource && !IsBusy && !IsCatalogBusy &&
-        SelectedCatalogProject is not null && SelectedCatalogVersion is not null &&
-        !string.IsNullOrWhiteSpace(CatalogInstanceName);
+    private static string NormalizeCurseForgeLoaderName(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value
+                .Where(char.IsAsciiLetterOrDigit)
+                .Select(char.ToLowerInvariant)
+                .ToArray());
+
+    private bool CanInstallCatalogPack()
+    {
+        if (!IsBrowsableCatalogSource || IsBusy || IsCatalogBusy || SelectedCatalogProject is null)
+        {
+            return false;
+        }
+
+        if (IsCurseForgeCatalogSource)
+        {
+            return SelectedCatalogProject.ProjectPageUri is not null;
+        }
+
+        return SelectedCatalogVersion is not null &&
+               !string.IsNullOrWhiteSpace(CatalogInstanceName);
+    }
 
     private bool CanOpenFtbFallback() =>
         IsFtbCatalogSource && !IsBusy;
@@ -2705,6 +3137,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     {
         var project = SelectedCatalogProject
                       ?? throw new InvalidOperationException(L("client.vm.validation.pack"));
+        if (project.CurseForgeProject is not null)
+        {
+            OpenSelectedCurseForgeProject(project);
+            return;
+        }
+
         var version = SelectedCatalogVersion
                       ?? throw new InvalidOperationException(L("client.vm.validation.packVersion"));
         var defaults = _getGlobalDefaults();
@@ -2752,6 +3190,35 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             FinishCatalogInstallJob(job);
         }
+    }
+
+    private void OpenSelectedCurseForgeProject(ClientModpackProjectItemViewModel project)
+    {
+        var uri = project.ProjectPageUri
+                  ?? throw new InvalidOperationException(
+                      L("client.vm.catalog.curseForge.projectPageUnavailable"));
+        if (!uri.IsAbsoluteUri ||
+            !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !uri.IsDefaultPort ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            !(uri.IdnHost.Equals("curseforge.com", StringComparison.OrdinalIgnoreCase) ||
+              uri.IdnHost.Equals("www.curseforge.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                L("client.vm.catalog.curseForge.projectPageUnavailable"));
+        }
+
+        using var process = Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+        {
+            UseShellExecute = true,
+        });
+        if (process is null)
+        {
+            throw new InvalidOperationException(
+                L("client.vm.catalog.curseForge.projectPageUnavailable"));
+        }
+
+        CatalogStatusText = L("client.vm.catalog.curseForge.projectPageOpened", project.Title);
     }
 
     private async Task InstallSelectedModrinthPackAsync(
@@ -5253,6 +5720,24 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
         }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (!append)
+            {
+                ContentDownloadResults.Clear();
+                SelectedContentDownloadProject = null;
+                ContentDownloadFallbackUri = null;
+                ContentDownloadTotalHits = 0;
+                _contentDownloadNextOffset = 0;
+            }
+
+            ContentDownloadStatusText = L(
+                "client.vm.contentDownload.searchFailed",
+                error.Message);
+            OnPropertyChanged(nameof(ContentDownloadResultsSummary));
+            OnPropertyChanged(nameof(HasMoreContentDownloadResults));
+            LoadMoreContentDownloadCommand.NotifyCanExecuteChanged();
+        }
         finally
         {
             if (ReferenceEquals(cancellation, _contentDownloadBrowseCancellation))
@@ -6602,6 +7087,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(CatalogInstallHeading));
         OnPropertyChanged(nameof(CatalogInstallActionText));
         OnPropertyChanged(nameof(CatalogResultsSummary));
+        OnPropertyChanged(nameof(CurseForgeCredentialStatusText));
         OnPropertyChanged(nameof(CatalogInstallQueueToggleText));
         foreach (var job in CatalogInstallJobs)
         {
@@ -6755,6 +7241,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         if (_artworkCache is IDisposable disposableArtworkCache)
         {
             disposableArtworkCache.Dispose();
+        }
+
+        if (_ownsOnlineModpackWorkflow)
+        {
+            if (_onlineModpackWorkflow is IAsyncDisposable asyncDisposableWorkflow)
+            {
+                await asyncDisposableWorkflow.DisposeAsync();
+            }
+            else if (_onlineModpackWorkflow is IDisposable disposableWorkflow)
+            {
+                disposableWorkflow.Dispose();
+            }
         }
 
         _modrinthContentInstaller.Dispose();

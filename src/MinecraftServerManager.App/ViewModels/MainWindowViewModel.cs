@@ -65,6 +65,7 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private readonly IOnlineModpackWorkflow _onlineModpackWorkflow;
     private readonly IOnlineModpackDialogService _onlineModpackDialogService;
     private readonly ICurseForgeCredentialStore _curseForgeCredentialStore;
+    private readonly ICurseForgeCredentialFileImportService _curseForgeCredentialFileImportService;
     private readonly ICurseForgeUpdateCredentialPrompt _curseForgeUpdateCredentialPrompt;
     private readonly IModpackUpdateSelectionService _modpackUpdateSelectionService;
     private readonly ICoreServerCreationDialogService _coreServerCreationDialogService;
@@ -300,9 +301,19 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(onlineModpackWorkflow);
 
         _paths = paths;
+        _onlineModpackWorkflow = onlineModpackWorkflow;
+        _curseForgeCredentialStore = curseForgeCredentialStore
+            ?? new DpapiCurseForgeCredentialStore(paths);
+        _curseForgeCredentialFileImportService =
+            new CurseForgeCredentialFileImportService(paths, _curseForgeCredentialStore);
         ClientWorkspace = new ClientWorkspaceViewModel(
             _paths,
-            () => _settings.NewClientDefaults ??= new NewMinecraftClientDefaultsSettings());
+            () => _settings.NewClientDefaults ??= new NewMinecraftClientDefaultsSettings(),
+            releaseCatalog: null,
+            loaderCatalogs: null,
+            onlineModpackWorkflow: _onlineModpackWorkflow,
+            curseForgeCredentialStore: _curseForgeCredentialStore,
+            curseForgeCredentialFileImportService: _curseForgeCredentialFileImportService);
         ClientWorkspace.ContentDownloadCenterRequested += OnContentDownloadCenterRequested;
         _settingsStore = settingsStore ?? new JsonSettingsStore<ManagerSettings>(_paths.SettingsFile);
         _appearanceThemeService = new AppearanceThemeService(_paths);
@@ -311,9 +322,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             ?? new ServerDeletionConfirmationService();
         _serverDirectoryDeletionService = new ServerDirectoryDeletionService(paths);
         _capturePortOccupancy = capturePortOccupancy ?? SystemPortOccupancy.Capture;
-        _onlineModpackWorkflow = onlineModpackWorkflow;
-        _curseForgeCredentialStore = curseForgeCredentialStore
-            ?? new DpapiCurseForgeCredentialStore(paths);
         _curseForgeUpdateCredentialPrompt = curseForgeUpdateCredentialPrompt
             ?? new CurseForgeUpdateCredentialPrompt(_curseForgeCredentialStore);
         _modpackUpdateSelectionService = modpackUpdateSelectionService
@@ -328,14 +336,16 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
         _onlineModpackDialogService = onlineModpackDialogService
             ?? new OnlineModpackDialogService(
                 _onlineModpackWorkflow,
-                _curseForgeCredentialStore);
+                _curseForgeCredentialStore,
+                _curseForgeCredentialFileImportService);
         if (onlineModpackDialogService is null)
         {
             _backgroundOnlineModpackDialogService =
                 new BackgroundOnlineModpackDialogService(
                     _onlineModpackWorkflow,
                     _backgroundJobs,
-                    _curseForgeCredentialStore);
+                    _curseForgeCredentialStore,
+                    _curseForgeCredentialFileImportService);
         }
         if (coreServerCreationDialogService is null)
         {

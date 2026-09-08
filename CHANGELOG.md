@@ -2,6 +2,15 @@
 
 ## 未發布
 
+## 1.2.9-beta.19 — CurseForge 客戶端官方目錄版（研發中）
+
+- 客戶端 CurseForge 目錄已接上官方 API，可依搜尋文字、Minecraft 版本、Loader 與排序取得專案，並查看符合條件的正式版本；不爬取 CurseForge 網頁，也不以非官方來源補齊資料。
+- 客戶端不顯示 API Key 輸入框。使用者只需把自己的官方 Key 寫入程式建立的一次性設定檔並存檔；回到 CurseForge 搜尋時會自動匯入並直接使用。匯入成功後，Key 會轉存為目前 Windows 使用者可解密的 DPAPI CurrentUser 密文並清除明文匯入檔。Server 與客戶端共用同一個每使用者憑證，但作業只取得可釋放的短期副本。
+- 客戶端 CurseForge 直接安裝目前仍未啟用；項目按鈕只開啟經驗證的 CurseForge 官方專案頁，不下載、解壓或安裝模組包。
+- Key 不嵌入 EXE、原始碼或 repository，也不進入一般設定、日誌、URI、命令列、環境變數、背景工作或 Windows Service IPC；流程不繞過 CurseForge 授權、作者的第三方散布設定或官方 API 限制，也不重新託管檔案。
+- 1.2.9-beta.19 尚未發布。
+- **狀態：Beta，研發中。**
+
 ## 1.2.9-beta.18 — CurseForge 每使用者安全憑證版（研發中）
 
 - Server 線上模組包的 CurseForge BYOK 可繼續只使用當次輸入，也可由使用者明確選擇保存；保存時只把 Key 以 Windows DPAPI CurrentUser 密文寫入受管理的每使用者 `ClientSecrets`，相同 Windows 使用者後續的目錄查詢與模組包更新可自動取得單次唯讀副本。

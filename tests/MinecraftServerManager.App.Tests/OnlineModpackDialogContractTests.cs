@@ -169,34 +169,79 @@ public sealed class OnlineModpackDialogContractTests
     }
 
     [Fact]
-    public void Dialog_UsesOperationScopedCopiesAndNeverRefillsTheCurseForgePasswordBox()
+    public void Dialog_UsesOneTimeCredentialFileImportWithoutAnySecretInputControl()
     {
         var xamlPath = GetAppSourcePath(Path.Combine("Dialogs", "OnlineModpackDialog.xaml"));
         var codePath = GetAppSourcePath(Path.Combine("Dialogs", "OnlineModpackDialog.xaml.cs"));
+        var importerPath = GetAppSourcePath(Path.Combine(
+            "Services",
+            "CurseForgeCredentialFileImportService.cs"));
         var xaml = File.ReadAllText(xamlPath);
         var code = File.ReadAllText(codePath);
+        var importerCode = File.ReadAllText(importerPath);
         var document = XDocument.Parse(xaml);
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
 
-        var credentialInput = Assert.Single(document.Descendants(presentation + "PasswordBox"));
-        Assert.Equal("256", (string?)credentialInput.Attribute("MaxLength"));
+        Assert.Empty(document.Descendants(presentation + "PasswordBox"));
+        Assert.DoesNotContain("CurseForgeApiKeyBox", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("CurseForgeApiKeyBox", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("PasswordChanged", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnSaveCurseForgeCredentialClick", xaml, StringComparison.Ordinal);
+
+        var editFileButton = Assert.Single(
+            document.Descendants(presentation + "Button"),
+            element => (string?)element.Attribute(x + "Name")
+                       == "OpenCurseForgeCredentialFileButton");
         Assert.Equal(
-            "OnCurseForgeApiKeyChanged",
-            (string?)credentialInput.Attribute("PasswordChanged"));
-        Assert.Contains("CurseForgeApiKeyBox", xaml, StringComparison.Ordinal);
-        Assert.Contains("using var source = CurseForgeApiKeyBox.SecurePassword", code, StringComparison.Ordinal);
-        Assert.Contains("source.Copy()", code, StringComparison.Ordinal);
-        Assert.Contains("credential.MakeReadOnly()", code, StringComparison.Ordinal);
+            "OnOpenCurseForgeCredentialFileClick",
+            (string?)editFileButton.Attribute("Click"));
+        var deleteButton = Assert.Single(
+            document.Descendants(presentation + "Button"),
+            element => (string?)element.Attribute(x + "Name")
+                       == "DeleteCurseForgeCredentialButton");
+        Assert.Equal(
+            "OnDeleteCurseForgeCredentialClick",
+            (string?)deleteButton.Attribute("Click"));
+        Assert.DoesNotContain("ImportCurseForgeCredentialFileButton", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnImportCurseForgeCredentialFileClick", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnImportCurseForgeCredentialFileClick", code, StringComparison.Ordinal);
+
+        Assert.Contains("_curseForgeCredentialFileImportService.PrepareEditableFile()", code, StringComparison.Ordinal);
+        Assert.Contains("_curseForgeCredentialFileImportService.ImportIfPresent()", code, StringComparison.Ordinal);
         Assert.Contains("using var credential", code, StringComparison.Ordinal);
-        Assert.Contains("CurseForgeApiKeyBox.Clear()", code, StringComparison.Ordinal);
         Assert.Contains("_curseForgeCredentialStore?.AcquireReadOnly()", code, StringComparison.Ordinal);
-        Assert.Contains("_curseForgeCredentialStore.Save(credential)", code, StringComparison.Ordinal);
         Assert.Contains("_curseForgeCredentialStore.Delete()", code, StringComparison.Ordinal);
-        Assert.Contains("OnSaveCurseForgeCredentialClick", xaml, StringComparison.Ordinal);
-        Assert.Contains("OnDeleteCurseForgeCredentialClick", xaml, StringComparison.Ordinal);
-        Assert.DoesNotContain("CurseForgeApiKeyBox.Password =", code, StringComparison.Ordinal);
-        Assert.DoesNotContain("Json", code, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("File.", code, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Password", code, StringComparison.Ordinal);
+
+        Assert.Contains("credential = ParseCredential(characters)", importerCode, StringComparison.Ordinal);
+        Assert.Contains("credential.MakeReadOnly()", importerCode, StringComparison.Ordinal);
+        Assert.Contains("_credentialStore.Save(credential)", importerCode, StringComparison.Ordinal);
+        Assert.Contains("CryptographicOperations.ZeroMemory(bytes)", importerCode, StringComparison.Ordinal);
+        Assert.Contains("CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(characters.AsSpan()))", importerCode, StringComparison.Ordinal);
+        Assert.Contains("TryScrubPlaintext(stream, originalLength)", importerCode, StringComparison.Ordinal);
+        Assert.Contains("TryDeleteFile(_importFilePath)", importerCode, StringComparison.Ordinal);
+        var scrubBeforeCommit = importerCode.IndexOf(
+            "if (!TryScrubPlaintext(stream, originalLength))",
+            StringComparison.Ordinal);
+        Assert.True(scrubBeforeCommit >= 0, "The plaintext import must be scrubbed before commit.");
+        var deleteBeforeCommit = importerCode.IndexOf(
+            "if (!TryDeleteFile(_importFilePath))",
+            scrubBeforeCommit,
+            StringComparison.Ordinal);
+        Assert.True(
+            deleteBeforeCommit > scrubBeforeCommit,
+            "The plaintext import must be deleted after scrubbing and before commit.");
+        var credentialCommit = importerCode.IndexOf(
+            "_credentialStore.Save(credential)",
+            deleteBeforeCommit,
+            StringComparison.Ordinal);
+        Assert.True(
+            credentialCommit > deleteBeforeCommit,
+            "The plaintext import must be scrubbed and deleted before the DPAPI replacement is committed.");
+        Assert.DoesNotContain("Console.Write", importerCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("Trace.Write", importerCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("Environment.SetEnvironmentVariable", importerCode, StringComparison.Ordinal);
 
         var workflowMethods = typeof(IOnlineModpackWorkflow).GetMethods();
         Assert.All(

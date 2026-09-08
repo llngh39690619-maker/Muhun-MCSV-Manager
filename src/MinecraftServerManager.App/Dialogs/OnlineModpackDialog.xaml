@@ -289,34 +289,25 @@
                     <Grid Grid.Row="3" Margin="0,6,0,3"
                           Visibility="{Binding IsCurseForgeSelected, Converter={StaticResource BoolToVisibility}}">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="300" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="{DynamicResource L10n.online.curseForgeApiKey}"
-                                   Style="{StaticResource DialogLabel}"
-                                   VerticalAlignment="Center" Margin="0,0,12,0" />
-                        <PasswordBox x:Name="CurseForgeApiKeyBox" Grid.Column="1" MaxLength="256"
-                                      IsEnabled="{Binding IsInputEnabled}"
-                                      PasswordChanged="OnCurseForgeApiKeyChanged"
-                                      AutomationProperties.Name="{DynamicResource L10n.online.curseForgeApiKey}" />
-                        <Button x:Name="SaveCurseForgeCredentialButton"
-                                Grid.Column="2" Margin="8,0,0,0" Padding="12,6"
-                                Content="{DynamicResource L10n.online.curseForgeCredential.save}"
+                        <TextBlock x:Name="CurseForgeCredentialStatusText"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource MutedTextBrush}" FontSize="11"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.LiveSetting="Polite" />
+                        <Button x:Name="OpenCurseForgeCredentialFileButton"
+                                Grid.Column="1" Margin="8,0,0,0" Padding="12,6"
+                                Content="{DynamicResource L10n.online.curseForgeCredential.editFile}"
                                 IsEnabled="{Binding IsInputEnabled}"
-                                Click="OnSaveCurseForgeCredentialClick" />
+                                Click="OnOpenCurseForgeCredentialFileClick" />
                         <Button x:Name="DeleteCurseForgeCredentialButton"
-                                Grid.Column="3" Margin="8,0,0,0" Padding="12,6"
+                                Grid.Column="2" Margin="8,0,0,0" Padding="12,6"
                                 Content="{DynamicResource L10n.online.curseForgeCredential.delete}"
                                 IsEnabled="{Binding IsInputEnabled}"
                                 Click="OnDeleteCurseForgeCredentialClick" />
-                        <TextBlock x:Name="CurseForgeCredentialStatusText" Grid.Column="4"
-                                   Margin="12,0,0,0" VerticalAlignment="Center"
-                                    Foreground="{DynamicResource MutedTextBrush}" FontSize="11"
-                                    TextWrapping="Wrap"
-                                    AutomationProperties.LiveSetting="Polite" />
                     </Grid>
                     <TextBlock Grid.Row="4" Text="{Binding ProviderAvailabilityText}" Margin="0,2,0,0"
                                Foreground="{DynamicResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" />

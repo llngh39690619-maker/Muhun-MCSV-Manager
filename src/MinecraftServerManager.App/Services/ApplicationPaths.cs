@@ -36,6 +36,7 @@ public sealed class ApplicationPaths
         ClientStaging = Path.Combine(ClientRoot, "staging");
         ClientSecrets = Path.Combine(ClientRoot, "secrets");
         CurseForgeCredentialFile = Path.Combine(ClientSecrets, "curseforge-api-key.v1.secret");
+        CurseForgeCredentialImportFile = Path.Combine(ClientSecrets, "curseforge-api-key.import.txt");
         ClientRegistryFile = Path.Combine(ClientRoot, "client-instances.v1.json");
         BedrockShortcutRegistryFile = Path.Combine(ClientRoot, "bedrock-shortcuts.v1.json");
         Runtimes = Path.Combine(Root, "runtimes");
@@ -87,6 +88,7 @@ public sealed class ApplicationPaths
     public string ClientStaging { get; }
     public string ClientSecrets { get; }
     public string CurseForgeCredentialFile { get; }
+    public string CurseForgeCredentialImportFile { get; }
     public string ClientRegistryFile { get; }
     public string BedrockShortcutRegistryFile { get; }
     public string Runtimes { get; }

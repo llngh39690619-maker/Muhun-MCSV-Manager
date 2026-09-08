@@ -12,13 +12,16 @@ internal interface IOnlineModpackDialogService
 
 internal sealed class OnlineModpackDialogService(
     IOnlineModpackWorkflow workflow,
-    ICurseForgeCredentialStore? curseForgeCredentialStore = null)
+    ICurseForgeCredentialStore? curseForgeCredentialStore = null,
+    ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null)
     : IOnlineModpackDialogService
 {
     private readonly IOnlineModpackWorkflow _workflow = workflow
         ?? throw new ArgumentNullException(nameof(workflow));
     private readonly ICurseForgeCredentialStore? _curseForgeCredentialStore =
         curseForgeCredentialStore;
+    private readonly ICurseForgeCredentialFileImportService? _curseForgeCredentialFileImportService =
+        curseForgeCredentialFileImportService;
 
     public ServerInstance? ShowInstallDialog(Window? owner)
     {
@@ -27,7 +30,8 @@ internal sealed class OnlineModpackDialogService(
             loadFeaturedOnOpen: true,
             backgroundSubmitter: null,
             catalogRefreshDebounce: null,
-            curseForgeCredentialStore: _curseForgeCredentialStore);
+            curseForgeCredentialStore: _curseForgeCredentialStore,
+            curseForgeCredentialFileImportService: _curseForgeCredentialFileImportService);
         if (owner is not null)
         {
             dialog.Owner = owner;

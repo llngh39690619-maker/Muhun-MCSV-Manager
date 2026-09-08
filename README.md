@@ -1,16 +1,16 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.18**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.19**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta，研發中。** 1.2.9-beta.18 本輪只進行本機驗證（local verification），未發布（not published）。若日後透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布，仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證仍會產生一個單一 installer EXE，但該檔案只用於本機安裝與驗收，不是 GitHub Release 下載項目。
+> **發行狀態：Beta，研發中。** 1.2.9-beta.19 尚未發布（not published）。若日後透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布，仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證仍會產生一個單一 installer EXE，但該檔案只用於本機安裝與驗收，不是 GitHub Release 下載項目。
 
 ## English summary
 
 X MCSV is a self-hosted Windows desktop and web-based Minecraft server and client manager. It combines a least-privilege Windows Service, WPF desktop GUI, responsive Web/PWA panel, role-based access control, backups, modpack workflows, notifications, provider isolation, and secure HTTPS remote administration.
 
-The server-side CurseForge catalog uses the official API with a bring-your-own API key, respects each author's third-party distribution setting, attributes projects and authors, avoids rehosting files, and bounds requests through caching and query limits. A key can remain operation-scoped or be explicitly saved for the current Windows user as DPAPI CurrentUser ciphertext under the managed per-user `ClientSecrets` directory. It is never embedded in the EXE or written to the repository, logs, or Service IPC; each Windows user and computer should use its own key. The Java client content center remains unavailable for CurseForge and does not scrape CurseForge.
+The CurseForge catalogs use the official API with a bring-your-own API key, respect each author's third-party distribution setting, attribute projects and authors, avoid rehosting files, and bound requests through caching and query limits. The Java client has no API-key input field: it imports a one-time plaintext settings file into the shared DPAPI CurrentUser credential for that Windows user, deletes the plaintext import after success, and can then search projects and inspect stable versions. Direct CurseForge client installation is not enabled; its action opens only the official project page. X MCSV never embeds the key in the EXE, writes it to the repository, logs, or Service IPC, scrapes CurseForge pages, or bypasses authorization.
 
 ## 主要功能
 
@@ -19,7 +19,7 @@ The server-side CurseForge catalog uses the official API with a bring-your-own A
 - 基岩版可建立自訂 X MCSV 本機顯示名稱，並選擇 Microsoft 官方正式版最新版或預覽版最新版通道；它使用獨立捷徑登錄，不建立受管理 Java 實例，也不碰觸世界或 Store 安裝資料。Microsoft 不提供任意歷史 Bedrock 版本的公開消費者下載流程，因此介面不會偽裝成可鎖定或下載舊版。
 - Microsoft OAuth／裝置碼登入、Minecraft Java 擁有權檢查、玩家資料與權杖自動續期；token 僅以目前 Windows 使用者的 DPAPI vault 保存，不要求或保存 Microsoft 密碼。
 - 客戶端 Java 自動準備、全域／自動／手動記憶體、解析度、全螢幕、快速啟動、系統匣、GPU 偏好及有界即時日誌。
-- 客戶端模組、材質包、光影包、地圖與截圖管理；Modrinth 內容搜尋會鎖定實例遊戲版本、驗證正式穩定版本與檔案雜湊、遞迴安裝必要前置模組，並在安全時自動匹配 Forge／NeoForge／Fabric／Quilt。客戶端不爬取 CurseForge 網頁，也不把 API Key 寫入 EXE。
+- 客戶端模組、材質包、光影包、地圖與截圖管理；Modrinth 內容搜尋會鎖定實例遊戲版本、驗證正式穩定版本與檔案雜湊、遞迴安裝必要前置模組，並在安全時自動匹配 Forge／NeoForge／Fabric／Quilt。CurseForge 客戶端目錄不顯示 API Key 輸入框；一次性設定檔存檔後，回到搜尋即會自動匯入目前 Windows 使用者的 DPAPI 憑證並直接用於官方專案搜尋及正式版本查詢，也不爬取或繞過網站。
 - 官方 Skin／披風管理；Skin 支援經典／苗條體型、本機 PNG 上傳、即時 3D 走路預覽與滑鼠 360 度旋轉，保存後同步至 Minecraft 官方服務。
 - Minecraft 客戶端在背景啟動 Java，不顯示黑色主控台；啟動後可縮小 X MCSV，遊戲關閉時自動還原主視窗。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
@@ -27,7 +27,7 @@ The server-side CurseForge catalog uses the official API with a bring-your-own A
 - 新 GUI 遇到舊版不相容 Service 時會保持唯讀，並可從完整正式發行資料夾以已簽署 Updater 將相同版本背景服務安全更新至受保護的 `Program Files`；驗證或健康檢查失敗時自動回復。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時以各實例保存的 Port 作為起點選擇第一個可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
-- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；CurseForge Key 可只用於單次作業，或由使用者明確選擇以 Windows DPAPI CurrentUser 加密保存。客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援，以及搜尋、排序、遊戲版本、Loader、分類與預覽圖；客戶端 CurseForge 內容中心仍不可用。
+- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；CurseForge 目錄使用每使用者的 Windows DPAPI CurrentUser 憑證，Server 模組包更新在尚無保存值時仍可要求只供該次作業使用的 Key。客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援；CurseForge 可使用相同的每使用者 DPAPI 憑證搜尋與查看正式版本，但直接安裝尚未啟用，按鈕只開啟官方專案頁。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
 - Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載、SHA-256 完整性驗證、locale／CLDR 健康檢查，以及 ownership receipt 綁定的損壞 Runtime 自動修復。
 - 多帳號、角色、全域與逐 Server 權限、記住裝置、最後 Owner 防護及 SQLite 稽核。
@@ -109,7 +109,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用單一 Windows 安裝 EXE（1.2.9-beta.18 尚未由 GitHub Release 提供）
+### 使用單一 Windows 安裝 EXE（1.2.9-beta.19 尚未由 GitHub Release 提供）
 
 - 啟動 installer EXE 後會顯示 Windows UAC 系統管理員確認，用來建立受保護的程式、Service 及資料 ACL；日常 GUI 不需要以系統管理員身分執行。
 - 預設位置為 `C:\Program Files\MCSV`；安裝畫面可選擇其他安全的本機非磁碟根目錄。選定後所有正式產品資料都留在該安裝根目錄，不使用 AppData／ProgramData fallback。
@@ -138,7 +138,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；研發中的 1.2.9-beta.18 本輪尚未發布，若日後建立 GitHub Release，仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；研發中的 1.2.9-beta.19 尚未發布，若日後建立 GitHub Release，仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -147,16 +147,16 @@ dotnet test .\MinecraftServerManager.sln `
 3. 在遠端管理視窗按「重新連線」；尚未登入時 GUI 會開啟受信任的官方 Tailscale，用戶完成登入後 X MCSV 會在背景自動重試。
 4. 目前登入的桌面 GUI 會透過受信任的官方 Tailscale CLI 將裝置名稱固定為 `x-mcsv`；只有 MagicDNS、HTTPS 憑證與唯一的持久 Funnel 路由全數通過驗證後，才把 `https://x-mcsv.<tailnet>.ts.net/` 提交給 Service。Tailnet suffix 由 Tailscale 自動取得，不需要手動提供 DNSName；同名衝突時會停止並顯示診斷，不會改用 `x-mcsv-1` 或猜測網址。
 5. 固定 HTTPS 網址建立後即可登入 Web 面板；Service 重啟可依驗證 receipt 恢復 loopback Web Host，GUI 會將此狀態標示為已設定／快取，不會誤標為已即時確認 Funnel 在線。
-6. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.18 尚未發布，日後的 GitHub 發布仍不提供 APK）。
+6. iOS 可使用 Safari「加入主畫面」；Android 可側載既有正式發行包中的簽署 APK（1.2.9-beta.19 尚未發布，日後的 GitHub 發布仍不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 
 ## CurseForge 與第三方內容
 
 - Server 端 CurseForge 查詢／下載使用官方 API，並遵守專案作者的 Distribution 設定。
-- CurseForge API Key 採 BYOK：可只在單次 Server 作業的記憶體中使用，也可由使用者明確按下保存，以 Windows DPAPI CurrentUser 加密後存入受管理的每使用者 `ClientSecrets`。保存內容只可由同一 Windows 使用者在該電腦解密；程式不會把明文 Key 寫進 EXE、原始碼、repository、一般設定、日誌或 Service IPC，密碼欄也不會從保存值回填明文。
+- CurseForge API Key 採 BYOK：Server 模組包更新在尚無保存值時可要求只供該次作業使用的 Key；目錄瀏覽則由 Server 與客戶端共用同一個、綁定目前 Windows 使用者的 DPAPI CurrentUser 憑證。客戶端不顯示 API Key 輸入框；使用者將 Key 寫入一次性設定檔並存檔後，回到搜尋即會自動匯入並直接使用。成功時會將 Key 加密存入受管理的每使用者 `ClientSecrets` 並清除明文匯入檔。保存內容只可由同一 Windows 使用者在該電腦解密，且不會回填為明文。
 - 每位 Windows 使用者與每台電腦都應使用自己的 CurseForge API Key；不得把共用 Key 內嵌後再把 EXE 分發給其他人。
-- 客戶端 CurseForge 內容中心仍不可用，也不爬取 CurseForge 網頁；免金鑰安裝使用 Modrinth 或 FTB 官方公開 API。FTB 只接受公開正式穩定版，逐檔驗證官方 manifest 的 SHA-512／SHA-256／SHA-1，官方 App 保留為失敗備援。
+- 客戶端 CurseForge 內容中心可透過官方 API 搜尋專案及查看正式版本；直接安裝尚未啟用，按鈕只開啟對應的 CurseForge 官方專案頁。X MCSV 不爬取頁面、不繞過 API 或作者的散布設定，也不重新託管檔案。免金鑰安裝仍使用 Modrinth 或 FTB 官方公開 API；FTB 只接受公開正式穩定版並逐檔驗證官方 manifest 的 SHA-512／SHA-256／SHA-1，官方 App 保留為失敗備援。
 - X MCSV 不重新託管第三方模組包，並在介面顯示來源、專案與作者資訊。
 - 使用者仍須遵守 Minecraft EULA、平台服務條款及各模組／模組包授權。
 

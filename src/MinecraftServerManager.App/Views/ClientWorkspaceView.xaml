@@ -630,6 +630,30 @@
                                     </Button>
                                 </controls:ResponsiveWrapPanel>
 
+                                <Border Margin="0,14,0,0" Padding="12"
+                                        Background="{DynamicResource PanelRaisedBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="8"
+                                        Visibility="{Binding IsCurseForgeCatalogSource, Converter={StaticResource BoolToVisibility}}">
+                                    <DockPanel LastChildFill="True">
+                                        <WrapPanel DockPanel.Dock="Right" Margin="14,0,0,0">
+                                            <Button Content="{DynamicResource L10n.client.catalog.curseForge.editCredentialFile}"
+                                                    Command="{Binding OpenCurseForgeCredentialFileCommand}"
+                                                    Margin="0,0,8,0" />
+                                            <Button Content="{DynamicResource L10n.client.catalog.curseForge.deleteCredential}"
+                                                    Command="{Binding DeleteCurseForgeCredentialCommand}" />
+                                        </WrapPanel>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding CurseForgeCredentialStatusText}"
+                                                       TextWrapping="Wrap"
+                                                       AutomationProperties.LiveSetting="Polite" />
+                                            <TextBlock Text="{DynamicResource L10n.client.catalog.curseForge.fileHint}"
+                                                       Style="{StaticResource MutedText}" FontSize="10"
+                                                       Margin="0,3,0,0" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
                                 <controls:ResponsiveWrapPanel Margin="0,16,0,0" MinItemWidth="155" ItemHeight="68"
                                                            HorizontalSpacing="10" VerticalSpacing="10" MaximumColumns="6"
                                                            Visibility="{Binding IsBrowsableCatalogSource, Converter={StaticResource BoolToVisibility}}">
@@ -796,7 +820,7 @@
                                     <Button Grid.Row="2" Content="{DynamicResource L10n.client.action.loadMore}" Command="{Binding LoadMoreCatalogCommand}"
                                             IsEnabled="{Binding HasMoreCatalogResults}" HorizontalAlignment="Center"
                                             MinWidth="150" Margin="0,14,0,0"
-                                            Visibility="{Binding IsModrinthCatalogSource, Converter={StaticResource BoolToVisibility}}" />
+                                            Visibility="{Binding ShowsCatalogLoadMore, Converter={StaticResource BoolToVisibility}}" />
                                 </Grid>
                             </Border>
                         </StackPanel>
