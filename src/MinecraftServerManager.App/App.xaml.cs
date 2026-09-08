@@ -386,6 +386,7 @@ public partial class App : Application
             if (renderClientPreviewPath is not null)
             {
                 await viewModel.ShowClientWorkspaceForDiagnosticsAsync();
+                await WaitForThumbnailRenderingAsync(applicationWindow);
                 RenderPreview(applicationWindow, renderClientPreviewPath);
             }
 

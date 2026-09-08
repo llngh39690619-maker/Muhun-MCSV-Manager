@@ -117,13 +117,89 @@
             </Border>
         </DataTemplate>
 
+        <DataTemplate x:Key="ServerSelectorItemTemplate">
+            <Border MinWidth="228" Padding="10,8" Margin="0,0,8,0"
+                    Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}">
+                <Border.ContextMenu>
+                    <!-- A ContextMenu is hosted in a separate popup tree. Bind through its
+                         placement target so both the command owner and the exact row remain
+                         explicit even when the user right-clicks a non-selected Server. -->
+                    <ContextMenu Style="{DynamicResource ThemedContextMenuStyle}"
+                                 DataContext="{Binding PlacementTarget, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="{DynamicResource L10n.main.context.appearance}"
+                                  Style="{DynamicResource ThemedContextMenuItemStyle}"
+                                  Command="{Binding Tag.OpenServerAppearanceCommand}"
+                                  CommandParameter="{Binding DataContext}" />
+                        <Separator />
+                        <MenuItem Header="{DynamicResource L10n.main.context.remove}"
+                                  Style="{DynamicResource ThemedContextMenuItemStyle}"
+                                  Command="{Binding Tag.RemoveServerCommand}"
+                                  CommandParameter="{Binding DataContext}" />
+                        <Separator />
+                        <MenuItem Header="{DynamicResource L10n.main.context.delete}"
+                                  Style="{DynamicResource ThemedContextMenuItemStyle}"
+                                  Foreground="{DynamicResource DangerBrush}"
+                                  Command="{Binding Tag.DeleteServerCommand}"
+                                  CommandParameter="{Binding DataContext}" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="36" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <CheckBox x:Name="BulkServerSelectionCheckBox"
+                              Grid.Column="0"
+                              Tag="BulkServerSelection"
+                              Margin="0,0,8,0"
+                              VerticalAlignment="Center"
+                              IsChecked="{Binding IsBulkSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              Visibility="{Binding DataContext.IsBulkSelectionMode, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}, Converter={StaticResource BoolToVisibility}}"
+                              AutomationProperties.Name="{DynamicResource L10n.main.bulkSelection.serverAutomation}">
+                        <CheckBox.Style>
+                            <Style TargetType="CheckBox">
+                                <Setter Property="IsEnabled" Value="True" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding DataContext.IsBatchLifecycleOperationRunning, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}"
+                                                 Value="True">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </CheckBox.Style>
+                    </CheckBox>
+                    <Border Grid.Column="1" Width="30" Height="30" CornerRadius="6"
+                            Background="{DynamicResource PanelRaisedBrush}" VerticalAlignment="Center">
+                        <Grid>
+                            <TextBlock Text="{Binding CoreInitial}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Visibility="{Binding EffectiveIconImagePath, Converter={StaticResource EmptyStringToVisibility}}" />
+                            <Image Source="{Binding EffectiveIconImagePath}" Stretch="UniformToFill" Opacity="1"
+                                   Visibility="{Binding EffectiveIconImagePath, Converter={StaticResource StringToVisibility}}" />
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="2" Margin="9,0,6,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Subtitle}" Style="{StaticResource MutedText}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Ellipse Width="9" Height="9" Fill="{Binding State, Converter={StaticResource StatusBrush}}" HorizontalAlignment="Center" />
+                        <TextBlock Text="{Binding StateText}" FontSize="9"
+                                   Foreground="{Binding State, Converter={StaticResource StatusBrush}}" Margin="0,3,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
         <Style x:Key="MetricCard" TargetType="Border">
             <Setter Property="Background" Value="{DynamicResource PanelRaisedBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="14,10" />
-            <Setter Property="Margin" Value="4" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="Margin" Value="3" />
         </Style>
         <Style x:Key="FormLabel" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
             <Setter Property="Margin" Value="0,12,0,5" />
@@ -139,7 +215,7 @@
 
         <Grid Visibility="{Binding IsServerWorkspace, Converter={StaticResource BoolToVisibility}}">
             <Grid.RowDefinitions>
-                <RowDefinition Height="68" />
+                <RowDefinition Height="60" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="48" />
             </Grid.RowDefinitions>
@@ -147,7 +223,7 @@
             <Border Grid.Row="0" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
                 <Grid Margin="18,0">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="280" />
+                        <ColumnDefinition Width="150" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
@@ -189,13 +265,9 @@
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="{Binding RunningSummary}" Style="{StaticResource MutedText}" Margin="0,0,18,0" VerticalAlignment="Center" />
-                        <Button Content="{DynamicResource L10n.main.remoteManagement}" Command="{Binding OpenRemoteManagementCommand}" Margin="0,0,8,0"
-                                ToolTip="{DynamicResource L10n.main.remoteManagement.tooltip}"
+                        <Button Content="{DynamicResource L10n.main.remote}" Command="{Binding OpenRemoteManagementCommand}"
+                                Margin="0,0,8,0" ToolTip="{DynamicResource L10n.main.remoteManagement.tooltip}"
                                 AutomationProperties.Name="{DynamicResource L10n.main.remoteManagement.automation}" />
-                        <Button Content="{DynamicResource L10n.main.openDataDirectory}"
-                                Command="{Binding OpenDataFolderCommand}"
-                                ToolTip="{Binding UserDataRootPath}"
-                                Margin="0,0,8,0" />
                         <Button Content="⚙" Command="{Binding OpenSettingsCommand}"
                                 Width="40" MinWidth="40" Padding="8" FontSize="17"
                                 ToolTip="{DynamicResource L10n.main.settingsTooltip}" AutomationProperties.Name="{DynamicResource L10n.main.settingsTooltip}" />
@@ -204,146 +276,102 @@
             </Border>
 
             <Grid Grid.Row="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="84" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="300" />
+                    <ColumnDefinition Width="58" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="272" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
-                    <Grid Margin="12">
+                <Border Grid.RowSpan="2" Grid.Column="0" Background="{DynamicResource PanelBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
+                    <Grid Margin="7,10">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Grid Grid.Row="0" Margin="2,2,2,12">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                            <TextBlock Text="{DynamicResource L10n.main.serverList}" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{Binding ServerCountText}" Style="{StaticResource MutedText}" VerticalAlignment="Center" />
-                        </Grid>
-
-                        <ListBox Grid.Row="1" ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}"
-                                 Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Padding="10" Margin="0,2"
-                                            Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}">
-                                        <Border.ContextMenu>
-                                            <!-- A ContextMenu is hosted in a separate popup tree. Bind through its
-                                                 placement target so both the command owner and the exact row remain
-                                                 explicit even when the user right-clicks a non-selected Server. -->
-                                            <ContextMenu Style="{DynamicResource ThemedContextMenuStyle}"
-                                                         DataContext="{Binding PlacementTarget, RelativeSource={RelativeSource Self}}">
-                                                <MenuItem Header="{DynamicResource L10n.main.context.appearance}"
-                                                          Style="{DynamicResource ThemedContextMenuItemStyle}"
-                                                          Command="{Binding Tag.OpenServerAppearanceCommand}"
-                                                          CommandParameter="{Binding DataContext}" />
-                                                <Separator />
-                                                <MenuItem Header="{DynamicResource L10n.main.context.remove}"
-                                                          Style="{DynamicResource ThemedContextMenuItemStyle}"
-                                                          Command="{Binding Tag.RemoveServerCommand}"
-                                                          CommandParameter="{Binding DataContext}" />
-                                                <Separator />
-                                                <MenuItem Header="{DynamicResource L10n.main.context.delete}"
-                                                          Style="{DynamicResource ThemedContextMenuItemStyle}"
-                                                          Foreground="{DynamicResource DangerBrush}"
-                                                          Command="{Binding Tag.DeleteServerCommand}"
-                                                          CommandParameter="{Binding DataContext}" />
-                                            </ContextMenu>
-                                        </Border.ContextMenu>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="36" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <CheckBox x:Name="BulkServerSelectionCheckBox"
-                                                      Grid.Column="0"
-                                                      Tag="BulkServerSelection"
-                                                      Margin="0,0,8,0"
-                                                      VerticalAlignment="Center"
-                                                      IsChecked="{Binding IsBulkSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                      Visibility="{Binding DataContext.IsBulkSelectionMode, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}, Converter={StaticResource BoolToVisibility}}"
-                                                      AutomationProperties.Name="{DynamicResource L10n.main.bulkSelection.serverAutomation}">
-                                                <CheckBox.Style>
-                                                    <Style TargetType="CheckBox">
-                                                        <Setter Property="IsEnabled" Value="True" />
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding DataContext.IsBatchLifecycleOperationRunning, RelativeSource={RelativeSource AncestorType={x:Type ListBox}}}"
-                                                                         Value="True">
-                                                                <Setter Property="IsEnabled" Value="False" />
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </CheckBox.Style>
-                                            </CheckBox>
-                                            <Border Grid.Column="1" Width="30" Height="30" CornerRadius="6" Background="{DynamicResource PanelRaisedBrush}" VerticalAlignment="Center">
-                                                <Grid>
-                                                    <TextBlock Text="{Binding CoreInitial}" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}"
-                                                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                               Visibility="{Binding EffectiveIconImagePath, Converter={StaticResource EmptyStringToVisibility}}" />
-                                                    <Image Source="{Binding EffectiveIconImagePath}" Stretch="UniformToFill" Opacity="1"
-                                                           Visibility="{Binding EffectiveIconImagePath, Converter={StaticResource StringToVisibility}}" />
-                                                </Grid>
-                                            </Border>
-                                            <StackPanel Grid.Column="2" Margin="9,0,4,0">
-                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{Binding Subtitle}" Style="{StaticResource MutedText}" FontSize="11" TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="3" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                <Ellipse Width="9" Height="9" Fill="{Binding State, Converter={StaticResource StatusBrush}}" HorizontalAlignment="Center" />
-                                                <TextBlock Text="{Binding StateText}" FontSize="9" Foreground="{Binding State, Converter={StaticResource StatusBrush}}" Margin="0,3,0,0" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-
-                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.main.onlineModpack}" Command="{Binding InstallOnlineModpackCommand}" Margin="0,0,0,7" />
-                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.main.importServer}" Command="{Binding ImportExistingServerCommand}" Margin="0,0,0,7" />
-                            <Button Content="{DynamicResource L10n.main.createCore}" Command="{Binding CreateCoreServerCommand}" />
+                        <Border Width="38" Height="38" CornerRadius="9" Background="{DynamicResource AccentDarkBrush}"
+                                HorizontalAlignment="Center" Margin="0,0,0,12">
+                            <TextBlock Text="◆" Foreground="{DynamicResource AccentBrush}" FontSize="18"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Row="1" VerticalAlignment="Top">
+                            <Button Content="◆" Command="{Binding ToggleBulkSelectionModeCommand}"
+                                    Width="42" Height="42" MinWidth="42" Padding="4" FontSize="18" Margin="0,0,0,8"
+                                    ToolTip="{DynamicResource L10n.main.bulkSelection.tooltip}" />
+                            <Button Content="☰" Command="{Binding OpenBackgroundJobsCommand}"
+                                    Width="42" Height="42" MinWidth="42" Padding="4" FontSize="17"
+                                    ToolTip="{DynamicResource L10n.main.jobsTooltip}" />
                         </StackPanel>
+                        <Button Grid.Row="2" Content="☰" Command="{Binding OpenSettingsCommand}"
+                                Width="42" Height="42" MinWidth="42" Padding="4" FontSize="17"
+                                ToolTip="{DynamicResource L10n.main.settingsTooltip}" />
                     </Grid>
                 </Border>
 
-                <Grid Grid.Column="1" Margin="14" Visibility="{Binding HasSelectedServer, Converter={StaticResource BoolToVisibility}}">
+                <Border Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"
+                        Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="0,0,0,1" Padding="12,8">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="20" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="2,0,2,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{DynamicResource L10n.main.serverList}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding ServerCountText}" Style="{StaticResource MutedText}" VerticalAlignment="Center" />
+                        </Grid>
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ListBox Grid.Column="0" ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer}"
+                                     ItemTemplate="{StaticResource ServerSelectorItemTemplate}"
+                                     Background="Transparent" BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                     ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                     ScrollViewer.CanContentScroll="True"
+                                     VirtualizingPanel.IsVirtualizing="True"
+                                     VirtualizingPanel.VirtualizationMode="Recycling">
+                                <ListBox.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <VirtualizingStackPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ListBox.ItemsPanel>
+                            </ListBox>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                                <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.main.onlineModpack}"
+                                        Command="{Binding InstallOnlineModpackCommand}" Margin="0,0,7,0" />
+                                <Button Content="{DynamicResource L10n.main.importServer}"
+                                        Command="{Binding ImportExistingServerCommand}" Margin="0,0,7,0" />
+                                <Button Content="{DynamicResource L10n.main.createCore}" Command="{Binding CreateCoreServerCommand}" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1" Grid.Column="1" Margin="10,8,7,10"
+                      Visibility="{Binding HasSelectedServer, Converter={StaticResource BoolToVisibility}}">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="4,0,4,10">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding SelectedServer.Name}" FontSize="25" FontWeight="SemiBold" />
-                                <Border Background="{DynamicResource AccentDarkBrush}" CornerRadius="5" Padding="8,3" Margin="10,2,0,0">
-                                    <TextBlock Text="{Binding SelectedServer.StateText}" Foreground="{Binding SelectedServer.State, Converter={StaticResource StatusBrush}}" FontSize="12" />
-                                </Border>
-                            </StackPanel>
-                            <TextBlock Text="{Binding SelectedServer.DetailSubtitle}" Style="{StaticResource MutedText}" Margin="0,4,0,0" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.main.action.start}" Command="{Binding StartSelectedCommand}" Margin="0,0,7,0" />
-                            <Button Content="{DynamicResource L10n.main.action.stop}" Command="{Binding StopSelectedCommand}" Margin="0,0,7,0" />
-                            <Button Content="{DynamicResource L10n.main.action.restart}" Command="{Binding RestartSelectedCommand}" Margin="0,0,7,0" />
-                            <Button Content="{DynamicResource L10n.main.action.openFolder}" Command="{Binding OpenSelectedFolderCommand}" />
-                        </StackPanel>
-                    </Grid>
-
-                    <UniformGrid Grid.Row="1" Columns="5" Margin="0,0,0,10">
-                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.cpu}" Style="{StaticResource MutedText}" FontSize="11" /><TextBlock Text="{Binding SelectedServer.CpuDisplay}" FontSize="18" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel></Border>
-                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.memory}" Style="{StaticResource MutedText}" FontSize="11" /><TextBlock Text="{Binding SelectedServer.MemoryDisplay}" FontSize="18" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel></Border>
-                        <Border Style="{StaticResource MetricCard}" ToolTip="{Binding SelectedServer.ConnectionAddress}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.port}" Style="{StaticResource MutedText}" FontSize="11" /><TextBlock Text="{Binding SelectedServer.ConnectionDisplay}" FontSize="18" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel></Border>
-                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.java}" Style="{StaticResource MutedText}" FontSize="11" /><TextBlock Text="{Binding SelectedServer.JavaDisplay}" FontSize="18" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel></Border>
-                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.uptime}" Style="{StaticResource MutedText}" FontSize="11" /><TextBlock Text="{Binding SelectedServer.UptimeDisplay}" FontSize="18" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel></Border>
+                    <UniformGrid Grid.Row="0" Columns="5" Margin="0,0,0,7">
+                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.cpu}" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="{Binding SelectedServer.CpuDisplay}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" /></StackPanel></Border>
+                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.memory}" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="{Binding SelectedServer.MemoryDisplay}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" /></StackPanel></Border>
+                        <Border Style="{StaticResource MetricCard}" ToolTip="{Binding SelectedServer.ConnectionAddress}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.port}" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="{Binding SelectedServer.ConnectionDisplay}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" /></StackPanel></Border>
+                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.java}" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="{Binding SelectedServer.JavaDisplay}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" /></StackPanel></Border>
+                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.main.metric.uptime}" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="{Binding SelectedServer.UptimeDisplay}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" /></StackPanel></Border>
                     </UniformGrid>
 
-                    <TabControl Grid.Row="2" SelectedValuePath="Tag"
+                    <TabControl Grid.Row="1" SelectedValuePath="Tag"
                                 SelectedValue="{Binding SelectedWorkspaceTabKey, Mode=TwoWay}">
                         <TabItem Header="{DynamicResource L10n.main.tab.console}" Tag="Console">
                             <Grid Margin="0,8,0,0">
@@ -828,7 +856,98 @@
                     </TabControl>
                 </Grid>
 
-                <Grid Grid.Column="1" Visibility="{Binding HasSelectedServer, Converter={StaticResource InverseBoolToVisibility}}">
+                <Border Grid.Row="1" Grid.Column="2" Margin="7,8,10,10"
+                        Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="1" CornerRadius="9"
+                        Visibility="{Binding HasSelectedServer, Converter={StaticResource BoolToVisibility}}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                  PanningMode="VerticalOnly">
+                        <StackPanel Margin="14">
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="56" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Width="50" Height="50" CornerRadius="9"
+                                        Background="{DynamicResource PanelRaisedBrush}" VerticalAlignment="Top">
+                                    <Grid>
+                                        <TextBlock Text="{Binding SelectedServer.CoreInitial}" FontWeight="Bold"
+                                                   Foreground="{DynamicResource AccentBrush}" FontSize="20"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   Visibility="{Binding SelectedServer.EffectiveIconImagePath, Converter={StaticResource EmptyStringToVisibility}}" />
+                                        <Image Source="{Binding SelectedServer.EffectiveIconImagePath}" Stretch="UniformToFill"
+                                               Visibility="{Binding SelectedServer.EffectiveIconImagePath, Converter={StaticResource StringToVisibility}}" />
+                                    </Grid>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding SelectedServer.Name}" FontSize="18" FontWeight="SemiBold"
+                                               TextWrapping="Wrap" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                        <Ellipse Width="8" Height="8" Fill="{Binding SelectedServer.State, Converter={StaticResource StatusBrush}}"
+                                                 VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding SelectedServer.StateText}"
+                                                   Foreground="{Binding SelectedServer.State, Converter={StaticResource StatusBrush}}"
+                                                   FontSize="11" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,12"
+                                       Visibility="{Binding SelectedServer.IsServiceManaged, Converter={StaticResource BoolToVisibility}}">
+                                <Run Text="{Binding SelectedServer.InspectorVersionSummary, Mode=OneWay}" /><Run Text="  •  " /><Run Text="{DynamicResource L10n.main.serverInspector.serviceManaged}" />
+                            </TextBlock>
+                            <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,12"
+                                       Visibility="{Binding SelectedServer.IsServiceManaged, Converter={StaticResource InverseBoolToVisibility}}">
+                                <Run Text="{Binding SelectedServer.InspectorVersionSummary, Mode=OneWay}" /><Run Text="  •  " /><Run Text="{DynamicResource L10n.main.serverInspector.localManaged}" />
+                            </TextBlock>
+
+                            <Separator Margin="0,0,0,12" />
+                            <TextBlock Text="{DynamicResource L10n.main.serverInspector.actions}" FontWeight="SemiBold" Margin="0,0,0,8" />
+                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource L10n.main.action.start}"
+                                    Command="{Binding StartSelectedCommand}" HorizontalContentAlignment="Center" Margin="0,0,0,7" />
+                            <Button Content="{DynamicResource L10n.main.action.stop}" Command="{Binding StopSelectedCommand}"
+                                    HorizontalContentAlignment="Center" Margin="0,0,0,7" />
+                            <Button Content="{DynamicResource L10n.main.action.restart}" Command="{Binding RestartSelectedCommand}"
+                                    HorizontalContentAlignment="Center" Margin="0,0,0,7" />
+                            <Button Content="{DynamicResource L10n.main.action.openFolder}" Command="{Binding OpenSelectedFolderCommand}"
+                                    HorizontalContentAlignment="Center" />
+
+                            <Separator Margin="0,14,0,12" />
+                            <Expander Header="{DynamicResource L10n.main.serverInspector.information}" IsExpanded="True">
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="78" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="{DynamicResource L10n.main.metric.cpu}" Style="{StaticResource MutedText}" Margin="0,3" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedServer.CpuDisplay}" Margin="0,3" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="1" Text="{DynamicResource L10n.main.metric.memory}" Style="{StaticResource MutedText}" Margin="0,3" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedServer.MemoryDisplay}" Margin="0,3" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="2" Text="{DynamicResource L10n.main.metric.java}" Style="{StaticResource MutedText}" Margin="0,3" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedServer.JavaDisplay}" Margin="0,3" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Row="3" Text="{DynamicResource L10n.main.metric.port}" Style="{StaticResource MutedText}" Margin="0,3" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedServer.ConnectionDisplay}" Margin="0,3"
+                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedServer.ConnectionAddress}" />
+                                <TextBlock Grid.Row="4" Text="{DynamicResource L10n.main.metric.uptime}" Style="{StaticResource MutedText}" Margin="0,3" />
+                                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedServer.UptimeDisplay}" Margin="0,3" TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                            </Expander>
+
+                            <Separator Margin="0,14,0,12" />
+                            <Button Content="{DynamicResource L10n.main.settingsTooltip}" Command="{Binding OpenSettingsCommand}"
+                                    HorizontalContentAlignment="Left" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+
+                <Grid Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                      Visibility="{Binding HasSelectedServer, Converter={StaticResource InverseBoolToVisibility}}">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520">
                         <Border Width="78" Height="78" Background="{DynamicResource AccentDarkBrush}" CornerRadius="18" Margin="0,0,0,18">
                             <TextBlock Text="◆" Foreground="{DynamicResource AccentBrush}" FontSize="34" HorizontalAlignment="Center" VerticalAlignment="Center" />

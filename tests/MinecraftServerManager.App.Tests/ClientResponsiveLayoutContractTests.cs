@@ -15,7 +15,7 @@ public sealed class ClientResponsiveLayoutContractTests
 
         var panels = document.Descendants(controls + "ResponsiveWrapPanel").ToArray();
 
-        Assert.Equal(6, panels.Length);
+        Assert.Equal(5, panels.Length);
         Assert.All(panels, panel => Assert.NotNull(panel.Attribute("MinItemWidth")));
         Assert.All(panels, panel => Assert.Null(panel.Attribute("MinimumItemWidth")));
         Assert.False(File.Exists(TestRepositoryPaths.AppSource(

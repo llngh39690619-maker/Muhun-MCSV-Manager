@@ -54,6 +54,103 @@ public sealed class ClientWorkspacePresentationTests
     }
 
     [Fact]
+    public void Dashboard_UsesLauncherHeroNavigationAndNonBlockingDownloadQueue()
+    {
+        var document = XDocument.Load(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var hero = document
+            .Descendants(Presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherHero",
+                StringComparison.Ordinal));
+        var sectionTabs = document
+            .Descendants(Presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherSectionTabs",
+                StringComparison.Ordinal));
+        var queue = document
+            .Descendants(Presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogInstallTray",
+                StringComparison.Ordinal));
+        var sidebar = document
+            .Descendants(Presentation + "StackPanel")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherDownloadSidebar",
+                StringComparison.Ordinal));
+        var dashboardBody = document
+            .Descendants(Presentation + "Grid")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherDashboardBody",
+                StringComparison.Ordinal));
+
+        Assert.Contains("{Binding SelectedInstance.HeroImagePath}", hero.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding SelectedInstance.MaximumMemoryMb, Mode=OneWay}", hero.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding SelectedInstance.JavaDisplay}", hero.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding LaunchCommand}", hero.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenCatalogCommand}", sectionTabs.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenContentDownloadCommand}", sectionTabs.ToString(), StringComparison.Ordinal);
+        Assert.NotNull(document
+            .Descendants(Presentation + "Grid")
+            .SingleOrDefault(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherInstanceShelf",
+                StringComparison.Ordinal)));
+        Assert.NotNull(document
+            .Descendants(Presentation + "Grid")
+            .SingleOrDefault(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherOverviewCards",
+                StringComparison.Ordinal)));
+        Assert.Equal("342", (string?)sidebar.Attribute("Width"));
+        Assert.Equal(
+            "{Binding IsCatalogInstallSidebarVisible, Converter={StaticResource BoolToVisibility}}",
+            (string?)sidebar.Attribute("Visibility"));
+        Assert.Contains("{Binding ToggleCatalogInstallSidebarCommand}", queue.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", queue.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding IsCatalogInstallQueueExpanded", queue.ToString(), StringComparison.Ordinal);
+        Assert.Equal(
+            ["*", "Auto"],
+            dashboardBody
+                .Element(Presentation + "Grid.ColumnDefinitions")!
+                .Elements(Presentation + "ColumnDefinition")
+                .Select(column => (string)column.Attribute("Width")!)
+                .ToArray());
+
+        var overviewCardNames = new[]
+        {
+            "ClientLauncherModsCard",
+            "ClientLauncherScreenshotCard",
+            "ClientLauncherJavaMemoryCard",
+        };
+        foreach (var cardName in overviewCardNames)
+        {
+            Assert.NotNull(document
+                .Descendants(Presentation + "Border")
+                .SingleOrDefault(element => string.Equals(
+                    (string?)element.Attribute(xaml + "Name"),
+                    cardName,
+                    StringComparison.Ordinal)));
+        }
+
+        var dashboard = dashboardBody.ToString();
+        Assert.Contains("ItemsSource=\"{Binding DashboardModItems}\"", dashboard, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding DashboardModsHeading}\"", dashboard, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding DashboardModsStatusText}\"", dashboard, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding SelectedInstance.JavaExecutableDisplay}\"", dashboard, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding SelectedInstance.JvmArgumentsText}\"", dashboard, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding SelectedInstance.LastPlayedText}\"", dashboard, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ContentCards_OpenTheDownloadCenterOnTheirOwnTypedTab()
     {
         var document = XDocument.Load(TestRepositoryPaths.AppSource(
@@ -80,7 +177,7 @@ public sealed class ClientWorkspacePresentationTests
         Assert.All(
             buttons,
             button => Assert.Equal(
-                "{StaticResource ClientContentPrimaryActionButton}",
+                "{StaticResource ClientDashboardTabButton}",
                 (string?)button.Attribute("Style")));
 
         var contentFolderButtons = document
@@ -88,7 +185,7 @@ public sealed class ClientWorkspacePresentationTests
             .Where(button => (string?)button.Attribute("CommandParameter") is
                 "mods" or "resourcepacks" or "shaderpacks")
             .ToArray();
-        Assert.Equal(3, contentFolderButtons.Length);
+        Assert.Single(contentFolderButtons);
         Assert.All(
             contentFolderButtons,
             button => Assert.Equal(
@@ -332,7 +429,7 @@ public sealed class ClientWorkspacePresentationTests
             .Descendants(presentation + "Border")
             .Single(element => string.Equals(
                 (string?)element.Attribute(xaml + "Name"),
-                "CatalogInstallTray",
+                "CatalogInstallBackgroundTray",
                 StringComparison.Ordinal));
 
         Assert.Equal("0", (string?)pageScrollViewer.Attribute("Grid.Row"));
@@ -345,7 +442,7 @@ public sealed class ClientWorkspacePresentationTests
                 "{Binding InstallCatalogPackCommand}",
                 StringComparison.Ordinal));
         Assert.DoesNotContain(pageScrollViewer, installTray.Ancestors());
-        Assert.Equal("2", (string?)installTray.Attribute("Grid.Row"));
+        Assert.Equal("1", (string?)installTray.Attribute("Grid.Row"));
         Assert.Contains("{Binding CatalogInstallJobs}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding IsFailed}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{DynamicResource DangerBrush}", installTray.ToString(), StringComparison.Ordinal);

@@ -76,11 +76,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly SemaphoreSlim _contentGate = new(1, 1);
     private readonly SemaphoreSlim _contentDownloadInstallGate = new(1, 1);
     private readonly LatestOperationCoordinator _contentRefreshCoordinator;
+    private readonly LatestOperationCoordinator _dashboardModsRefreshCoordinator;
     private readonly BatchObservableCollection<ClientInstanceItemViewModel> _instances = [];
     private readonly BatchObservableCollection<BedrockClientShortcutItemViewModel> _bedrockShortcuts = [];
     private readonly BatchObservableCollection<MinecraftReleaseInfo> _releases = [];
     private readonly BatchObservableCollection<ClientCatalogGameVersionChoice> _catalogGameVersions = [];
     private readonly BatchObservableCollection<ClientContentItemViewModel> _contentItems = [];
+    private readonly BatchObservableCollection<ClientContentItemViewModel> _dashboardModItems = [];
     private readonly Dictionary<Guid, MinecraftClientProcessSession> _runningSessions = [];
     private readonly HashSet<Task> _sessionObserverTasks = [];
     private readonly ClientLauncherWindowLifecycle _launcherWindowLifecycle = new();
@@ -138,6 +140,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _isCatalogBusy;
     private bool _isCatalogDetailOpen;
     private bool _isCatalogInstallQueueExpanded;
+    private bool _isCatalogInstallSidebarVisible = true;
     private bool _isCatalogInstallRunning;
     private bool _suppressSelectedInstanceNavigation;
     private bool _changingClientSelection;
@@ -163,6 +166,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private ClientContentItemViewModel? _selectedContentItem;
     private bool _showRecycleBin;
     private string _contentStatusText = string.Empty;
+    private int _dashboardModCount;
+    private bool _dashboardModLimitReached;
     private bool _isContentDownloadOpen;
     private bool _isContentDownloadBusy;
     private bool _isContentDownloadDetailBusy;
@@ -236,6 +241,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _getGlobalDefaults = getGlobalDefaults ?? throw new ArgumentNullException(nameof(getGlobalDefaults));
         _paths.EnsureCreated();
         _contentRefreshCoordinator = new LatestOperationCoordinator(
+            _lifetimeCancellation.Token);
+        _dashboardModsRefreshCoordinator = new LatestOperationCoordinator(
             _lifetimeCancellation.Token);
 
         _catalogHttpClient = CreateHttpClient(TimeSpan.FromSeconds(30));
@@ -337,6 +344,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         InitializeCommand = new AsyncRelayCommand(() => RunGuardedAsync(InitializeAsync), () => !_isInitialized);
         RefreshCatalogCommand = new AsyncRelayCommand(() => RunGuardedAsync(RefreshCatalogAsync), () => !IsBusy);
+        OpenDashboardCommand = new RelayCommand(OpenDashboard);
         NewInstanceCommand = new RelayCommand(ShowCreatePage);
         OpenCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(OpenCatalogAsync));
@@ -370,6 +378,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OpenClientDiagnosticsFolderCommand = new RelayCommand(
             OpenClientDiagnosticsFolder,
             () => HasFtbInstallDiagnostic);
+        ToggleCatalogInstallSidebarCommand = new RelayCommand(
+            () => IsCatalogInstallSidebarVisible = !IsCatalogInstallSidebarVisible);
         ToggleCatalogInstallQueueCommand = new RelayCommand(
             () => IsCatalogInstallQueueExpanded = !IsCatalogInstallQueueExpanded,
             () => HasCatalogInstallJobs);
@@ -545,6 +555,25 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public ObservableCollection<ClientContentItemViewModel> ContentItems => _contentItems;
 
+    public ObservableCollection<ClientContentItemViewModel> DashboardModItems => _dashboardModItems;
+
+    public string DashboardModsHeading => L(
+        "client.vm.dashboard.modsHeading",
+        DashboardModCountText);
+
+    public string DashboardModsStatusText => SelectedInstance is null
+        ? L("client.vm.content.noInstance")
+        : _dashboardModCount == 0
+            ? L("client.vm.dashboard.modsStatus.empty")
+            : L(
+                "client.vm.dashboard.modsStatus.preview",
+                Math.Min(_dashboardModCount, 5),
+                DashboardModCountText);
+
+    private string DashboardModCountText =>
+        _dashboardModCount.ToString("N0", LocalizationService.Current.Culture) +
+        (_dashboardModLimitReached ? "+" : string.Empty);
+
     public ObservableCollection<ClientContentDownloadProjectItemViewModel> ContentDownloadResults { get; } = [];
 
     public ObservableCollection<ClientContentDownloadVersionItemViewModel> ContentDownloadVersions { get; } = [];
@@ -586,6 +615,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public AsyncRelayCommand InitializeCommand { get; }
     public AsyncRelayCommand RefreshCatalogCommand { get; }
+    public RelayCommand OpenDashboardCommand { get; }
     public RelayCommand NewInstanceCommand { get; }
     public AsyncRelayCommand OpenCatalogCommand { get; }
     public RelayCommand CloseCatalogCommand { get; }
@@ -598,6 +628,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
     public AsyncRelayCommand OpenFtbFallbackCommand { get; }
     public RelayCommand OpenClientDiagnosticsFolderCommand { get; }
+    public RelayCommand ToggleCatalogInstallSidebarCommand { get; }
     public RelayCommand ToggleCatalogInstallQueueCommand { get; }
     public RelayCommand ClearCompletedCatalogInstallJobsCommand { get; }
     public RelayCommand CloseCreateCommand { get; }
@@ -783,10 +814,16 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             CloseCreateCommand.NotifyCanExecuteChanged();
             _contentRefreshCoordinator.CancelCurrent();
             _contentItems.ReplaceAll([]);
+            _dashboardModsRefreshCoordinator.CancelCurrent();
+            PublishDashboardMods([], totalCount: 0, limitReached: false);
             SelectedContentItem = null;
             if (value is not null)
             {
                 _ = RunGuardedAsync(RefreshContentAsync);
+                if (SelectedContentKind != MinecraftClientContentKind.Mod || ShowRecycleBin)
+                {
+                    _ = RunGuardedAsync(RefreshDashboardModsAsync);
+                }
             }
         }
     }
@@ -1147,6 +1184,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 OnPropertyChanged(nameof(CatalogInstallQueueToggleText));
             }
         }
+    }
+
+    public bool IsCatalogInstallSidebarVisible
+    {
+        get => _isCatalogInstallSidebarVisible;
+        private set => SetProperty(ref _isCatalogInstallSidebarVisible, value);
     }
 
     public bool IsCatalogInstallRunning
@@ -3670,6 +3713,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ProgressValue = 0d;
         CatalogInstallJobs.Insert(0, job);
         ActiveCatalogInstallJob = job;
+        IsCatalogInstallSidebarVisible = true;
         IsCatalogInstallQueueExpanded = true;
         IsCatalogInstallRunning = true;
         return job;
@@ -5025,6 +5069,17 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         IsSettingsPage = false;
         IsCatalogPage = false;
         IsCreatePage = false;
+    }
+
+    private void OpenDashboard()
+    {
+        if (IsSettingsPage)
+        {
+            CloseClientSettings();
+            return;
+        }
+
+        ShowSelectedInstance();
     }
 
     private async Task OpenClientSettingsAsync()
@@ -6384,6 +6439,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             _contentRefreshCoordinator.CancelCurrent();
             _contentItems.ReplaceAll([]);
+            _dashboardModsRefreshCoordinator.CancelCurrent();
+            PublishDashboardMods([], totalCount: 0, limitReached: false);
             SelectedContentItem = null;
             ContentStatusText = L("client.vm.content.noInstance");
             return;
@@ -6438,6 +6495,98 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             : result.Value.LimitReached
                 ? L("client.vm.content.refresh.limit", request.ModeText, _contentItems.Count)
                 : L("client.vm.content.refresh.loaded", request.ModeText, _contentItems.Count);
+
+        if (request.Kind == MinecraftClientContentKind.Mod && !request.ShowRecycleBin)
+        {
+            PublishDashboardMods(
+                result.Value.Items,
+                result.Value.Items.Count,
+                result.Value.LimitReached);
+        }
+    }
+
+    internal async Task RefreshDashboardModsAsync()
+    {
+        var instance = SelectedInstance;
+        if (instance is null)
+        {
+            _dashboardModsRefreshCoordinator.CancelCurrent();
+            PublishDashboardMods([], totalCount: 0, limitReached: false);
+            return;
+        }
+
+        var request = new DashboardModsRefreshRequest(instance.Id, instance.Model.DirectoryPath);
+        LatestOperationResult<DashboardModsProjection> result;
+        long requestGeneration = 0;
+        try
+        {
+            result = await _dashboardModsRefreshCoordinator.RunLatestAsync(
+                context =>
+                {
+                    requestGeneration = context.Generation;
+                    return ScanDashboardModsAsync(request, context.CancellationToken);
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception error) when (
+            error is not OutOfMemoryException &&
+            !_dashboardModsRefreshCoordinator.IsCurrent(requestGeneration))
+        {
+            return;
+        }
+
+        if (!_dashboardModsRefreshCoordinator.IsCurrent(result.Generation) ||
+            SelectedInstance?.Id != request.InstanceId)
+        {
+            return;
+        }
+
+        PublishDashboardMods(result.Value.Items, result.Value.TotalCount, result.Value.LimitReached);
+    }
+
+    private async Task<DashboardModsProjection> ScanDashboardModsAsync(
+        DashboardModsRefreshRequest request,
+        CancellationToken cancellationToken)
+        => await Task.Run(async () =>
+        {
+            await _contentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var manager = new MinecraftClientContentManager(request.InstanceDirectory);
+                var snapshot = await manager.ListAsync(
+                        MinecraftClientContentKind.Mod,
+                        includeDisabled: true,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                return new DashboardModsProjection(
+                    snapshot.Entries
+                        .Take(5)
+                        .Select(static entry => new ClientContentItemViewModel(entry))
+                        .ToArray(),
+                    snapshot.Entries.Count,
+                    snapshot.ItemLimitReached);
+            }
+            finally
+            {
+                _contentGate.Release();
+            }
+        }, cancellationToken).ConfigureAwait(false);
+
+    private void PublishDashboardMods(
+        IReadOnlyList<ClientContentItemViewModel> items,
+        int totalCount,
+        bool limitReached)
+    {
+        _dashboardModItems.ReplaceAll(items.Take(5));
+        _dashboardModCount = Math.Max(0, totalCount);
+        _dashboardModLimitReached = limitReached;
+        OnPropertyChanged(nameof(DashboardModsHeading));
+        OnPropertyChanged(nameof(DashboardModsStatusText));
     }
 
     private async Task<ContentRefreshProjection> ScanContentAsync(
@@ -7044,6 +7193,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(ContentDownloadResultsSummary));
         OnPropertyChanged(nameof(ContentDownloadQueueSummary));
         OnPropertyChanged(nameof(ContentDownloadQueueToggleText));
+        OnPropertyChanged(nameof(DashboardModsHeading));
+        OnPropertyChanged(nameof(DashboardModsStatusText));
 
         if (downloadProjects.Length > 0)
         {
@@ -7156,6 +7307,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _accountLoginCancellation?.Cancel();
         _skinTextureLoadCancellation?.Cancel();
         await _contentRefreshCoordinator.DisposeAsync();
+        await _dashboardModsRefreshCoordinator.DisposeAsync();
         Task[] observerTasks;
         lock (_runningSessionGate)
         {
@@ -7276,6 +7428,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private sealed record ContentRefreshProjection(
         IReadOnlyList<ClientContentItemViewModel> Items,
+        bool LimitReached);
+
+    private sealed record DashboardModsRefreshRequest(
+        Guid InstanceId,
+        string InstanceDirectory);
+
+    private sealed record DashboardModsProjection(
+        IReadOnlyList<ClientContentItemViewModel> Items,
+        int TotalCount,
         bool LimitReached);
 
     private sealed record CatalogInstallSettingsSnapshot(

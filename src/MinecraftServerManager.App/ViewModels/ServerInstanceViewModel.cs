@@ -166,6 +166,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
         ? L("server.version.unknown")
         : Model.MinecraftVersion;
     public string Subtitle => $"{CoreTypeText} · {MinecraftVersionDisplay}";
+    public string InspectorVersionSummary => $"{CoreTypeText} {MinecraftVersionDisplay}";
     public string DetailSubtitle => IsServiceManaged
         ? L("server.detail.serviceManaged", CoreTypeText, MinecraftVersionDisplay)
         : L("server.detail.local", CoreTypeText, MinecraftVersionDisplay, Model.DirectoryPath);
@@ -681,6 +682,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
         OnPropertyChanged(nameof(CoreTypeText));
         OnPropertyChanged(nameof(MinecraftVersionDisplay));
         OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(InspectorVersionSummary));
         OnPropertyChanged(nameof(DetailSubtitle));
         OnPropertyChanged(nameof(JavaExecutablePath));
         OnPropertyChanged(nameof(JavaDisplay));
@@ -1280,6 +1282,7 @@ public sealed class ServerInstanceViewModel : ObservableObject
         OnPropertyChanged(nameof(CoreTypeText));
         OnPropertyChanged(nameof(MinecraftVersionDisplay));
         OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(InspectorVersionSummary));
         OnPropertyChanged(nameof(DetailSubtitle));
         OnPropertyChanged(nameof(StateText));
         OnPropertyChanged(nameof(UptimeDisplay));

@@ -5,6 +5,7 @@ namespace MinecraftServerManager.Updater.Tests;
 public sealed class ProductSemanticVersionTests
 {
     [Theory]
+    [InlineData("1.2.9-beta.20", "1.2.9-beta.19")]
     [InlineData("1.2.9-beta.19", "1.2.9-beta.18")]
     [InlineData("1.2.9-beta.17", "1.2.9-beta.16")]
     [InlineData("1.2.9-beta.16", "1.2.9-beta.15")]
@@ -20,6 +21,7 @@ public sealed class ProductSemanticVersionTests
         => Assert.True(ProductSemanticVersion.Compare(target, active) > 0);
 
     [Theory]
+    [InlineData("1.2.9-beta.19", "1.2.9-beta.20")]
     [InlineData("1.2.9-beta.18", "1.2.9-beta.19")]
     [InlineData("1.2.9-beta.16", "1.2.9-beta.17")]
     [InlineData("1.2.9-beta.15", "1.2.9-beta.16")]

@@ -44,11 +44,50 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
 
     public string VersionSummary => $"{LoaderText} · {GameVersion}";
 
+    public string JavaDisplay => Model.JavaMajorVersion is { } majorVersion
+        ? $"Java {majorVersion}"
+        : L("client.vm.instance.javaAutomatic");
+
+    public string JavaExecutableDisplay => string.IsNullOrWhiteSpace(Model.JavaExecutablePath)
+        ? L("client.vm.instance.javaExecutableAutomatic")
+        : Model.JavaExecutablePath;
+
+    public string JvmArgumentsText => Model.JvmArguments is { Count: > 0 } arguments
+        ? string.Join(' ', arguments)
+        : L("client.vm.instance.jvmArgumentsDefault");
+
+    public string DirectoryPath => string.IsNullOrWhiteSpace(Model.DirectoryPath)
+        ? "—"
+        : Model.DirectoryPath;
+
+    public string CatalogProviderText => Model.CatalogProvider?.ToLowerInvariant() switch
+    {
+        "modrinth" => "Modrinth",
+        "curseforge" => "CurseForge",
+        "ftb" => "FTB",
+        { Length: > 0 } provider => provider,
+        _ => L("client.vm.instance.catalogLocal"),
+    };
+
+    public string CreatedAtText => Model.CreatedAtUtc == default
+        ? "—"
+        : Model.CreatedAtUtc.ToLocalTime().ToString("g", LocalizationService.Current.Culture);
+
     public string? IconImagePath => ResolveSafeOwnedIconPath(
         Model,
         Model.IconImagePath,
         Model.CatalogIconImagePath,
         Model.CatalogPreviewImagePath);
+
+    public string? HeroImagePath => ResolveSafeOwnedIconPath(
+        Model,
+        Model.CatalogPreviewImagePath,
+        Model.CatalogIconImagePath,
+        Model.IconImagePath);
+
+    public int MaximumMemoryMb => Model.MaximumMemoryMb;
+
+    public string MemoryRangeText => $"{Model.MinimumMemoryMb:N0}–{Model.MaximumMemoryMb:N0} MB";
 
     public bool UsesGrassBlockFallback =>
         Model.Loader == MinecraftClientLoader.Vanilla &&
@@ -121,7 +160,16 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
         OnPropertyChanged(nameof(GameVersion));
         OnPropertyChanged(nameof(LoaderText));
         OnPropertyChanged(nameof(VersionSummary));
+        OnPropertyChanged(nameof(JavaDisplay));
+        OnPropertyChanged(nameof(JavaExecutableDisplay));
+        OnPropertyChanged(nameof(JvmArgumentsText));
+        OnPropertyChanged(nameof(DirectoryPath));
+        OnPropertyChanged(nameof(CatalogProviderText));
+        OnPropertyChanged(nameof(CreatedAtText));
         OnPropertyChanged(nameof(IconImagePath));
+        OnPropertyChanged(nameof(HeroImagePath));
+        OnPropertyChanged(nameof(MaximumMemoryMb));
+        OnPropertyChanged(nameof(MemoryRangeText));
         OnPropertyChanged(nameof(UsesGrassBlockFallback));
         OnPropertyChanged(nameof(CatalogSourceBadgeText));
         OnPropertyChanged(nameof(PlayTimeText));
@@ -273,6 +321,12 @@ public sealed class ClientInstanceItemViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(LoaderText));
         OnPropertyChanged(nameof(VersionSummary));
+        OnPropertyChanged(nameof(JavaDisplay));
+        OnPropertyChanged(nameof(JavaExecutableDisplay));
+        OnPropertyChanged(nameof(JvmArgumentsText));
+        OnPropertyChanged(nameof(CatalogProviderText));
+        OnPropertyChanged(nameof(CreatedAtText));
+        OnPropertyChanged(nameof(MemoryRangeText));
         OnPropertyChanged(nameof(PlayTimeText));
         OnPropertyChanged(nameof(LastPlayedText));
         OnPropertyChanged(nameof(StatusText));

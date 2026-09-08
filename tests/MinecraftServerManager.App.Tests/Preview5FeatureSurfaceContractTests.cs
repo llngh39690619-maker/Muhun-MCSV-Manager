@@ -252,7 +252,7 @@ public sealed class Preview5FeatureSurfaceContractTests
         var remoteEntry = Assert.Single(
             mainWindow.Descendants(Presentation + "Button"),
             element => (string?)element.Attribute("Content")
-                       == "{DynamicResource L10n.main.remoteManagement}"
+                       == "{DynamicResource L10n.main.remote}"
                        && (string?)element.Attribute("Command")
                        == "{Binding OpenRemoteManagementCommand}");
         Assert.Equal(

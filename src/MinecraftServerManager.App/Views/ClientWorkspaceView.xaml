@@ -46,6 +46,23 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Margin" Value="0,0,0,12" />
         </Style>
+        <Style x:Key="ClientDashboardTabButton" TargetType="Button"
+               BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0,0,0,2" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="38" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+        </Style>
+        <Style x:Key="ClientHeroSecondaryButton" TargetType="Button"
+               BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Margin" Value="0,0,7,7" />
+        </Style>
         <Style x:Key="ClientFormLabel" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
             <Setter Property="Margin" Value="0,12,0,5" />
         </Style>
@@ -98,7 +115,7 @@
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
             <Grid Margin="18,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="260" />
+                    <ColumnDefinition Width="220" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
@@ -150,7 +167,7 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="270" />
+                <ColumnDefinition Width="202" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -162,18 +179,23 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <Grid Margin="4,2,4,10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="{DynamicResource L10n.client.instances.heading}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Instances.Count}" Style="{StaticResource MutedText}" />
-                            <TextBlock Text="{DynamicResource L10n.client.instances.countSuffix}" Style="{StaticResource MutedText}" />
-                        </StackPanel>
-                    </Grid>
+                    <StackPanel Margin="0,8,0,0">
+                        <TextBlock Text="X MCSV" FontSize="22" FontWeight="SemiBold" Margin="10,0,0,18" />
+                        <Button Content="{DynamicResource L10n.client.launcher.nav.home}"
+                                Command="{Binding OpenDashboardCommand}" Height="44"
+                                HorizontalContentAlignment="Left" Padding="16,8" Margin="0,0,0,8" />
+                        <Button Content="{DynamicResource L10n.client.launcher.nav.client}"
+                                Style="{StaticResource PrimaryButton}" Command="{Binding OpenDashboardCommand}" Height="46"
+                                HorizontalContentAlignment="Left" Padding="16,8" Margin="0,0,0,8" />
+                        <Button Content="{DynamicResource L10n.client.launcher.nav.downloads}"
+                                Command="{Binding ToggleCatalogInstallSidebarCommand}" Height="44"
+                                HorizontalContentAlignment="Left" Padding="16,8" Margin="0,0,0,8" />
+                        <Button Content="{DynamicResource L10n.client.launcher.nav.settings}"
+                                Command="{Binding DataContext.OpenSettingsCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                Height="44" HorizontalContentAlignment="Left" Padding="16,8" />
+                    </StackPanel>
                     <ListBox Grid.Row="1" ItemsSource="{Binding Instances}" SelectedItem="{Binding SelectedInstance}"
+                             Visibility="Collapsed"
                              Background="Transparent" BorderThickness="0"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -256,6 +278,10 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <StackPanel Grid.Row="2" Margin="0,10,0,0">
+                        <Button Content="{DynamicResource L10n.client.action.create}"
+                                Command="{Binding NewInstanceCommand}" Style="{StaticResource PrimaryButton}"
+                                Margin="0,0,0,10"
+                                Visibility="{Binding HasSelectedInstance, Converter={StaticResource InverseBoolToVisibility}}" />
                         <StackPanel Visibility="{Binding HasBedrockShortcuts, Converter={StaticResource BoolToVisibility}}"
                                     Margin="0,0,0,10">
                             <TextBlock Text="{DynamicResource L10n.client.bedrock.shortcuts.heading}"
@@ -321,9 +347,6 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                         </StackPanel>
-                        <Button Content="{DynamicResource L10n.client.action.openCatalog}" Command="{Binding OpenCatalogCommand}" Margin="0,0,0,8" />
-                        <Button Content="{DynamicResource L10n.client.action.create}" Style="{StaticResource PrimaryButton}"
-                                Command="{Binding NewInstanceCommand}" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -968,78 +991,692 @@
 
                 <ScrollViewer Visibility="{Binding IsDashboardPage, Converter={StaticResource BoolToVisibility}}"
                               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="26" HorizontalAlignment="Stretch">
-                        <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14">
+                    <StackPanel Margin="20" HorizontalAlignment="Stretch">
+                        <Border x:Name="ClientLauncherHero" Margin="0,0,0,12" Padding="18"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="13" ClipToBounds="True" MinHeight="226">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#273C39" Offset="0" />
+                                    <GradientStop Color="#171D24" Offset="0.52" />
+                                    <GradientStop Color="#11161D" Offset="1" />
+                                </LinearGradientBrush>
+                            </Border.Background>
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock Text="{Binding SelectedInstance.Name}" FontSize="28" FontWeight="SemiBold" />
-                                    <TextBlock Text="{Binding SelectedInstance.VersionSummary}" Style="{StaticResource MutedText}" FontSize="14" Margin="0,4,0,0" />
-                                    <WrapPanel Margin="0,13,0,0">
-                                        <TextBlock Text="{DynamicResource L10n.client.dashboard.playTime}" Style="{StaticResource MutedText}" Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding SelectedInstance.PlayTimeText}" Margin="0,0,22,0" />
-                                        <TextBlock Text="{DynamicResource L10n.client.dashboard.lastPlayed}" Style="{StaticResource MutedText}" Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding SelectedInstance.LastPlayedText}" />
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="174" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="248" />
+                                </Grid.ColumnDefinitions>
+                                <Image Grid.ColumnSpan="3" infra:LocalImageThumbnail.SourcePath="{Binding SelectedInstance.HeroImagePath}"
+                                       infra:LocalImageThumbnail.DecodePixelWidth="640"
+                                       infra:LocalImageThumbnail.DecodePixelHeight="640"
+                                       Width="520" Height="190" HorizontalAlignment="Right" Stretch="UniformToFill"
+                                       Opacity="0.08" RenderOptions.BitmapScalingMode="HighQuality" />
+
+                                <Grid Width="158" Height="158" VerticalAlignment="Center"
+                                      HorizontalAlignment="Left">
+                                    <Border Background="{DynamicResource WindowBrush}" CornerRadius="12" />
+                                    <Grid Visibility="{Binding SelectedInstance.UsesGrassBlockFallback, Converter={StaticResource BoolToVisibility}}">
+                                        <Border Background="#795238" CornerRadius="12" />
+                                        <Border Height="39" VerticalAlignment="Top" Background="#62A83E"
+                                                CornerRadius="12,12,3,3" />
+                                        <Rectangle Width="18" Height="25" Fill="#8A6543" Margin="18,44,0,0"
+                                                   HorizontalAlignment="Left" VerticalAlignment="Top" />
+                                        <Rectangle Width="22" Height="18" Fill="#63432F" Margin="0,0,18,18"
+                                                   HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                                    </Grid>
+                                    <Border Background="{DynamicResource WindowBrush}" CornerRadius="12"
+                                            Visibility="{Binding SelectedInstance.CatalogSourceBadgeText, Converter={StaticResource StringToVisibility}}">
+                                        <TextBlock Text="{Binding SelectedInstance.CatalogSourceBadgeText}"
+                                                   Foreground="{DynamicResource AccentBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   FontSize="34" FontWeight="Bold" />
+                                    </Border>
+                                    <Image infra:LocalImageThumbnail.SourcePath="{Binding SelectedInstance.IconImagePath}"
+                                           infra:LocalImageThumbnail.DecodePixelWidth="320"
+                                           infra:LocalImageThumbnail.DecodePixelHeight="320"
+                                           Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality" />
+                                    <Border BorderBrush="#55FFFFFF" BorderThickness="1" CornerRadius="12" />
+                                </Grid>
+
+                                <StackPanel Grid.Column="1" Margin="16,3,18,3" VerticalAlignment="Center">
+                                    <Border Background="{DynamicResource AccentDarkBrush}" CornerRadius="5"
+                                            Padding="8,3" HorizontalAlignment="Left" Margin="0,0,0,9">
+                                        <TextBlock Text="{Binding SelectedInstance.StatusText}"
+                                                   Foreground="{DynamicResource AccentBrush}" FontSize="11" />
+                                    </Border>
+                                    <TextBlock Text="{Binding SelectedInstance.Name}" FontSize="30" FontWeight="SemiBold"
+                                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="78" />
+                                    <WrapPanel Margin="0,16,0,0">
+                                        <StackPanel Margin="0,0,22,0">
+                                            <TextBlock Text="Minecraft" Style="{StaticResource MutedText}" FontSize="11" />
+                                            <TextBlock Text="{Binding SelectedInstance.GameVersion}" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                        <StackPanel Margin="0,0,22,0">
+                                            <TextBlock Text="Loader" Style="{StaticResource MutedText}" FontSize="11" />
+                                            <TextBlock Text="{Binding SelectedInstance.LoaderText}" Margin="0,3,0,0"
+                                                       MaxWidth="170" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="Java" Style="{StaticResource MutedText}" FontSize="11" />
+                                            <TextBlock Text="{Binding SelectedInstance.JavaDisplay}" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,14,0,0">
+                                        <StackPanel Margin="0,0,22,0">
+                                            <TextBlock Text="{DynamicResource L10n.client.dashboard.playTime}"
+                                                       Style="{StaticResource MutedText}" FontSize="11" />
+                                            <TextBlock Text="{Binding SelectedInstance.PlayTimeText}" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="{DynamicResource L10n.client.dashboard.lastPlayed}"
+                                                       Style="{StaticResource MutedText}" FontSize="11" />
+                                            <TextBlock Text="{Binding SelectedInstance.LastPlayedText}" Margin="0,3,0,0" />
+                                        </StackPanel>
                                     </WrapPanel>
                                 </StackPanel>
-                                <WrapPanel Grid.Column="1" VerticalAlignment="Center" Margin="18,0,0,0">
-                                    <Button Content="{DynamicResource L10n.client.action.delete}" Style="{StaticResource DangerButton}" Command="{Binding DeleteClientInstanceCommand}" Margin="0,0,8,0" />
-                                    <Button Content="{DynamicResource L10n.client.action.settings}" Command="{Binding OpenClientSettingsCommand}" Margin="0,0,8,0" />
-                                    <Button Content="{DynamicResource L10n.main.action.openFolder}" Command="{Binding OpenInstanceFolderCommand}" Margin="0,0,8,0" />
-                                    <Button Content="{DynamicResource L10n.common.stop}" Command="{Binding StopClientCommand}" Margin="0,0,8,0" />
-                                    <Button Content="{DynamicResource L10n.client.action.launch}" Style="{StaticResource PrimaryButton}" Command="{Binding LaunchCommand}" MinWidth="130" />
-                                </WrapPanel>
+
+                                <Border Grid.Column="2" Background="#B31B222B"
+                                        BorderBrush="#3FFFFFFF" BorderThickness="1"
+                                        CornerRadius="10" Padding="14" VerticalAlignment="Stretch">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{DynamicResource L10n.client.settings.memory}"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Grid.Column="1" Text="{Binding SelectedInstance.MemoryRangeText}"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                        </Grid>
+                                        <Slider Grid.Row="1" Minimum="512" Maximum="32768"
+                                                Value="{Binding SelectedInstance.MaximumMemoryMb, Mode=OneWay}"
+                                                IsHitTestVisible="False" Focusable="False" Margin="0,8,0,10"
+                                                AutomationProperties.Name="{DynamicResource L10n.client.settings.memory}" />
+                                        <Button Grid.Row="3" Content="{DynamicResource L10n.client.action.launch}"
+                                                Style="{StaticResource PrimaryButton}" Command="{Binding LaunchCommand}"
+                                                MinHeight="54" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" />
+                                        <WrapPanel Grid.Row="4" HorizontalAlignment="Center">
+                                            <Button Content="{DynamicResource L10n.client.action.settings}"
+                                                    Command="{Binding OpenClientSettingsCommand}"
+                                                    Style="{StaticResource ClientHeroSecondaryButton}" />
+                                            <Button Content="{DynamicResource L10n.main.action.openFolder}"
+                                                    Command="{Binding OpenInstanceFolderCommand}"
+                                                    Style="{StaticResource ClientHeroSecondaryButton}" />
+                                            <Button Content="{DynamicResource L10n.common.stop}"
+                                                    Command="{Binding StopClientCommand}"
+                                                    Style="{StaticResource ClientHeroSecondaryButton}" />
+                                        </WrapPanel>
+                                    </Grid>
+                                </Border>
                             </Grid>
                         </Border>
 
-                        <TextBlock Text="{DynamicResource L10n.client.content.heading}" FontSize="21" FontWeight="SemiBold" Margin="2,4,0,12" />
-                        <controls:ResponsiveWrapPanel MinItemWidth="245" HorizontalSpacing="12" VerticalSpacing="12" MaximumColumns="3">
-                            <Border Style="{StaticResource ClientCard}">
+                        <Border x:Name="ClientLauncherSectionTabs" Margin="0,0,0,15"
+                                Background="{DynamicResource PanelBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+                            <WrapPanel>
+                                <Border BorderBrush="{DynamicResource AccentBrush}" BorderThickness="0,0,0,2"
+                                        Padding="12,9" Margin="0,0,4,0">
+                                    <TextBlock Text="{DynamicResource L10n.client.launcher.tab.instances}"
+                                               Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold" />
+                                </Border>
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.modpacks}"
+                                        Command="{Binding OpenCatalogCommand}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.mods}"
+                                        Command="{Binding OpenContentDownloadCommand}"
+                                        CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.Mod}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.resourcePacks}"
+                                        Command="{Binding OpenContentDownloadCommand}"
+                                        CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ResourcePack}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.shaderPacks}"
+                                        Command="{Binding OpenContentDownloadCommand}"
+                                        CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ShaderPack}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.java}"
+                                        Command="{Binding OpenClientSettingsCommand}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.settings}"
+                                        Command="{Binding OpenClientSettingsCommand}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                                <Button Content="{DynamicResource L10n.client.launcher.tab.downloads}"
+                                        Command="{Binding ToggleCatalogInstallSidebarCommand}"
+                                        Style="{StaticResource ClientDashboardTabButton}" />
+                            </WrapPanel>
+                        </Border>
+
+                        <Grid x:Name="ClientLauncherDashboardBody">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                        <Grid x:Name="ClientLauncherInstanceShelf" Margin="0,0,0,14">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="2,0,2,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{DynamicResource L10n.client.launcher.tab.instances}"
+                                           FontSize="21" FontWeight="SemiBold" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Instances.Count}" Foreground="{DynamicResource AccentBrush}" />
+                                    <TextBlock Text="{DynamicResource L10n.client.instances.countSuffix}" Style="{StaticResource MutedText}" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid Grid.Row="1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="292" />
+                                </Grid.ColumnDefinitions>
+                                <ListBox x:Name="ClientLauncherInstanceList"
+                                         ItemsSource="{Binding Instances}" SelectedItem="{Binding SelectedInstance}"
+                                         Height="120" Background="Transparent" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                         VirtualizingPanel.IsVirtualizing="True"
+                                         VirtualizingPanel.VirtualizationMode="Recycling">
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <VirtualizingStackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Width" Value="390" />
+                                            <Setter Property="Height" Value="112" />
+                                            <Setter Property="Margin" Value="0,0,12,0" />
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border x:Name="LauncherInstanceCard"
+                                                                Background="{DynamicResource PanelRaisedBrush}"
+                                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                                BorderThickness="1" CornerRadius="10" Padding="12">
+                                                            <ContentPresenter />
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="LauncherInstanceCard" Property="BorderBrush"
+                                                                        Value="{DynamicResource AccentBrush}" />
+                                                            </Trigger>
+                                                            <Trigger Property="IsSelected" Value="True">
+                                                                <Setter TargetName="LauncherInstanceCard" Property="Background"
+                                                                        Value="{DynamicResource AccentDarkBrush}" />
+                                                                <Setter TargetName="LauncherInstanceCard" Property="BorderBrush"
+                                                                        Value="{DynamicResource AccentBrush}" />
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="88" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid Width="76" Height="76" VerticalAlignment="Center">
+                                                    <Border Background="{DynamicResource WindowBrush}" CornerRadius="8" />
+                                                    <Grid Visibility="{Binding UsesGrassBlockFallback, Converter={StaticResource BoolToVisibility}}">
+                                                        <Border Background="#795238" CornerRadius="8" />
+                                                        <Border Height="23" VerticalAlignment="Top" Background="#62A83E"
+                                                                CornerRadius="8,8,2,2" />
+                                                    </Grid>
+                                                    <Border Background="{DynamicResource WindowBrush}" CornerRadius="8"
+                                                            Visibility="{Binding CatalogSourceBadgeText, Converter={StaticResource StringToVisibility}}">
+                                                        <TextBlock Text="{Binding CatalogSourceBadgeText}"
+                                                                   Foreground="{DynamicResource AccentBrush}"
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   FontSize="18" FontWeight="Bold" />
+                                                    </Border>
+                                                    <Image infra:LocalImageThumbnail.SourcePath="{Binding IconImagePath}"
+                                                           infra:LocalImageThumbnail.DecodePixelWidth="192"
+                                                           infra:LocalImageThumbnail.DecodePixelHeight="192"
+                                                           Stretch="UniformToFill" />
+                                                </Grid>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="4,0,8,0">
+                                                    <TextBlock Text="{Binding Name}" FontSize="16" FontWeight="SemiBold"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding VersionSummary}" Style="{StaticResource MutedText}"
+                                                               Margin="0,5,0,0" TextTrimming="CharacterEllipsis" />
+                                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                        <Ellipse Width="8" Height="8" Fill="{DynamicResource AccentBrush}"
+                                                                 VerticalAlignment="Center" Margin="0,0,7,0" />
+                                                        <TextBlock Text="{Binding StatusText}"
+                                                                   Foreground="{DynamicResource AccentBrush}" FontSize="11" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <Button Grid.Column="2" Content="▶" Width="34" MinWidth="34" Height="32"
+                                                        Padding="3" VerticalAlignment="Center"
+                                                        ToolTip="{DynamicResource L10n.client.quickLaunch}"
+                                                        Visibility="{Binding CanQuickLaunch, Converter={StaticResource BoolToVisibility}}"
+                                                        Command="{Binding DataContext.QuickLaunchCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                                        CommandParameter="{Binding}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <Button Grid.Column="1" Height="112" Margin="10,0,0,0"
+                                        Command="{Binding NewInstanceCommand}" Background="Transparent"
+                                        BorderThickness="0" Padding="0">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Grid Background="Transparent">
+                                                <Rectangle Stroke="{DynamicResource BorderBrush}" StrokeThickness="1"
+                                                           StrokeDashArray="5,4" RadiusX="10" RadiusY="10" />
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock Text="＋" FontSize="34" HorizontalAlignment="Center" />
+                                        <TextBlock Text="{DynamicResource L10n.client.action.create}"
+                                                   FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                        <TextBlock Text="{DynamicResource L10n.client.create.description}"
+                                                   Style="{StaticResource MutedText}" FontSize="10"
+                                                   Width="240" TextAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </Grid>
+
+                        <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Disabled">
+                        <Grid x:Name="ClientLauncherOverviewCards" MinWidth="720">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.03*" />
+                                <ColumnDefinition Width="1.03*" />
+                                <ColumnDefinition Width="0.94*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border x:Name="ClientLauncherModsCard" Grid.Column="0"
+                                    Style="{StaticResource ClientCard}" Margin="0,0,6,0" Padding="15"
+                                    MinHeight="268">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="{Binding DashboardModsHeading}"
+                                               FontSize="17" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Row="1" Text="{Binding DashboardModsStatusText}"
+                                               Style="{StaticResource MutedText}" FontSize="11"
+                                               Margin="0,3,0,8" TextTrimming="CharacterEllipsis" />
+                                    <ListBox Grid.Row="2" ItemsSource="{Binding DashboardModItems}"
+                                             Background="Transparent" BorderThickness="0" Padding="0"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                             ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                             IsHitTestVisible="False">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                <Setter Property="Padding" Value="0" />
+                                                <Setter Property="Margin" Value="0" />
+                                                <Setter Property="Background" Value="Transparent" />
+                                                <Setter Property="BorderThickness" Value="0" />
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,5">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
+                                                               Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding DetailText}"
+                                                               Style="{StaticResource MutedText}" FontSize="11"
+                                                               MaxWidth="88" TextTrimming="CharacterEllipsis" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <Button Grid.Row="3" Content="{DynamicResource L10n.client.content.openMods}"
+                                            Command="{Binding OpenContentFolderCommand}" CommandParameter="mods"
+                                            Style="{StaticResource ClientContentActionButton}"
+                                            HorizontalAlignment="Stretch" Margin="0,9,0,0" />
+                                </Grid>
+                            </Border>
+
+                            <Border x:Name="ClientLauncherScreenshotCard" Grid.Column="1"
+                                    Style="{StaticResource ClientCard}" Margin="6,0" Padding="14"
+                                    MinHeight="268">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="{DynamicResource L10n.client.launcher.card.featuredScreenshot}"
+                                               FontSize="17" FontWeight="SemiBold" />
+                                    <Button Grid.Row="1" Margin="0,10,0,0" Padding="0"
+                                            Background="Transparent" BorderThickness="0"
+                                            Command="{Binding OpenContentFolderCommand}" CommandParameter="screenshots"
+                                            ToolTip="{DynamicResource L10n.client.content.openScreenshots}">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="ScreenshotFrame"
+                                                        Background="{DynamicResource WindowBrush}"
+                                                        BorderBrush="{DynamicResource BorderBrush}"
+                                                        BorderThickness="1" CornerRadius="8" ClipToBounds="True">
+                                                    <ContentPresenter />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ScreenshotFrame" Property="BorderBrush"
+                                                                Value="{DynamicResource AccentBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                        <Image infra:LocalImageThumbnail.SourcePath="{Binding SelectedInstance.HeroImagePath}"
+                                               infra:LocalImageThumbnail.DecodePixelWidth="640"
+                                               infra:LocalImageThumbnail.DecodePixelHeight="360"
+                                               MinHeight="185" Stretch="UniformToFill"
+                                               RenderOptions.BitmapScalingMode="HighQuality" />
+                                    </Button>
+                                    <StackPanel Grid.Row="2" Orientation="Horizontal"
+                                                HorizontalAlignment="Center" Margin="0,8,0,0"
+                                                IsHitTestVisible="False">
+                                        <Ellipse Width="8" Height="8" Fill="{DynamicResource AccentBrush}" />
+                                        <Ellipse Width="8" Height="8" Margin="8,0,0,0"
+                                                 Fill="{DynamicResource BorderBrush}" />
+                                        <Ellipse Width="8" Height="8" Margin="8,0,0,0"
+                                                 Fill="{DynamicResource BorderBrush}" />
+                                        <Ellipse Width="8" Height="8" Margin="8,0,0,0"
+                                                 Fill="{DynamicResource BorderBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <Border x:Name="ClientLauncherJavaMemoryCard" Grid.Column="2"
+                                    Style="{StaticResource ClientCard}" Margin="6,0,0,0" Padding="15"
+                                    MinHeight="268">
                                 <StackPanel>
-                                    <TextBlock Text="{DynamicResource L10n.client.content.mods}" FontSize="18" FontWeight="SemiBold" />
-                                    <TextBlock Text="{DynamicResource L10n.client.content.description.mods}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
-                                    <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openMods}" Command="{Binding OpenContentFolderCommand}"
-                                                CommandParameter="mods" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
-                                                Style="{StaticResource ClientContentPrimaryActionButton}"
-                                                Command="{Binding OpenContentDownloadCommand}"
-                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.Mod}" />
-                                    </WrapPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.launcher.card.javaMemory}"
+                                               FontSize="17" FontWeight="SemiBold" />
+                                    <Border Background="{DynamicResource WindowBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,10,0,7">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="37" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="☕" FontSize="19" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding SelectedInstance.JavaDisplay}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding SelectedInstance.JavaExecutableDisplay}"
+                                                           Style="{StaticResource MutedText}" FontSize="10" Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding SelectedInstance.JavaExecutableDisplay}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                    <Border Background="{DynamicResource WindowBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,7">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="37" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="▦" FontSize="19" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{DynamicResource L10n.client.settings.memory}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding SelectedInstance.MemoryRangeText}"
+                                                           Style="{StaticResource MutedText}" FontSize="11" Margin="0,3,0,0" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="2" Text="›" FontSize="22" VerticalAlignment="Center"
+                                                       Style="{StaticResource MutedText}" />
+                                        </Grid>
+                                    </Border>
+                                    <Button Command="{Binding OpenClientSettingsCommand}" Padding="0"
+                                            HorizontalContentAlignment="Stretch">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="37" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="⚙" FontSize="18" VerticalAlignment="Center"
+                                                       Foreground="{DynamicResource AccentBrush}" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{DynamicResource L10n.client.launcher.card.jvmArguments}"
+                                                           FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding SelectedInstance.JvmArgumentsText}"
+                                                           Style="{StaticResource MutedText}" FontSize="10" Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="2" Text="›" FontSize="22" VerticalAlignment="Center"
+                                                       Style="{StaticResource MutedText}" />
+                                        </Grid>
+                                    </Button>
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource ClientCard}">
-                                <StackPanel>
-                                    <TextBlock Text="{DynamicResource L10n.client.content.resourcePacks}" FontSize="18" FontWeight="SemiBold" />
-                                    <TextBlock Text="{DynamicResource L10n.client.content.description.resourcePacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
-                                    <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openResourcePacks}" Command="{Binding OpenContentFolderCommand}"
-                                                CommandParameter="resourcepacks" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
-                                                Style="{StaticResource ClientContentPrimaryActionButton}"
-                                                Command="{Binding OpenContentDownloadCommand}"
-                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ResourcePack}" />
-                                    </WrapPanel>
-                                </StackPanel>
-                            </Border>
-                            <Border Style="{StaticResource ClientCard}">
-                                <StackPanel>
-                                    <TextBlock Text="{DynamicResource L10n.client.content.shaderPacks}" FontSize="18" FontWeight="SemiBold" />
-                                    <TextBlock Text="{DynamicResource L10n.client.content.description.shaderPacks}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" />
-                                    <WrapPanel>
-                                        <Button Content="{DynamicResource L10n.client.content.openShaderPacks}" Command="{Binding OpenContentFolderCommand}"
-                                                CommandParameter="shaderpacks" Style="{StaticResource ClientContentActionButton}" Margin="0,0,8,0" />
-                                        <Button Content="{DynamicResource L10n.client.content.downloadInfo}"
-                                                Style="{StaticResource ClientContentPrimaryActionButton}"
-                                                Command="{Binding OpenContentDownloadCommand}"
-                                                CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ShaderPack}" />
-                                    </WrapPanel>
-                                </StackPanel>
-                            </Border>
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.saves}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.saves}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openSaves}" Command="{Binding OpenContentFolderCommand}" CommandParameter="saves" HorizontalAlignment="Left" /></StackPanel></Border>
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.screenshots}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.screenshots}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openScreenshots}" Command="{Binding OpenContentFolderCommand}" CommandParameter="screenshots" HorizontalAlignment="Left" /></StackPanel></Border>
-                            <Border Style="{StaticResource ClientCard}"><StackPanel><TextBlock Text="{DynamicResource L10n.client.content.logs}" FontSize="18" FontWeight="SemiBold" /><TextBlock Text="{DynamicResource L10n.client.content.description.logs}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,7,0,16" /><Button Content="{DynamicResource L10n.client.content.openLogs}" Command="{Binding OpenContentFolderCommand}" CommandParameter="logs" HorizontalAlignment="Left" /></StackPanel></Border>
-                        </controls:ResponsiveWrapPanel>
+
+                        </Grid>
+                        </ScrollViewer>
+                            </StackPanel>
+
+                            <StackPanel x:Name="ClientLauncherDownloadSidebar" Grid.Column="1"
+                                        Width="342" Margin="12,0,0,0"
+                                        Visibility="{Binding IsCatalogInstallSidebarVisible, Converter={StaticResource BoolToVisibility}}">
+                                <Border x:Name="CatalogInstallTray" Style="{StaticResource ClientCard}"
+                                        Padding="15" Margin="0,0,0,12">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="{DynamicResource L10n.client.content.center.jobs.heading}"
+                                                           FontSize="17" FontWeight="SemiBold" />
+                                                <TextBlock Text=" (" Style="{StaticResource MutedText}" Margin="5,0,0,0" />
+                                                <TextBlock Text="{Binding CatalogInstallJobs.Count}" Style="{StaticResource MutedText}" />
+                                                <TextBlock Text=")" Style="{StaticResource MutedText}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="›" Width="34" MinWidth="34" Height="30"
+                                                    Padding="3" FontSize="18"
+                                                    Command="{Binding ToggleCatalogInstallSidebarCommand}"
+                                                    ToolTip="{DynamicResource L10n.client.catalog.jobs.collapse}" />
+                                        </Grid>
+                                        <StackPanel Grid.Row="1" Margin="0,10,0,0">
+                                            <TextBlock Text="{Binding CatalogInstallQueueSummary}"
+                                                       Style="{StaticResource MutedText}" FontSize="11"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <ProgressBar Height="7" Margin="0,8,0,0" Minimum="0" Maximum="1"
+                                                         Value="{Binding CatalogInstallQueueProgressValue, Mode=OneWay}"
+                                                         IsIndeterminate="{Binding IsCatalogInstallQueueProgressIndeterminate}" />
+                                        </StackPanel>
+                                        <WrapPanel Grid.Row="2" Margin="0,10,0,3">
+                                            <Button Content="{Binding CatalogInstallQueueToggleText}"
+                                                    Command="{Binding ToggleCatalogInstallQueueCommand}"
+                                                    MinWidth="0" Padding="10,5" Margin="0,0,7,7" />
+                                            <Button Content="{DynamicResource L10n.common.cancel}"
+                                                    Command="{Binding CancelOperationCommand}"
+                                                    MinWidth="0" Padding="10,5" Margin="0,0,7,7"
+                                                    Visibility="{Binding IsCatalogInstallRunning, Converter={StaticResource BoolToVisibility}}" />
+                                            <Button Content="{DynamicResource L10n.client.catalog.jobs.clearCompleted}"
+                                                    Command="{Binding ClearCompletedCatalogInstallJobsCommand}"
+                                                    MinWidth="0" Padding="10,5" Margin="0,0,0,7" />
+                                        </WrapPanel>
+                                        <ListBox Grid.Row="3" ItemsSource="{Binding CatalogInstallJobs}"
+                                                 MaxHeight="224" Margin="0,3,0,0" Padding="0"
+                                                 Background="Transparent" BorderThickness="0"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                 Visibility="{Binding IsCatalogInstallQueueExpanded, Converter={StaticResource BoolToVisibility}}">
+                                            <ListBox.ItemContainerStyle>
+                                                <Style TargetType="ListBoxItem">
+                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                    <Setter Property="Padding" Value="0" />
+                                                    <Setter Property="Margin" Value="0" />
+                                                    <Setter Property="Background" Value="Transparent" />
+                                                    <Setter Property="BorderThickness" Value="0" />
+                                                </Style>
+                                            </ListBox.ItemContainerStyle>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="0,0,0,1" Padding="2,10">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="42" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <Grid Width="30" Height="30" VerticalAlignment="Top">
+                                                                <Border Background="#795238" CornerRadius="4" />
+                                                                <Border Height="9" VerticalAlignment="Top"
+                                                                        Background="#62A83E" CornerRadius="4,4,1,1" />
+                                                            </Grid>
+                                                            <Grid Grid.Column="1">
+                                                                <Grid.RowDefinitions>
+                                                                    <RowDefinition Height="Auto" />
+                                                                    <RowDefinition Height="Auto" />
+                                                                    <RowDefinition Height="Auto" />
+                                                                </Grid.RowDefinitions>
+                                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                                                                           TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Grid.Row="1" Text="{Binding StatusText}"
+                                                                           Style="{StaticResource MutedText}" FontSize="11"
+                                                                           Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+                                                                <ProgressBar Grid.Row="2" Height="7" Margin="0,8,0,0"
+                                                                             Minimum="0" Maximum="1"
+                                                                             Value="{Binding ProgressValue, Mode=OneWay}"
+                                                                             IsIndeterminate="{Binding IsProgressIndeterminate}" />
+                                                            </Grid>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </Grid>
+                                </Border>
+
+                                <Border x:Name="ClientLauncherInstanceInfoCard"
+                                        Style="{StaticResource ClientCard}" Padding="15">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{DynamicResource L10n.client.launcher.card.instanceInfo}"
+                                                       FontSize="17" FontWeight="SemiBold" />
+                                            <Button Grid.Column="1" Content="↗" Width="34" MinWidth="34" Height="30"
+                                                    Padding="3" Command="{Binding OpenInstanceFolderCommand}"
+                                                    ToolTip="{DynamicResource L10n.main.action.openFolder}" />
+                                        </Grid>
+                                        <StackPanel Grid.Row="1" Margin="0,8,0,0">
+                                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                                                    Padding="0,10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="30" />
+                                                        <ColumnDefinition Width="92" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="▣" Foreground="{DynamicResource AccentBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.launcher.card.location}"
+                                                               Style="{StaticResource MutedText}" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding SelectedInstance.DirectoryPath}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding SelectedInstance.DirectoryPath}" />
+                                                </Grid>
+                                            </Border>
+                                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                                                    Padding="0,10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="30" />
+                                                        <ColumnDefinition Width="92" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="◇" Foreground="{DynamicResource AccentBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.launcher.card.source}"
+                                                               Style="{StaticResource MutedText}" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding SelectedInstance.CatalogProviderText}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </Grid>
+                                            </Border>
+                                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                                                    Padding="0,10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="30" />
+                                                        <ColumnDefinition Width="92" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="□" Foreground="{DynamicResource AccentBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.launcher.card.created}"
+                                                               Style="{StaticResource MutedText}" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding SelectedInstance.CreatedAtText}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </Grid>
+                                            </Border>
+                                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                                                    Padding="0,10,0,0">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="30" />
+                                                        <ColumnDefinition Width="92" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="↻" Foreground="{DynamicResource AccentBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{DynamicResource L10n.client.dashboard.lastPlayed}"
+                                                               Style="{StaticResource MutedText}" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding SelectedInstance.LastPlayedText}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </Grid>
+                                            </Border>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
 
                         <Border Style="{StaticResource ClientCard}" Margin="0,14,0,0"
                                 Visibility="{Binding SelectedInstance.IsGameLogEnabled, Converter={StaticResource BoolToVisibility}}">
@@ -1146,6 +1783,10 @@
                                 </Grid>
                             </Grid>
                         </Border>
+
+                        <Button Content="{DynamicResource L10n.client.action.delete}" Style="{StaticResource DangerButton}"
+                                Command="{Binding DeleteClientInstanceCommand}" HorizontalAlignment="Right"
+                                Margin="0,14,0,0" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -1521,40 +2162,54 @@
             </Grid>
         </Border>
 
-        <Border x:Name="CatalogInstallTray" Grid.Row="2"
+        <Border x:Name="CatalogInstallBackgroundTray" Grid.Row="1" Panel.ZIndex="30"
+                Width="330" MaxHeight="300" Margin="0,420,12,12"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
                 Background="{DynamicResource PanelRaisedBrush}" BorderBrush="{DynamicResource AccentBrush}"
-                BorderThickness="0,1,0,0"
-                Visibility="{Binding HasCatalogInstallJobs, Converter={StaticResource BoolToVisibility}}">
+                BorderThickness="1" CornerRadius="12">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsDashboardPage}" Value="False" />
+                                <Condition Binding="{Binding HasCatalogInstallJobs}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Visible" />
+                        </MultiDataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <Grid Margin="14,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                <StackPanel Margin="14,12,14,10">
                     <StackPanel>
-                        <TextBlock Text="{DynamicResource L10n.client.catalog.jobs.heading}" FontWeight="SemiBold" />
+                        <TextBlock Text="{DynamicResource L10n.client.catalog.jobs.heading}"
+                                   FontSize="17" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding CatalogInstallQueueSummary}" Style="{StaticResource MutedText}"
                                    Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
                         <ProgressBar Height="6" Margin="0,7,0,0" Minimum="0" Maximum="1"
                                      Value="{Binding CatalogInstallQueueProgressValue, Mode=OneWay}"
                                      IsIndeterminate="{Binding IsCatalogInstallQueueProgressIndeterminate}" />
                     </StackPanel>
-                    <WrapPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+                    <WrapPanel Margin="0,10,0,0">
                         <Button Content="{DynamicResource L10n.common.cancel}" Command="{Binding CancelOperationCommand}"
-                                Margin="0,0,8,0"
+                                MinWidth="0" Padding="10,5" Margin="0,0,7,0"
                                 Visibility="{Binding IsCatalogInstallRunning, Converter={StaticResource BoolToVisibility}}" />
                         <Button Content="{Binding CatalogInstallQueueToggleText}"
-                                Command="{Binding ToggleCatalogInstallQueueCommand}" Margin="0,0,8,0" />
+                                Command="{Binding ToggleCatalogInstallQueueCommand}"
+                                MinWidth="0" Padding="10,5" Margin="0,0,7,0" />
                         <Button Content="{DynamicResource L10n.client.catalog.jobs.clearCompleted}"
-                                Command="{Binding ClearCompletedCatalogInstallJobsCommand}" />
+                                Command="{Binding ClearCompletedCatalogInstallJobsCommand}"
+                                MinWidth="0" Padding="10,5" />
                     </WrapPanel>
-                </Grid>
+                </StackPanel>
 
-                <Border Grid.Row="1" Margin="14,0,14,10" Padding="8" MaxHeight="260"
+                <Border Grid.Row="1" Margin="14,0,14,12" Padding="8" MaxHeight="200"
                         Background="{DynamicResource WindowBrush}" BorderBrush="{DynamicResource BorderBrush}"
                         BorderThickness="1" CornerRadius="8"
                         Visibility="{Binding IsCatalogInstallQueueExpanded, Converter={StaticResource BoolToVisibility}}">
@@ -1577,10 +2232,10 @@
                                         </Style>
                                     </Border.Style>
                                     <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="180" />
-                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
                                         <StackPanel>
                                             <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
                                                        TextTrimming="CharacterEllipsis" />
@@ -1605,8 +2260,8 @@
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
                                         </StackPanel>
-                                        <ProgressBar Grid.Column="1" Height="8" Margin="12,0,0,0"
-                                                     VerticalAlignment="Center" Minimum="0" Maximum="1"
+                                        <ProgressBar Grid.Row="1" Height="7" Margin="0,8,0,0"
+                                                     Minimum="0" Maximum="1"
                                                      Value="{Binding ProgressValue, Mode=OneWay}"
                                                      IsIndeterminate="{Binding IsProgressIndeterminate}" />
                                     </Grid>

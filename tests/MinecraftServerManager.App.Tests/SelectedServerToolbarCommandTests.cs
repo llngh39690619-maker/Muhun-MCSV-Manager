@@ -36,6 +36,39 @@ public sealed class SelectedServerToolbarCommandTests
     }
 
     [Fact]
+    public void ConsoleFirstInspector_UsesShortSummaryLocalizedSectionsAndOneTopRemoteEntry()
+    {
+        var document = XDocument.Load(GetAppSourcePath("MainWindow.xaml"));
+
+        Assert.DoesNotContain(
+            document.Descendants().SelectMany(element => element.Attributes()),
+            attribute => attribute.Value.Contains("SelectedServer.DetailSubtitle", StringComparison.Ordinal));
+        Assert.Equal(
+            2,
+            document.Descendants(Presentation + "Run").Count(run =>
+                (string?)run.Attribute("Text") == "{Binding SelectedServer.InspectorVersionSummary, Mode=OneWay}"));
+        Assert.Contains(
+            document.Descendants(Presentation + "TextBlock"),
+            element => (string?)element.Attribute("Text") ==
+                       "{DynamicResource L10n.main.serverInspector.actions}");
+
+        var information = Assert.Single(
+            document.Descendants(Presentation + "Expander"),
+            element => (string?)element.Attribute("Header") ==
+                       "{DynamicResource L10n.main.serverInspector.information}");
+        Assert.Equal("True", (string?)information.Attribute("IsExpanded"));
+
+        var remote = Assert.Single(
+            document.Descendants(Presentation + "Button"),
+            element => (string?)element.Attribute("Content") ==
+                       "{DynamicResource L10n.main.remote}");
+        Assert.Equal("{Binding OpenRemoteManagementCommand}", (string?)remote.Attribute("Command"));
+        Assert.DoesNotContain(
+            document.Descendants(Presentation + "Button"),
+            element => (string?)element.Attribute("Command") == "{Binding OpenDataFolderCommand}");
+    }
+
+    [Fact]
     public async Task SelectedLifecycleCommands_FollowSelectionAndEveryServerState()
     {
         using var temporary = new AppearanceThemeServiceTests.TestDirectory();

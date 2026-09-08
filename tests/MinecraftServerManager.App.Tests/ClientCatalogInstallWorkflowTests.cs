@@ -48,10 +48,17 @@ public sealed class ClientCatalogInstallWorkflowTests
         await using var viewModel = CreateViewModel(directory.Path);
         var (project, version) = CreateCatalogSelection();
 
+        Assert.True(viewModel.IsCatalogInstallSidebarVisible);
+        Assert.True(viewModel.ToggleCatalogInstallSidebarCommand.CanExecute(null));
+        Assert.False(viewModel.ToggleCatalogInstallQueueCommand.CanExecute(null));
+        viewModel.ToggleCatalogInstallSidebarCommand.Execute(null);
+        Assert.False(viewModel.IsCatalogInstallSidebarVisible);
+
         var completed = viewModel.StartCatalogInstallJob(project, version);
         completed.Report("download", "Downloading", 0.4d);
 
         Assert.True(viewModel.HasCatalogInstallJobs);
+        Assert.True(viewModel.IsCatalogInstallSidebarVisible);
         Assert.True(viewModel.IsCatalogInstallQueueExpanded);
         Assert.True(viewModel.IsCatalogInstallRunning);
         Assert.Same(completed, viewModel.ActiveCatalogInstallJob);
