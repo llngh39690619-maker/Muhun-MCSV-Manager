@@ -43,6 +43,9 @@ public partial class GeneralSettingsDialog : Window
         }
     }
 
+    private void OnActivated(object? sender, EventArgs e)
+        => _viewModel.CurseForgeCredentialSettings?.ImportAndRefresh();
+
     private async void OnCloseRequested(object? sender, EventArgs e)
         => await TryCloseAsync();
 

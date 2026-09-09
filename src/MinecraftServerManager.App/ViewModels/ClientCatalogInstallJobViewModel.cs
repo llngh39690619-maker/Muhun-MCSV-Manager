@@ -68,7 +68,9 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         private set => SetProperty(ref _artworkImagePath, value);
     }
 
-    public string DisplayName => $"{ProjectTitle} · {VersionName}";
+    public string DisplayName => VersionName.StartsWith(ProjectTitle, StringComparison.OrdinalIgnoreCase)
+        ? VersionName
+        : $"{ProjectTitle} · {VersionName}";
 
     public ObservableCollection<ClientCatalogInstallActivityItemViewModel> Activities { get; } = [];
 

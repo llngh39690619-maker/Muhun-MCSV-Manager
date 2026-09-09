@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:MinecraftServerManager.App.Controls"
              xmlns:infra="clr-namespace:MinecraftServerManager.App.Infrastructure"
+             xmlns:dialogs="clr-namespace:MinecraftServerManager.App.Dialogs"
              xmlns:clientContracts="clr-namespace:MinecraftServerManager.GameClient.Contracts;assembly=MinecraftServerManager.GameClient.Contracts"
              Background="Transparent"
              Foreground="{DynamicResource TextBrush}"
@@ -71,6 +72,10 @@
             <Setter Property="Padding" Value="12,8" />
             <Setter Property="Margin" Value="0,0,0,3" />
             <Style.Triggers>
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                </DataTrigger>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="{DynamicResource PanelRaisedBrush}" />
                     <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
@@ -517,7 +522,8 @@
                                     <TextBlock Text="{DynamicResource L10n.client.launcher.sidebar.contentDiscovery}"
                                                FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
                                     <Button Command="{Binding OpenCatalogCommand}"
-                                            Style="{StaticResource PrimaryButton}"
+                                            Style="{StaticResource ClientCatalogSidebarNavButton}"
+                                            Tag="{Binding IsModpackCatalogPage}"
                                             HorizontalContentAlignment="Left" Padding="14,8"
                                             Margin="0,0,0,5">
                                         <StackPanel Orientation="Horizontal">
@@ -527,6 +533,7 @@
                                     </Button>
                                     <Button Style="{StaticResource ClientCatalogSidebarNavButton}"
                                             Command="{Binding OpenContentDownloadCommand}"
+                                            Tag="{Binding IsModContentDownloadPage}"
                                             CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.Mod}">
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="✣" Width="28" FontFamily="Segoe UI Symbol" FontSize="16" />
@@ -535,6 +542,7 @@
                                     </Button>
                                     <Button Style="{StaticResource ClientCatalogSidebarNavButton}"
                                             Command="{Binding OpenContentDownloadCommand}"
+                                            Tag="{Binding IsResourcePackContentDownloadPage}"
                                             CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ResourcePack}">
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="▧" Width="28" FontFamily="Segoe UI Symbol" FontSize="16" />
@@ -543,6 +551,7 @@
                                     </Button>
                                     <Button Style="{StaticResource ClientCatalogSidebarNavButton}"
                                             Command="{Binding OpenContentDownloadCommand}"
+                                            Tag="{Binding IsShaderPackContentDownloadPage}"
                                             CommandParameter="{x:Static clientContracts:MinecraftClientContentKind.ShaderPack}">
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="☀" Width="28" FontFamily="Segoe UI Symbol" FontSize="16" />
@@ -579,14 +588,14 @@
                                         </StackPanel>
                                     </Button>
                                     <Button Style="{StaticResource ClientCatalogSidebarNavButton}"
-                                            Command="{Binding ToggleCatalogInstallQueueCommand}">
+                                            Command="{Binding ToggleDiscoveryDownloadQueueCommand}">
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="↓" Width="28" FontFamily="Segoe UI Symbol" FontSize="18" />
                                             <TextBlock Text="{DynamicResource L10n.client.launcher.tab.downloads}" />
                                             <Border Background="{DynamicResource PanelRaisedBrush}" CornerRadius="9"
                                                     Padding="6,1" Margin="8,0,0,0"
-                                                    Visibility="{Binding HasCatalogInstallJobs, Converter={StaticResource BoolToVisibility}}">
-                                                <TextBlock Text="{Binding CatalogInstallJobs.Count}" FontSize="10" />
+                                                    Visibility="{Binding HasDiscoveryDownloadJobs, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="{Binding DiscoveryDownloadJobCount}" FontSize="10" />
                                             </Border>
                                         </StackPanel>
                                     </Button>
@@ -811,23 +820,23 @@
                 </Grid>
 
                 <Grid x:Name="CatalogPageLayout"
-                      Visibility="{Binding IsCatalogPage, Converter={StaticResource BoolToVisibility}}">
+                      Visibility="{Binding IsModpackCatalogPage, Converter={StaticResource BoolToVisibility}}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <ScrollViewer x:Name="CatalogPageScrollViewer" Grid.Row="0"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <Grid x:Name="CatalogDiscoveryBody" Margin="14">
+                    <Grid x:Name="CatalogDiscoveryBody" Grid.Row="0" Margin="14">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="14" />
                                 <ColumnDefinition Width="356" />
                             </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.Column="0">
+                            <ScrollViewer x:Name="CatalogPageScrollViewer" Grid.Column="0"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
                                 <Border x:Name="CatalogDiscoveryFilters"
                                         Style="{StaticResource ClientCard}" Padding="12" Margin="0,0,0,12">
                                     <StackPanel>
@@ -836,7 +845,7 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="138" />
                                                 <ColumnDefinition Width="76" />
-                                                <ColumnDefinition Width="92" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBox Text="{Binding CatalogSearchText, UpdateSourceTrigger=PropertyChanged}"
                                                      MinHeight="38" Padding="12,7"
@@ -856,10 +865,11 @@
                                                 <ComboBox ItemsSource="{Binding CatalogResultLimits}"
                                                           SelectedItem="{Binding CatalogResultLimit}" />
                                             </StackPanel>
-                                            <Button Grid.Column="3" Content="{DynamicResource L10n.client.catalog.search}"
-                                                    Command="{Binding SearchCatalogCommand}"
-                                                    Style="{StaticResource PrimaryButton}" MinWidth="92"
-                                                    VerticalAlignment="Bottom" Margin="8,0,0,0" />
+                                             <Button x:Name="CatalogSearchButton" Grid.Column="3"
+                                                     Content="{DynamicResource L10n.client.catalog.search}"
+                                                     Command="{Binding SearchCatalogCommand}"
+                                                     Style="{StaticResource PrimaryButton}" MinWidth="100"
+                                                     VerticalAlignment="Bottom" Margin="8,0,0,0" />
                                         </Grid>
 
                                         <Grid Margin="0,9,0,0">
@@ -920,57 +930,32 @@
                                                 </Button.Style>
                                             </Button>
 
-                                            <controls:ResponsiveWrapPanel Grid.Column="4" Margin="10,0,0,0"
-                                                                           MinItemWidth="112" ItemHeight="48"
-                                                                           HorizontalSpacing="7" VerticalSpacing="7"
-                                                                           MaximumColumns="3">
-                                                <StackPanel>
+                                            <StackPanel Grid.Column="4" Margin="10,0,0,0"
+                                                        Orientation="Horizontal" HorizontalAlignment="Left">
+                                                <StackPanel x:Name="CatalogGameVersionFilter" Width="150" Margin="0,0,7,0">
                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}"
                                                                Style="{StaticResource ClientFormLabel}" Margin="0,0,0,3" FontSize="10" />
                                                     <ComboBox ItemsSource="{Binding CatalogGameVersions}"
                                                               SelectedItem="{Binding SelectedCatalogGameVersion}"
                                                               DisplayMemberPath="Name" IsTextSearchEnabled="True" />
                                                 </StackPanel>
-                                                <StackPanel>
+                                                <StackPanel x:Name="CatalogLoaderFilter" Width="150" Margin="0,0,7,0">
                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.loader}"
                                                                Style="{StaticResource ClientFormLabel}" Margin="0,0,0,3" FontSize="10" />
                                                     <ComboBox ItemsSource="{Binding CatalogLoaders}"
                                                               SelectedItem="{Binding SelectedCatalogLoader}"
                                                               DisplayMemberPath="Name" />
                                                 </StackPanel>
-                                                <StackPanel Visibility="{Binding ShowsCatalogSortFilter, Converter={StaticResource BoolToVisibility}}">
+                                                <StackPanel x:Name="CatalogSortFilter" Width="174"
+                                                            Visibility="{Binding ShowsCatalogSortFilter, Converter={StaticResource BoolToVisibility}}">
                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.sort}"
                                                                Style="{StaticResource ClientFormLabel}" Margin="0,0,0,3" FontSize="10" />
                                                     <ComboBox ItemsSource="{Binding CatalogSortOptions}"
                                                               SelectedItem="{Binding SelectedCatalogSort}"
                                                               DisplayMemberPath="Name" />
                                                 </StackPanel>
-                                            </controls:ResponsiveWrapPanel>
+                                            </StackPanel>
                                         </Grid>
-
-                                        <Border Margin="0,10,0,0" Padding="10"
-                                                Background="{DynamicResource PanelRaisedBrush}"
-                                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                                CornerRadius="8"
-                                                Visibility="{Binding IsCurseForgeCatalogSource, Converter={StaticResource BoolToVisibility}}">
-                                            <DockPanel LastChildFill="True">
-                                                <WrapPanel DockPanel.Dock="Right" Margin="12,0,0,0">
-                                                    <Button Content="{DynamicResource L10n.client.catalog.curseForge.editCredentialFile}"
-                                                            Command="{Binding OpenCurseForgeCredentialFileCommand}"
-                                                            Margin="0,0,7,0" />
-                                                    <Button Content="{DynamicResource L10n.client.catalog.curseForge.deleteCredential}"
-                                                            Command="{Binding DeleteCurseForgeCredentialCommand}" />
-                                                </WrapPanel>
-                                                <StackPanel VerticalAlignment="Center">
-                                                    <TextBlock Text="{Binding CurseForgeCredentialStatusText}"
-                                                               TextWrapping="Wrap"
-                                                               AutomationProperties.LiveSetting="Polite" />
-                                                    <TextBlock Text="{DynamicResource L10n.client.catalog.curseForge.fileHint}"
-                                                               Style="{StaticResource MutedText}" FontSize="9"
-                                                               Margin="0,3,0,0" TextWrapping="Wrap" />
-                                                </StackPanel>
-                                            </DockPanel>
-                                        </Border>
 
                                         <Border Margin="0,10,0,0" Padding="10" CornerRadius="8"
                                                 Background="{DynamicResource PanelRaisedBrush}"
@@ -1097,7 +1082,8 @@
                                                                 <TextBlock Text="{Binding Title}" FontSize="14"
                                                                            FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                                                 <Border Grid.Column="1" Background="{DynamicResource AccentDarkBrush}"
-                                                                        CornerRadius="8" Padding="6,2" Margin="7,0,0,0">
+                                                                        CornerRadius="8" Padding="6,2" Margin="7,0,0,0"
+                                                                        Visibility="{Binding HasGameVersionText, Converter={StaticResource BoolToVisibility}}">
                                                                     <TextBlock Text="{Binding GameVersionText}" FontSize="8"
                                                                                FontWeight="SemiBold" />
                                                                 </Border>
@@ -1171,6 +1157,7 @@
                                     </Grid>
                                 </Border>
                             </StackPanel>
+                            </ScrollViewer>
 
                             <Border x:Name="CatalogDiscoveryEmptyDetail"
                                     Grid.Column="2" Style="{StaticResource ClientCard}" Padding="18"
@@ -1192,8 +1179,11 @@
 
                             <Border x:Name="CatalogDiscoveryDetailPanel"
                                     Grid.Column="2" Style="{StaticResource ClientCard}" Padding="0"
-                                    VerticalAlignment="Top" ClipToBounds="True"
+                                    VerticalAlignment="Stretch" ClipToBounds="True"
                                     Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              Padding="0,0,0,70">
                                 <StackPanel>
                                     <Grid>
                                         <Border Height="188" Background="{DynamicResource WindowBrush}"
@@ -1240,58 +1230,46 @@
                                             <StackPanel>
                                                 <TextBlock Text="{DynamicResource L10n.client.catalog.availableVersions}"
                                                            Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
-                                                <ComboBox ItemsSource="{Binding CatalogVersions}"
-                                                          SelectedItem="{Binding SelectedCatalogVersion}"
-                                                          DisplayMemberPath="Name" />
-                                                <Grid Margin="0,10,0,0">
+                                                 <ComboBox ItemsSource="{Binding CatalogVersions}"
+                                                           SelectedItem="{Binding SelectedCatalogVersion}"
+                                                           DisplayMemberPath="Name" />
+                                                 <Grid Margin="0,10,0,0">
+                                                     <Grid.ColumnDefinitions>
+                                                         <ColumnDefinition Width="90" />
+                                                         <ColumnDefinition Width="*" />
+                                                     </Grid.ColumnDefinitions>
+                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.packVersion}"
+                                                                Style="{StaticResource MutedText}" />
+                                                     <TextBlock Grid.Column="1"
+                                                                Text="{Binding SelectedCatalogVersion.PackVersionDisplay}"
+                                                                TextWrapping="Wrap" />
+                                                 </Grid>
+                                                 <Grid Margin="0,7,0,0">
+                                                     <Grid.ColumnDefinitions>
+                                                         <ColumnDefinition Width="90" />
+                                                         <ColumnDefinition Width="*" />
+                                                     </Grid.ColumnDefinitions>
+                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}"
+                                                                Style="{StaticResource MutedText}" />
+                                                     <TextBlock Grid.Column="1"
+                                                                Text="{Binding SelectedCatalogVersion.GameVersionDisplay}"
+                                                                TextWrapping="Wrap" />
+                                                 </Grid>
+                                                 <Grid Margin="0,7,0,0">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="90" />
                                                         <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}"
-                                                               Style="{StaticResource MutedText}" />
-                                                    <TextBlock Grid.Column="1"
-                                                               Text="{Binding SelectedCatalogProject.GameVersionText}"
-                                                               TextWrapping="Wrap" />
-                                                </Grid>
-                                                <Grid Margin="0,7,0,0">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="90" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock Text="{DynamicResource L10n.client.catalog.loader}"
-                                                               Style="{StaticResource MutedText}" />
-                                                    <TextBlock Grid.Column="1" Text="{Binding SelectedCatalogVersion.Name}"
-                                                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
-                                                </Grid>
+                                                     </Grid.ColumnDefinitions>
+                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.loader}"
+                                                                Style="{StaticResource MutedText}" />
+                                                     <TextBlock Grid.Column="1" Text="{Binding SelectedCatalogVersion.LoaderDisplay}"
+                                                                TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                                                 </Grid>
 
                                                 <StackPanel Visibility="{Binding ShowsCatalogInstallOptions, Converter={StaticResource BoolToVisibility}}">
                                                     <TextBlock Text="{DynamicResource L10n.client.catalog.instanceName}"
                                                                Style="{StaticResource ClientFormLabel}" />
                                                     <TextBox Text="{Binding CatalogInstanceName, UpdateSourceTrigger=PropertyChanged}" />
-                                                    <TextBlock Text="{DynamicResource L10n.client.settings.memory}"
-                                                               Style="{StaticResource ClientFormLabel}" Margin="0,10,0,4" />
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="82" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <Slider Minimum="512" Maximum="32768" TickFrequency="256"
-                                                                Value="{Binding MaximumMemoryMb}" Margin="0,0,9,0" />
-                                                        <TextBlock Grid.Column="1"
-                                                                   Text="{Binding MaximumMemoryMb, StringFormat={}{0:N0} MB}"
-                                                                   HorizontalAlignment="Right" VerticalAlignment="Center" />
-                                                    </Grid>
-                                                    <Grid Margin="0,2,0,0">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <TextBlock Text="{Binding MinimumMemoryMb, StringFormat={}{0:N0} MB}"
-                                                                   Style="{StaticResource MutedText}" FontSize="9" />
-                                                        <TextBlock Grid.Column="1" Text="32,768 MB"
-                                                                   Style="{StaticResource MutedText}" FontSize="9" />
-                                                    </Grid>
                                                     <CheckBox Content="{DynamicResource L10n.client.catalog.includeOptional}"
                                                               IsChecked="{Binding IncludeOptionalPackFiles}"
                                                               Margin="0,10,0,2"
@@ -1317,9 +1295,9 @@
                                                 Visibility="{Binding ShowsFtbInstallDiagnostic, Converter={StaticResource BoolToVisibility}}" />
                                     </StackPanel>
                                 </StackPanel>
+                                </ScrollViewer>
                             </Border>
                         </Grid>
-                    </ScrollViewer>
 
                     <Border x:Name="CatalogDetailActionBar" Grid.Row="0" Panel.ZIndex="10"
                             Width="356" HorizontalAlignment="Right" VerticalAlignment="Bottom"
@@ -1342,6 +1320,10 @@
                         </Grid>
                     </Border>
                 </Grid>
+
+                <dialogs:ClientContentDownloadCenterWindow
+                    x:Name="IntegratedContentDownloadPage"
+                    Visibility="{Binding IsIntegratedContentDownloadPage, Converter={StaticResource BoolToVisibility}}" />
 
                 <ScrollViewer Visibility="{Binding IsBedrockShortcutPage, Converter={StaticResource BoolToVisibility}}"
                               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -1476,32 +1458,11 @@
                                 <Border Grid.Column="2" Background="#B31B222B"
                                         BorderBrush="#3FFFFFFF" BorderThickness="1"
                                         CornerRadius="10" Padding="14" VerticalAlignment="Stretch">
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="*" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{DynamicResource L10n.client.settings.memory}"
-                                                       FontWeight="SemiBold" />
-                                            <TextBlock Grid.Column="1" Text="{Binding SelectedInstance.MemoryRangeText}"
-                                                       Foreground="{DynamicResource AccentBrush}" />
-                                        </Grid>
-                                        <Slider Grid.Row="1" Minimum="512" Maximum="32768"
-                                                Value="{Binding SelectedInstance.MaximumMemoryMb, Mode=OneWay}"
-                                                IsHitTestVisible="False" Focusable="False" Margin="0,8,0,10"
-                                                AutomationProperties.Name="{DynamicResource L10n.client.settings.memory}" />
-                                        <Button Grid.Row="3" Content="{DynamicResource L10n.client.action.launch}"
+                                    <StackPanel VerticalAlignment="Center">
+                                        <Button Content="{DynamicResource L10n.client.action.launch}"
                                                 Style="{StaticResource PrimaryButton}" Command="{Binding LaunchCommand}"
                                                 MinHeight="54" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,8" />
-                                        <WrapPanel Grid.Row="4" HorizontalAlignment="Center">
+                                        <WrapPanel HorizontalAlignment="Center">
                                             <Button Content="{DynamicResource L10n.client.action.settings}"
                                                     Command="{Binding OpenClientSettingsCommand}"
                                                     Style="{StaticResource ClientHeroSecondaryButton}" />
@@ -1512,7 +1473,7 @@
                                                     Command="{Binding StopClientCommand}"
                                                     Style="{StaticResource ClientHeroSecondaryButton}" />
                                         </WrapPanel>
-                                    </Grid>
+                                    </StackPanel>
                                 </Border>
                             </Grid>
                         </Border>
@@ -2575,12 +2536,13 @@
                 <Style TargetType="Border">
                     <Setter Property="Visibility" Value="Collapsed" />
                     <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsCatalogPage}" Value="True">
+                        <DataTrigger Binding="{Binding IsModpackCatalogPage}" Value="True">
                             <Setter Property="Visibility" Value="Visible" />
                         </DataTrigger>
                         <MultiDataTrigger>
                             <MultiDataTrigger.Conditions>
                                 <Condition Binding="{Binding IsDashboardPage}" Value="False" />
+                                <Condition Binding="{Binding IsIntegratedContentDownloadPage}" Value="False" />
                                 <Condition Binding="{Binding HasCatalogInstallJobs}" Value="True" />
                             </MultiDataTrigger.Conditions>
                             <Setter Property="Visibility" Value="Visible" />

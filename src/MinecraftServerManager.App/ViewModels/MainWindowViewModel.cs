@@ -177,7 +177,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
     private Task _lastAutomaticMemoryRecommendation = Task.CompletedTask;
     private Task _lastAddonScan = Task.CompletedTask;
     private BackgroundJobsWindow? _backgroundJobsWindow;
-    private ClientContentDownloadCenterWindow? _contentDownloadCenterWindow;
     private RemoteAccessDialog? _remoteAccessDialog;
     private RemoteWebConsoleDialog? _remoteWebConsoleDialog;
     private ProductServiceRemoteAccessDialog? _productServiceRemoteAccessDialog;
@@ -314,7 +313,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
             onlineModpackWorkflow: _onlineModpackWorkflow,
             curseForgeCredentialStore: _curseForgeCredentialStore,
             curseForgeCredentialFileImportService: _curseForgeCredentialFileImportService);
-        ClientWorkspace.ContentDownloadCenterRequested += OnContentDownloadCenterRequested;
         _settingsStore = settingsStore ?? new JsonSettingsStore<ManagerSettings>(_paths.SettingsFile);
         _appearanceThemeService = new AppearanceThemeService(_paths);
         _serverRemovalConfirmationService = serverRemovalConfirmationService;
@@ -2470,12 +2468,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
-        ClientWorkspace.ContentDownloadCenterRequested -= OnContentDownloadCenterRequested;
-        if (_contentDownloadCenterWindow is { IsLoaded: true } contentWindow)
-        {
-            contentWindow.Close();
-            _contentDownloadCenterWindow = null;
-        }
         await ClientWorkspace.DisposeAsync();
         LocalizationService.Current.CultureChanged -= OnLocalizationCultureChanged;
         Servers.CollectionChanged -= OnServersCollectionChanged;
@@ -3804,34 +3796,6 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
 
         window.Closed += (_, _) => _backgroundJobsWindow = null;
         _backgroundJobsWindow = window;
-        window.Show();
-    }
-
-    private void OnContentDownloadCenterRequested(object? sender, EventArgs e)
-    {
-        var owner = GetAccessibleMainWindow();
-        if (_contentDownloadCenterWindow is { IsLoaded: true } existing)
-        {
-            if (existing.WindowState == WindowState.Minimized)
-            {
-                existing.WindowState = WindowState.Normal;
-            }
-
-            PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);
-            return;
-        }
-
-        var window = new ClientContentDownloadCenterWindow
-        {
-            DataContext = ClientWorkspace,
-        };
-        if (owner is not null)
-        {
-            window.Owner = owner;
-        }
-
-        window.Closed += (_, _) => _contentDownloadCenterWindow = null;
-        _contentDownloadCenterWindow = window;
         window.Show();
     }
 
@@ -5215,7 +5179,11 @@ public sealed class MainWindowViewModel : ObservableObject, IAsyncDisposable
                 : () => OpenNotificationSettings(application),
             _productServiceController is null
                 ? null
-                : () => OpenProviderManagement(application));
+                : () => OpenProviderManagement(application),
+            curseForgeCredentialSettings: new CurseForgeCredentialSettingsViewModel(
+                _curseForgeCredentialStore,
+                _curseForgeCredentialFileImportService,
+                ClientWorkspace.ApplyCurseForgeCredentialState));
         var dialog = new GeneralSettingsDialog(editor)
         {
             Owner = application.MainWindow

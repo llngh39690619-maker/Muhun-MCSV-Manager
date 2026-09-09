@@ -135,6 +135,19 @@ public sealed class ClientCatalogInstallWorkflowTests
     }
 
     [Fact]
+    public void InstallJob_DoesNotRepeatAProjectTitleAlreadyInTheSemanticVersion()
+    {
+        var job = new ClientCatalogInstallJobViewModel(
+            Guid.NewGuid(),
+            "RLCraft",
+            "RLCraft v2.9.3 · MC 1.12.2 · Forge",
+            "CURSEFORGE",
+            "Queued");
+
+        Assert.Equal("RLCraft v2.9.3 · MC 1.12.2 · Forge", job.DisplayName);
+    }
+
+    [Fact]
     public void InstallJob_RefreshesArtworkWhenTheCacheCompletesAfterTheJobStarts()
     {
         var job = new ClientCatalogInstallJobViewModel(

@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -7,30 +6,13 @@ using MinecraftServerManager.App.Views;
 
 namespace MinecraftServerManager.App.Dialogs;
 
-public partial class ClientContentDownloadCenterWindow : Window
+public partial class ClientContentDownloadCenterWindow : UserControl
 {
     private const double LoadMoreThreshold = 280d;
-    private bool _closeCommandSynchronized;
 
     public ClientContentDownloadCenterWindow()
     {
         InitializeComponent();
-    }
-
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
-
-    private void OnWindowClosing(object? sender, CancelEventArgs e)
-    {
-        if (_closeCommandSynchronized)
-        {
-            return;
-        }
-
-        _closeCommandSynchronized = true;
-        if (Tag is ICommand command && command.CanExecute(null))
-        {
-            command.Execute(null);
-        }
     }
 
     private void OnResultsScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -70,9 +52,9 @@ public partial class ClientContentDownloadCenterWindow : Window
         object sender,
         SelectionChangedEventArgs e)
     {
-        // TabControl selects its first item while the window is being materialized, before
+        // TabControl selects its first item while the view is being materialized, before
         // the one-way IsSelected bindings restore the content kind requested by the card.
-        // Treat only selections made after the modeless window has loaded as user navigation.
+        // Treat only selections made after the embedded view has loaded as user navigation.
         if (!IsLoaded ||
             !ReferenceEquals(sender, ContentDownloadTabs) ||
             DataContext is not ClientWorkspaceViewModel workspace)

@@ -68,7 +68,9 @@ public sealed class ClientContentInstallJobViewModel : ObservableObject, IDispos
 
     public string VersionName { get; }
 
-    public string DisplayName => $"{ProjectTitle} · {VersionName}";
+    public string DisplayName => VersionName.StartsWith(ProjectTitle, StringComparison.OrdinalIgnoreCase)
+        ? VersionName
+        : $"{ProjectTitle} · {VersionName}";
 
     public CancellationToken CancellationToken => _cancellation.Token;
 

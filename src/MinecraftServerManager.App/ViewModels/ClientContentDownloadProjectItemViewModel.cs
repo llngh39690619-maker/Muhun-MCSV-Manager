@@ -74,10 +74,15 @@ public sealed class ClientContentDownloadProjectItemViewModel : ObservableObject
     {
         get
         {
+            if (Project.Kind is MinecraftClientContentKind.ResourcePack or MinecraftClientContentKind.ShaderPack)
+            {
+                return $"MC {GameVersionText}";
+            }
+
             var loaderText = string.Join(" / ", Loaders.Take(3));
             return string.IsNullOrWhiteSpace(loaderText)
-                ? $"Minecraft {GameVersionText}"
-                : $"Minecraft {GameVersionText} · {loaderText}";
+                ? $"MC {GameVersionText}"
+                : $"MC {GameVersionText} · {loaderText}";
         }
     }
 
@@ -148,11 +153,30 @@ public sealed record ClientContentDownloadSortChoice(
     ModrinthClientContentSort Sort,
     string DisplayName);
 
-public sealed class ClientContentDownloadVersionItemViewModel(
-    ModrinthClientContentVersion version)
+public sealed class ClientContentDownloadVersionItemViewModel
 {
-    public ModrinthClientContentVersion Version { get; } =
-        version ?? throw new ArgumentNullException(nameof(version));
+    private readonly string _targetGameVersion;
+    private readonly string? _preferredLoader;
+
+    public ClientContentDownloadVersionItemViewModel(
+        ModrinthClientContentVersion version,
+        string? projectTitle = null,
+        MinecraftClientContentKind kind = MinecraftClientContentKind.Mod,
+        string? targetGameVersion = null,
+        string? preferredLoader = null)
+    {
+        Version = version ?? throw new ArgumentNullException(nameof(version));
+        ProjectTitle = projectTitle;
+        Kind = kind;
+        _targetGameVersion = targetGameVersion?.Trim() ?? string.Empty;
+        _preferredLoader = preferredLoader;
+    }
+
+    public ModrinthClientContentVersion Version { get; }
+
+    public string? ProjectTitle { get; }
+
+    public MinecraftClientContentKind Kind { get; }
 
     public string VersionId => Version.VersionId;
 
@@ -160,9 +184,57 @@ public sealed class ClientContentDownloadVersionItemViewModel(
 
     public string VersionNumber => Version.VersionNumber;
 
-    public string DisplayName => string.Equals(Name, VersionNumber, StringComparison.Ordinal)
-        ? Name
-        : $"{Name} · {VersionNumber}";
+    public string ContentVersionDisplay
+    {
+        get
+        {
+            var fromName = ClientCatalogVersionDisplayFormatter.FormatPackVersion(
+                ProjectTitle,
+                Name,
+                versionNumber: null,
+                SelectedGameVersion);
+            if (string.IsNullOrWhiteSpace(ProjectTitle) ||
+                !string.Equals(fromName, ProjectTitle.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return fromName;
+            }
+
+            return ClientCatalogVersionDisplayFormatter.FormatPackVersion(
+                ProjectTitle,
+                VersionNumber,
+                versionNumber: null,
+                SelectedGameVersion);
+        }
+    }
+
+    public string GameVersionDisplay => $"MC {SelectedGameVersion}";
+
+    public string LoaderDisplay
+    {
+        get
+        {
+            if (Kind is not MinecraftClientContentKind.Mod)
+            {
+                return string.Empty;
+            }
+
+            return ClientCatalogVersionDisplayFormatter.FormatLoader(_preferredLoader)
+                   ?? Version.Loaders
+                       .Select(ClientCatalogVersionDisplayFormatter.FormatLoader)
+                       .FirstOrDefault(static loader => !string.IsNullOrWhiteSpace(loader))
+                   ?? LocalizationService.Current.Get("client.vm.loader.unknown");
+        }
+    }
+
+    public string DisplayName => string.Join(
+        " · ",
+        new[] { ContentVersionDisplay, GameVersionDisplay, LoaderDisplay }
+            .Where(static value => !string.IsNullOrWhiteSpace(value)));
+
+    private string SelectedGameVersion => !string.IsNullOrWhiteSpace(_targetGameVersion)
+        ? _targetGameVersion
+        : Version.GameVersions.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))
+          ?? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion");
 
     public string CompatibilityText
     {

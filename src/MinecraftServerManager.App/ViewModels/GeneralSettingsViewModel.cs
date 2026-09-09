@@ -95,7 +95,8 @@ public sealed class GeneralSettingsViewModel : ObservableObject
         Action? restorePreview = null,
         IProductUpdateClient? updateClient = null,
         Action? openNotificationSettings = null,
-        Action? openProviderManagement = null)
+        Action? openProviderManagement = null,
+        CurseForgeCredentialSettingsViewModel? curseForgeCredentialSettings = null)
         : this(
             currentUi,
             currentDefaults,
@@ -106,7 +107,8 @@ public sealed class GeneralSettingsViewModel : ObservableObject
             restorePreview,
             updateClient,
             openNotificationSettings,
-            openProviderManagement)
+            openProviderManagement,
+            curseForgeCredentialSettings)
     {
     }
 
@@ -120,7 +122,8 @@ public sealed class GeneralSettingsViewModel : ObservableObject
         Action? restorePreview = null,
         IProductUpdateClient? updateClient = null,
         Action? openNotificationSettings = null,
-        Action? openProviderManagement = null)
+        Action? openProviderManagement = null,
+        CurseForgeCredentialSettingsViewModel? curseForgeCredentialSettings = null)
     {
         ArgumentNullException.ThrowIfNull(currentUi);
         ArgumentNullException.ThrowIfNull(currentDefaults);
@@ -131,6 +134,7 @@ public sealed class GeneralSettingsViewModel : ObservableObject
         _updateClient = updateClient;
         _openNotificationSettings = openNotificationSettings;
         _openProviderManagement = openProviderManagement;
+        CurseForgeCredentialSettings = curseForgeCredentialSettings;
         _baselineUi = currentUi.Copy();
         _baselineDefaults = currentDefaults.Copy();
         _baselineClientDefaults = currentClientDefaults.Copy();
@@ -245,6 +249,8 @@ public sealed class GeneralSettingsViewModel : ObservableObject
     public IReadOnlyList<ThemePreset> Themes => _themes;
     public IReadOnlyList<WindowSizeChoice> WindowSizeOptions => _windowSizeOptions;
     public IReadOnlyList<LanguageChoice> Languages => _languages;
+    public CurseForgeCredentialSettingsViewModel? CurseForgeCredentialSettings { get; }
+    public bool HasCurseForgeCredentialSettings => CurseForgeCredentialSettings is not null;
     public int DefaultMemorySliderMaximumMb { get; }
     public IReadOnlyList<ClientMemoryModeChoice> ClientMemoryModes { get; private set; }
     public string SystemMemoryDisplay => L(
@@ -899,6 +905,7 @@ public sealed class GeneralSettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedClientMemoryMode));
         OnPropertyChanged(nameof(SystemMemoryDisplay));
         OnPropertyChanged(nameof(DefaultAllocatedMemoryDisplay));
+        CurseForgeCredentialSettings?.RefreshLocalization();
 
         if (_updateStatus is not null)
         {

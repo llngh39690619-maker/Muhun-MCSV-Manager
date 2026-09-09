@@ -44,7 +44,14 @@ public sealed class ConsoleDiagnosticOutputVisualTests
                 try
                 {
                     DrainDispatcher();
-                    var workspace = Assert.Single(VisualDescendants<TabControl>(window));
+                    var workspace = Assert.Single(
+                        VisualDescendants<TabControl>(window),
+                        candidate => candidate.Items
+                            .OfType<TabItem>()
+                            .Any(item => string.Equals(
+                                item.Tag as string,
+                                MainWindowViewModel.DiagnosticWorkspaceTabKey,
+                                StringComparison.Ordinal)));
                     var tabs = workspace.Items.Cast<TabItem>().ToDictionary(
                         item => Assert.IsType<string>(item.Tag),
                         StringComparer.Ordinal);

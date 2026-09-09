@@ -93,7 +93,8 @@ public sealed class ClientWorkspacePresentationTests
                 StringComparison.Ordinal));
 
         Assert.Contains("{Binding SelectedInstance.HeroImagePath}", hero.ToString(), StringComparison.Ordinal);
-        Assert.Contains("{Binding SelectedInstance.MaximumMemoryMb, Mode=OneWay}", hero.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("MaximumMemoryMb", hero.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("<Slider", hero.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding SelectedInstance.JavaDisplay}", hero.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding LaunchCommand}", hero.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding OpenCatalogCommand}", sectionTabs.ToString(), StringComparison.Ordinal);
@@ -151,7 +152,7 @@ public sealed class ClientWorkspacePresentationTests
     }
 
     [Fact]
-    public void ContentCards_OpenTheDownloadCenterOnTheirOwnTypedTab()
+    public void ContentCards_OpenTheIntegratedDiscoveryPageForTheirOwnType()
     {
         var document = XDocument.Load(TestRepositoryPaths.AppSource(
             "Views",
@@ -215,35 +216,30 @@ public sealed class ClientWorkspacePresentationTests
         var kindAssignment = openMethod.IndexOf(
             "ContentDownloadKind = kind;",
             StringComparison.Ordinal);
-        var windowRequest = openMethod.IndexOf(
-            "ContentDownloadCenterRequested?.Invoke",
+        var integratedPageOpen = openMethod.IndexOf(
+            "IsContentDownloadOpen = true;",
             StringComparison.Ordinal);
         Assert.True(kindAssignment >= 0);
-        Assert.True(windowRequest >= 0);
-        Assert.True(kindAssignment < windowRequest);
+        Assert.True(integratedPageOpen >= 0);
+        Assert.True(kindAssignment < integratedPageOpen);
+        Assert.Contains("IsCatalogPage = true;", openMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("ContentDownloadCenterRequested", openMethod, StringComparison.Ordinal);
         Assert.Contains(
             "parameter is MinecraftClientContentKind typedKind",
             workspaceSource,
             StringComparison.Ordinal);
 
+        var workspaceXaml = File.ReadAllText(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+        Assert.Contains("x:Name=\"IntegratedContentDownloadPage\"", workspaceXaml, StringComparison.Ordinal);
+        Assert.Contains("IsIntegratedContentDownloadPage", workspaceXaml, StringComparison.Ordinal);
+
         var mainWindowSource = File.ReadAllText(TestRepositoryPaths.AppSource(
             "ViewModels",
             "MainWindowViewModel.cs"));
-        var activateStart = mainWindowSource.IndexOf(
-            "private void OnContentDownloadCenterRequested",
-            StringComparison.Ordinal);
-        Assert.True(activateStart >= 0);
-        var activateEnd = mainWindowSource.IndexOf(
-            "private async Task StartSelectedAsync",
-            activateStart,
-            StringComparison.Ordinal);
-        Assert.True(activateEnd > activateStart);
-        var activateMethod = mainWindowSource[activateStart..activateEnd];
-        Assert.Contains(
-            "PrimaryDisplayWindowPlacement.ActivateWhenInteractive(existing);",
-            activateMethod,
-            StringComparison.Ordinal);
-        Assert.Contains("window.Show();", activateMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnContentDownloadCenterRequested", mainWindowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_contentDownloadCenterWindow", mainWindowSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -439,7 +435,7 @@ public sealed class ClientWorkspacePresentationTests
                 "CatalogInstallBackgroundTray",
                 StringComparison.Ordinal));
 
-        Assert.Equal("0", (string?)pageScrollViewer.Attribute("Grid.Row"));
+        Assert.Equal("0", (string?)pageScrollViewer.Attribute("Grid.Column"));
         Assert.Equal("0", (string?)actionBar.Attribute("Grid.Row"));
         Assert.Equal("356", (string?)actionBar.Attribute("Width"));
         Assert.Equal("Right", (string?)actionBar.Attribute("HorizontalAlignment"));
@@ -463,7 +459,11 @@ public sealed class ClientWorkspacePresentationTests
         Assert.Contains("{Binding CancelOperationCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding ClearCompletedCatalogInstallJobsCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains(
-            "Binding=\"{Binding IsCatalogPage}\" Value=\"True\"",
+            "Binding=\"{Binding IsModpackCatalogPage}\" Value=\"True\"",
+            installTray.ToString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Binding=\"{Binding IsIntegratedContentDownloadPage}\" Value=\"False\"",
             installTray.ToString(),
             StringComparison.Ordinal);
         Assert.Contains(

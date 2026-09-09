@@ -173,14 +173,14 @@ public sealed class ClientWorkspaceLocalizationTests
         {
             Assert.Equal("Minecraft 未知版本 · 未知載入器", project.Description);
             Assert.Equal("未知版本", project.GameVersionText);
-            Assert.Equal("Stable · Minecraft 未知版本 · 未知載入器", versionItem.Name);
+            Assert.Equal("Stable · MC 未知版本 · 未知載入器", versionItem.Name);
 
             LocalizationService.Current.SetCulture("en-US");
 
             Assert.Equal("Minecraft Unknown version · Unknown loader", project.Description);
             Assert.Equal(project.Description, project.FullDescription);
             Assert.Equal("Unknown version", project.GameVersionText);
-            Assert.Equal("Stable · Minecraft Unknown version · Unknown loader", versionItem.Name);
+            Assert.Equal("Stable · MC Unknown version · Unknown loader", versionItem.Name);
             Assert.Contains(nameof(ClientModpackProjectItemViewModel.Description), changedProperties);
             Assert.Contains(nameof(ClientModpackProjectItemViewModel.FullDescription), changedProperties);
             Assert.Contains(nameof(ClientModpackProjectItemViewModel.GameVersionText), changedProperties);

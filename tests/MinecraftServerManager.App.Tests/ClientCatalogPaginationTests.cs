@@ -225,13 +225,17 @@ public sealed class ClientCatalogPaginationTests
 
     private static ClientWorkspaceViewModel CreateViewModel(
         string root,
-        IModrinthClientModpackCatalog catalog) =>
-        new(
+        IModrinthClientModpackCatalog catalog)
+    {
+        var viewModel = new ClientWorkspaceViewModel(
             new ApplicationPaths(root),
             static () => new NewMinecraftClientDefaultsSettings(),
             releaseCatalog: null,
             loaderCatalogs: [],
             modrinthCatalog: catalog);
+        SetPrivateField(viewModel, "_catalogSourceId", "modrinth");
+        return viewModel;
+    }
 
     private static void AssertPagination(
         int totalHits,

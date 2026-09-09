@@ -31,7 +31,7 @@ public sealed class ClientContentDownloadProjectItemViewModelTests
         Assert.Equal("Real Project", item.Title);
         Assert.Equal("Real summary", item.Summary);
         Assert.Equal("1.21.1", item.GameVersionText);
-        Assert.Equal("Minecraft 1.21.1 · neoforge", item.CompatibilityDetailText);
+        Assert.Equal("MC 1.21.1 · neoforge", item.CompatibilityDetailText);
         Assert.Contains("Real Author", item.LocalizedAuthorText, StringComparison.Ordinal);
         Assert.Contains("1.3K", item.DownloadText, StringComparison.Ordinal);
         Assert.Contains("2026-09-01", item.UpdatedText, StringComparison.Ordinal);
@@ -55,6 +55,35 @@ public sealed class ClientContentDownloadProjectItemViewModelTests
         Assert.Contains(nameof(item.LocalizedAuthorText), changedProperties);
         Assert.Contains(nameof(item.DownloadText), changedProperties);
         Assert.Contains(nameof(item.UpdatedText), changedProperties);
+    }
+
+    [Theory]
+    [InlineData(MinecraftClientContentKind.ResourcePack)]
+    [InlineData(MinecraftClientContentKind.ShaderPack)]
+    public void NonModDiscoveryMetadata_NeverShowsLoader(
+        MinecraftClientContentKind kind)
+    {
+        var project = new ModrinthClientContentProject(
+            "project-id",
+            "project-slug",
+            kind,
+            "Visual Content",
+            "Summary",
+            "Author",
+            null,
+            ["1.21.1"],
+            ["fabric", "forge"],
+            42,
+            DateTimeOffset.UnixEpoch,
+            new Uri("https://modrinth.com/project/project-slug"));
+        var item = new ClientContentDownloadProjectItemViewModel(
+            project,
+            "42 downloads",
+            "1.21.1");
+
+        Assert.Equal("MC 1.21.1", item.CompatibilityDetailText);
+        Assert.DoesNotContain("Fabric", item.CompatibilityDetailText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Forge", item.CompatibilityDetailText, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ModrinthClientContentProject CreateProject(

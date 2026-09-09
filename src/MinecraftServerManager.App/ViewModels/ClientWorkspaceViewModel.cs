@@ -203,7 +203,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private Uri? _contentDownloadFallbackUri;
     private ClientInstanceSettingsEditorViewModel? _settingsEditor;
     private bool _isClientSettingsClosePromptOpen;
-    private string _catalogSourceId = "modrinth";
+    private string _catalogSourceId = "curseforge";
     private string _catalogSearchText = string.Empty;
     private ClientCatalogGameVersionChoice? _selectedCatalogGameVersion;
     private ClientCatalogLoaderChoice? _selectedCatalogLoader;
@@ -377,7 +377,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             () => IsBrowsableCatalogSource && !IsCatalogBusy);
         BrowseAllCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(BrowseAllCatalogAsync),
-            () => IsBrowsableCatalogSource && !IsCatalogBusy);
+            () => !IsCatalogBusy && !IsContentDownloadBusy);
         LoadMoreCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(() => LoadCatalogAsync(append: true)),
             () => (IsModrinthCatalogSource || IsCurseForgeCatalogSource) &&
@@ -527,6 +527,23 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ToggleContentDownloadQueueCommand = new RelayCommand(
             () => IsContentDownloadQueueExpanded = !IsContentDownloadQueueExpanded,
             () => HasContentDownloadJobs);
+        ToggleDiscoveryDownloadQueueCommand = new RelayCommand(() =>
+        {
+            if (IsIntegratedContentDownloadPage)
+            {
+                if (HasContentDownloadJobs)
+                {
+                    IsContentDownloadQueueExpanded = !IsContentDownloadQueueExpanded;
+                }
+
+                return;
+            }
+
+            if (HasCatalogInstallJobs)
+            {
+                IsCatalogInstallQueueExpanded = !IsCatalogInstallQueueExpanded;
+            }
+        });
         ClearCompletedContentDownloadJobsCommand = new RelayCommand(
             ClearCompletedContentDownloadJobs,
             () => HasCompletedContentDownloadJobs);
@@ -714,6 +731,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand OpenSelectedContentProjectPageCommand { get; }
     public RelayCommand OpenContentFallbackCommand { get; }
     public RelayCommand ToggleContentDownloadQueueCommand { get; }
+    public RelayCommand ToggleDiscoveryDownloadQueueCommand { get; }
     public RelayCommand ClearCompletedContentDownloadJobsCommand { get; }
     public RelayCommand SelectJavaEditionCommand { get; }
     public RelayCommand SelectBedrockEditionCommand { get; }
@@ -735,8 +753,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand CancelClientSettingsCloseCommand { get; }
     public RelayCommand ChooseClientIconCommand { get; }
     public AsyncRelayCommand ChooseClientJavaCommand { get; }
-
-    public event EventHandler? ContentDownloadCenterRequested;
 
     public MinecraftReleaseInfo? SelectedRelease
     {
@@ -1214,11 +1230,27 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _isCatalogPage, value))
             {
+                if (!value && IsContentDownloadOpen)
+                {
+                    CloseContentDownload();
+                }
+
                 OnPropertyChanged(nameof(IsDashboardPage));
                 OnPropertyChanged(nameof(IsBedrockShortcutPage));
+                OnPropertyChanged(nameof(IsModpackCatalogPage));
+                OnPropertyChanged(nameof(IsIntegratedContentDownloadPage));
+                OnPropertyChanged(nameof(IsModContentDownloadPage));
+                OnPropertyChanged(nameof(IsResourcePackContentDownloadPage));
+                OnPropertyChanged(nameof(IsShaderPackContentDownloadPage));
+                OnPropertyChanged(nameof(DiscoveryDownloadJobCount));
+                OnPropertyChanged(nameof(HasDiscoveryDownloadJobs));
             }
         }
     }
+
+    public bool IsModpackCatalogPage => IsCatalogPage && !IsContentDownloadOpen;
+
+    public bool IsIntegratedContentDownloadPage => IsCatalogPage && IsContentDownloadOpen;
 
     public bool IsCatalogDetailOpen
     {
@@ -1274,6 +1306,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     }
 
     public bool HasCatalogInstallJobs => CatalogInstallJobs.Count > 0;
+
+    public int DiscoveryDownloadJobCount => IsIntegratedContentDownloadPage
+        ? ContentDownloadJobs.Count
+        : CatalogInstallJobs.Count;
+
+    public bool HasDiscoveryDownloadJobs => DiscoveryDownloadJobCount > 0;
 
     public bool HasCompletedCatalogInstallJobs => CatalogInstallJobs.Any(job => job.IsTerminal);
 
@@ -2006,7 +2044,19 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public bool IsContentDownloadOpen
     {
         get => _isContentDownloadOpen;
-        private set => SetProperty(ref _isContentDownloadOpen, value);
+        private set
+        {
+            if (SetProperty(ref _isContentDownloadOpen, value))
+            {
+                OnPropertyChanged(nameof(IsModpackCatalogPage));
+                OnPropertyChanged(nameof(IsIntegratedContentDownloadPage));
+                OnPropertyChanged(nameof(IsModContentDownloadPage));
+                OnPropertyChanged(nameof(IsResourcePackContentDownloadPage));
+                OnPropertyChanged(nameof(IsShaderPackContentDownloadPage));
+                OnPropertyChanged(nameof(DiscoveryDownloadJobCount));
+                OnPropertyChanged(nameof(HasDiscoveryDownloadJobs));
+            }
+        }
     }
 
     public bool IsContentDownloadBusy
@@ -2019,6 +2069,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 SearchContentDownloadCommand.NotifyCanExecuteChanged();
                 LoadMoreContentDownloadCommand.NotifyCanExecuteChanged();
                 InstallContentDownloadCommand.NotifyCanExecuteChanged();
+                BrowseAllCatalogCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -2035,15 +2086,33 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public string ContentDownloadGameVersion => _contentDownloadTargetGameVersion;
 
-    public string ContentDownloadTargetSummary => string.IsNullOrWhiteSpace(_contentDownloadTargetInstanceName)
-        ? L("client.content.center.noTarget")
-        : L(
-            "client.content.center.target",
-            _contentDownloadTargetInstanceName,
-            _contentDownloadTargetGameVersion,
-            _contentDownloadTargetLoader == MinecraftClientLoader.Vanilla
-                ? L("client.vm.loader.vanilla")
-                : _contentDownloadTargetLoader.ToString());
+    public string ContentDownloadTargetSummary
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_contentDownloadTargetInstanceName))
+            {
+                return L("client.content.center.noTarget");
+            }
+
+            if (ContentDownloadKind is MinecraftClientContentKind.ResourcePack or
+                MinecraftClientContentKind.ShaderPack)
+            {
+                return L(
+                    "client.content.center.target.noLoader",
+                    _contentDownloadTargetInstanceName,
+                    _contentDownloadTargetGameVersion);
+            }
+
+            return L(
+                "client.content.center.target",
+                _contentDownloadTargetInstanceName,
+                _contentDownloadTargetGameVersion,
+                _contentDownloadTargetLoader == MinecraftClientLoader.Vanilla
+                    ? L("client.vm.loader.vanilla")
+                    : _contentDownloadTargetLoader.ToString());
+        }
+    }
 
     public bool IsModContentDownload =>
         ContentDownloadKind == MinecraftClientContentKind.Mod;
@@ -2053,6 +2122,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool IsShaderPackContentDownload =>
         ContentDownloadKind == MinecraftClientContentKind.ShaderPack;
+
+    public bool IsModContentDownloadPage =>
+        IsIntegratedContentDownloadPage && IsModContentDownload;
+
+    public bool IsResourcePackContentDownloadPage =>
+        IsIntegratedContentDownloadPage && IsResourcePackContentDownload;
+
+    public bool IsShaderPackContentDownloadPage =>
+        IsIntegratedContentDownloadPage && IsShaderPackContentDownload;
 
     public MinecraftClientContentKind ContentDownloadKind
     {
@@ -2064,8 +2142,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 OnPropertyChanged(nameof(IsModContentDownload));
                 OnPropertyChanged(nameof(IsResourcePackContentDownload));
                 OnPropertyChanged(nameof(IsShaderPackContentDownload));
+                OnPropertyChanged(nameof(IsModContentDownloadPage));
+                OnPropertyChanged(nameof(IsResourcePackContentDownloadPage));
+                OnPropertyChanged(nameof(IsShaderPackContentDownloadPage));
                 OnPropertyChanged(nameof(ContentDownloadHeading));
                 OnPropertyChanged(nameof(ContentDownloadDescription));
+                OnPropertyChanged(nameof(ContentDownloadVersionLabel));
+                OnPropertyChanged(nameof(ContentDownloadTargetSummary));
                 RefreshLocalizedContentDownloadCategories();
                 OnPropertyChanged(nameof(ContentDownloadCategories));
             }
@@ -2082,6 +2165,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public string ContentDownloadDescription =>
         L("client.content.download.description", _contentDownloadTargetGameVersion);
+
+    public string ContentDownloadVersionLabel => ContentDownloadKind switch
+    {
+        MinecraftClientContentKind.Mod => L("client.content.download.version.mod"),
+        MinecraftClientContentKind.ResourcePack => L("client.content.download.version.resourcePack"),
+        MinecraftClientContentKind.ShaderPack => L("client.content.download.version.shaderPack"),
+        _ => L("client.catalog.availableVersions"),
+    };
 
     public string ContentDownloadSearchText
     {
@@ -2657,6 +2748,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task OpenCatalogAsync()
     {
+        if (IsContentDownloadOpen)
+        {
+            CloseContentDownload();
+        }
+
         CloseCatalogDetails();
         IsCreatePage = false;
         IsSettingsPage = false;
@@ -2830,6 +2926,24 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    internal void ApplyCurseForgeCredentialState(bool hasCredential)
+    {
+        HasCurseForgeCredential = hasCredential;
+        if (!hasCredential)
+        {
+            CancelCatalogRequests();
+            ClearCatalogResults();
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
+            return;
+        }
+
+        CatalogStatusText = L("client.vm.catalog.curseForge.credentialReady");
+        if (IsModpackCatalogPage && IsCurseForgeCatalogSource && CatalogProjects.Count == 0)
+        {
+            _ = RunGuardedAsync(() => LoadCatalogAsync(append: false));
+        }
+    }
+
     private SecureString? AcquireCurseForgeCredential()
     {
         try
@@ -2852,8 +2966,30 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task BrowseAllCatalogAsync()
     {
-        if (!IsBrowsableCatalogSource || IsCatalogBusy)
+        if (IsCatalogBusy || IsContentDownloadBusy)
         {
+            return;
+        }
+
+        if (IsContentDownloadOpen)
+        {
+            CloseContentDownload();
+        }
+
+        IsCreatePage = false;
+        IsSettingsPage = false;
+        IsCatalogPage = true;
+        CloseCatalogDetails();
+
+        if (!IsBrowsableCatalogSource)
+        {
+            CatalogStatusText = GetUnavailableCatalogMessage(CatalogSourceId);
+            return;
+        }
+
+        if (IsCurseForgeCatalogSource && !EnsureCurseForgeCredentialAvailable())
+        {
+            CatalogStatusText = L("client.vm.catalog.curseForge.credentialRequired");
             return;
         }
 
@@ -3361,7 +3497,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 CatalogVersions.Clear();
                 foreach (var version in ftbProject.StableVersions)
                 {
-                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version));
+                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version, project.Title));
                 }
 
                 SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
@@ -3413,7 +3549,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                              (selectedLoader.Length == 0 ||
                               NormalizeCurseForgeLoaderName(version.Loader) == selectedLoader)))
                 {
-                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version));
+                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version, project.Title));
                 }
 
                 SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
@@ -3451,7 +3587,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             CatalogVersions.Clear();
             foreach (var version in versions)
             {
-                CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version));
+                CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version, project.Title));
             }
 
             SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
@@ -3513,9 +3649,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         var defaults = _getGlobalDefaults();
         var settings = new CatalogInstallSettingsSnapshot(
             CatalogInstanceName.Trim(),
-            MemoryMode,
-            MinimumMemoryMb,
-            MaximumMemoryMb,
+            defaults.MemoryMode,
+            defaults.MinimumMemoryMb,
+            defaults.MaximumMemoryMb,
             WindowWidth,
             WindowHeight,
             FullScreen,
@@ -3982,6 +4118,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         OnPropertyChanged(nameof(HasCatalogInstallJobs));
+        OnPropertyChanged(nameof(DiscoveryDownloadJobCount));
+        OnPropertyChanged(nameof(HasDiscoveryDownloadJobs));
         OnPropertyChanged(nameof(HasCompletedCatalogInstallJobs));
         OnPropertyChanged(nameof(CatalogInstallQueueSummary));
         OnPropertyChanged(nameof(CatalogInstallQueueProgressValue));
@@ -4087,6 +4225,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         OnPropertyChanged(nameof(HasContentDownloadJobs));
+        OnPropertyChanged(nameof(DiscoveryDownloadJobCount));
+        OnPropertyChanged(nameof(HasDiscoveryDownloadJobs));
         OnPropertyChanged(nameof(HasCompletedContentDownloadJobs));
         OnPropertyChanged(nameof(ContentDownloadQueueSummary));
         OnPropertyChanged(nameof(ContentDownloadQueueProgressValue));
@@ -5956,9 +6096,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                                           choice.Sort == ModrinthClientContentSort.Downloads)
                                       ?? ContentDownloadSortOptions.FirstOrDefault();
         ContentDownloadStatusText = L("client.vm.contentDownload.initial");
+        IsCreatePage = false;
+        IsSettingsPage = false;
+        IsCatalogPage = true;
         IsContentDownloadOpen = true;
         OnPropertyChanged(nameof(ContentDownloadDescription));
-        ContentDownloadCenterRequested?.Invoke(this, EventArgs.Empty);
         await LoadContentDownloadPageAsync(append: false);
     }
 
@@ -6399,7 +6541,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             ContentDownloadVersions.Clear();
             foreach (var version in versions)
             {
-                ContentDownloadVersions.Add(new ClientContentDownloadVersionItemViewModel(version));
+                ContentDownloadVersions.Add(new ClientContentDownloadVersionItemViewModel(
+                    version,
+                    project.Title,
+                    kind,
+                    gameVersion,
+                    loader?.ToString()));
             }
 
             SelectedContentDownloadVersion = ContentDownloadVersions.FirstOrDefault();
@@ -7518,6 +7665,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         OnPropertyChanged(nameof(SelectedBedrockChannel));
         OnPropertyChanged(nameof(ContentDownloadHeading));
         OnPropertyChanged(nameof(ContentDownloadDescription));
+        OnPropertyChanged(nameof(ContentDownloadVersionLabel));
         OnPropertyChanged(nameof(ContentDownloadTargetSummary));
         OnPropertyChanged(nameof(ContentDownloadResultsSummary));
         OnPropertyChanged(nameof(ContentDownloadQueueSummary));
@@ -7717,8 +7865,6 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             job.Dispose();
         }
-        ContentDownloadCenterRequested = null;
-
         if (_artworkCache is IDisposable disposableArtworkCache)
         {
             disposableArtworkCache.Dispose();

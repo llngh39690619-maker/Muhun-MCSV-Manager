@@ -1,16 +1,10 @@
-<Window x:Class="MinecraftServerManager.App.Dialogs.ClientContentDownloadCenterWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:controls="clr-namespace:MinecraftServerManager.App.Controls"
-        Title="{DynamicResource L10n.client.content.center.title}"
-        Width="1280" Height="720" MinWidth="1024" MinHeight="576"
-        WindowStartupLocation="CenterOwner"
-        ResizeMode="CanResizeWithGrip"
-        ShowInTaskbar="False"
-        Style="{StaticResource AppWindowStyle}"
-        Tag="{Binding CloseContentDownloadCommand}"
-        Closing="OnWindowClosing">
-    <Window.Resources>
+<UserControl x:Class="MinecraftServerManager.App.Dialogs.ClientContentDownloadCenterWindow"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:MinecraftServerManager.App.Controls"
+             Background="Transparent"
+             Foreground="{DynamicResource TextBrush}">
+    <UserControl.Resources>
         <Style x:Key="DownloadCenterPanel" TargetType="Border">
             <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
@@ -84,7 +78,7 @@
             <Setter Property="MinWidth" Value="142" />
             <Setter Property="Padding" Value="16,7" />
         </Style>
-    </Window.Resources>
+    </UserControl.Resources>
 
     <Grid x:Name="ContentDownloadCenterLayout" Background="{DynamicResource WindowBrush}">
         <Rectangle Fill="{DynamicResource WindowBackgroundImageBrush}" IsHitTestVisible="False" />
@@ -98,7 +92,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Grid x:Name="ContentDownloadHeader" Grid.Row="0">
+            <Grid x:Name="ContentDownloadHeader" Grid.Row="0" Visibility="Collapsed">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -151,7 +145,8 @@
                 </TabControl>
 
                 <Button Grid.Column="2" Content="{DynamicResource L10n.common.close}"
-                        Click="OnCloseClick" MinWidth="82" VerticalAlignment="Center" />
+                        Command="{Binding CloseContentDownloadCommand}"
+                        MinWidth="82" VerticalAlignment="Center" />
             </Grid>
 
             <Border x:Name="ContentDownloadToolbar" Grid.Row="1"
@@ -372,6 +367,40 @@
                                           SelectedItem="{Binding SelectedContentDownloadVersion}"
                                           DisplayMemberPath="DisplayName"
                                           MinHeight="38" FontSize="14" />
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="92" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding ContentDownloadVersionLabel}"
+                                               Style="{StaticResource MutedText}" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding SelectedContentDownloadVersion.ContentVersionDisplay}"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="92" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}"
+                                               Style="{StaticResource MutedText}" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding SelectedContentDownloadVersion.GameVersionDisplay}"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                                <Grid Margin="0,6,0,0"
+                                      Visibility="{Binding IsModContentDownload, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="92" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{DynamicResource L10n.client.catalog.loader}"
+                                               Style="{StaticResource MutedText}" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding SelectedContentDownloadVersion.LoaderDisplay}"
+                                               TextWrapping="Wrap" />
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -460,7 +489,7 @@
                                                            TextWrapping="Wrap" />
                                                 <Button Grid.Column="1"
                                                         Content="{DynamicResource L10n.client.content.download.openFallback}"
-                                                        Command="{Binding DataContext.OpenContentFallbackCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                        Command="{Binding DataContext.OpenContentFallbackCommand, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
                                                         CommandParameter="{Binding}" Margin="10,0,0,0" />
                                             </Grid>
                                         </Border>
@@ -593,4 +622,4 @@
             </Border>
         </Grid>
     </Grid>
-</Window>
+</UserControl>

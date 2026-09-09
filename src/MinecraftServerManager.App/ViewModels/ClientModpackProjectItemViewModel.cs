@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Text.RegularExpressions;
 using MinecraftServerManager.App.Infrastructure;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.GameClient;
@@ -168,6 +169,9 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
             ? L("client.vm.catalog.multiVersion")
             : L("client.vm.catalog.ftb.unknownGameVersion"));
 
+    public bool HasGameVersionText => GameVersions.Any(static version =>
+        !string.IsNullOrWhiteSpace(version));
+
     public string CategoryText => Categories.Count == 0
         ? L("client.vm.catalog.type")
         : string.Join(" · ", Categories.Take(3));
@@ -244,23 +248,31 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
 
 public sealed class ClientCatalogVersionItemViewModel : ObservableObject
 {
-    public ClientCatalogVersionItemViewModel(ModrinthClientModpackVersion version)
+    public ClientCatalogVersionItemViewModel(
+        ModrinthClientModpackVersion version,
+        string? projectTitle = null)
     {
         ModrinthVersion = version ?? throw new ArgumentNullException(nameof(version));
+        ProjectTitle = projectTitle;
         GameVersions = version.GameVersions;
         SubscribeToCultureChanges();
     }
 
-    public ClientCatalogVersionItemViewModel(FtbClientCatalogVersion version)
+    public ClientCatalogVersionItemViewModel(
+        FtbClientCatalogVersion version,
+        string? projectTitle = null)
     {
         FtbVersion = version ?? throw new ArgumentNullException(nameof(version));
+        ProjectTitle = projectTitle;
         GameVersions = string.IsNullOrWhiteSpace(version.GameVersion)
             ? []
             : [version.GameVersion];
         SubscribeToCultureChanges();
     }
 
-    public ClientCatalogVersionItemViewModel(OnlineModpackVersion version)
+    public ClientCatalogVersionItemViewModel(
+        OnlineModpackVersion version,
+        string? projectTitle = null)
     {
         ArgumentNullException.ThrowIfNull(version);
         if (version.Provider != OnlineModpackProvider.CurseForge)
@@ -271,6 +283,7 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
         }
 
         CurseForgeVersion = version;
+        ProjectTitle = projectTitle;
         GameVersions = string.IsNullOrWhiteSpace(version.MinecraftVersion)
             ? []
             : [version.MinecraftVersion];
@@ -283,40 +296,81 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
 
     public OnlineModpackVersion? CurseForgeVersion { get; }
 
-    public string Name
+    public string? ProjectTitle { get; }
+
+    public string PackVersionDisplay
     {
         get
         {
             if (ModrinthVersion is not null)
             {
-                return ModrinthVersion.Name;
+                return ClientCatalogVersionDisplayFormatter.FormatPackVersion(
+                    ProjectTitle,
+                    versionName: ModrinthVersion.Name,
+                    versionNumber: ModrinthVersion.VersionNumber,
+                    gameVersion: PreferredGameVersion);
             }
 
             if (CurseForgeVersion is { } curseForgeVersion)
             {
-                var minecraftVersion = string.IsNullOrWhiteSpace(curseForgeVersion.MinecraftVersion)
-                    ? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion")
-                    : curseForgeVersion.MinecraftVersion;
-                var curseForgeLoader = string.IsNullOrWhiteSpace(curseForgeVersion.Loader)
-                    ? LocalizationService.Current.Get("client.vm.loader.unknown")
-                    : curseForgeVersion.Loader;
-                return $"{curseForgeVersion.VersionName} · Minecraft {minecraftVersion} · {curseForgeLoader}";
+                return ClientCatalogVersionDisplayFormatter.FormatPackVersion(
+                    ProjectTitle,
+                    curseForgeVersion.VersionName,
+                    versionNumber: null,
+                    PreferredGameVersion);
             }
 
             var version = FtbVersion!;
-            var loader = string.IsNullOrWhiteSpace(version.LoaderName)
-                ? LocalizationService.Current.Get("client.vm.loader.unknown")
-                : string.IsNullOrWhiteSpace(version.LoaderVersion)
-                    ? version.LoaderName
-                    : $"{version.LoaderName} {version.LoaderVersion}";
-            var gameVersion = string.IsNullOrWhiteSpace(version.GameVersion)
-                ? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion")
-                : version.GameVersion;
-            return $"{version.Name} · Minecraft {gameVersion} · {loader}";
+            return ClientCatalogVersionDisplayFormatter.FormatPackVersion(
+                ProjectTitle,
+                version.Name,
+                versionNumber: null,
+                PreferredGameVersion);
         }
     }
 
+    public string GameVersionDisplay => $"MC {(
+        string.IsNullOrWhiteSpace(PreferredGameVersion)
+            ? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion")
+            : PreferredGameVersion)}";
+
+    public string LoaderDisplay => ClientCatalogVersionDisplayFormatter.FormatLoader(RawLoader)
+        ?? LocalizationService.Current.Get("client.vm.loader.unknown");
+
+    public string Name => string.Join(
+        " · ",
+        new[] { PackVersionDisplay, GameVersionDisplay, LoaderDisplay }
+            .Where(static value => !string.IsNullOrWhiteSpace(value)));
+
     public IReadOnlyList<string> GameVersions { get; }
+
+    private string? PreferredGameVersion => GameVersions.FirstOrDefault(static value =>
+        !string.IsNullOrWhiteSpace(value));
+
+    private string? RawLoader
+    {
+        get
+        {
+            if (ModrinthVersion is { } modrinthVersion)
+            {
+                return modrinthVersion.Loaders.FirstOrDefault(static value =>
+                           !string.IsNullOrWhiteSpace(value))
+                       ?? ClientCatalogVersionDisplayFormatter.InferLoader(
+                           $"{modrinthVersion.Name} {modrinthVersion.VersionNumber}");
+            }
+
+            if (CurseForgeVersion is { } curseForgeVersion)
+            {
+                return string.IsNullOrWhiteSpace(curseForgeVersion.Loader)
+                    ? ClientCatalogVersionDisplayFormatter.InferLoader(curseForgeVersion.VersionName)
+                    : curseForgeVersion.Loader;
+            }
+
+            return string.IsNullOrWhiteSpace(FtbVersion!.LoaderName)
+                ? ClientCatalogVersionDisplayFormatter.InferLoader(FtbVersion.Name)
+                : FtbVersion.LoaderName;
+        }
+    }
 
     private void SubscribeToCultureChanges() =>
         WeakEventManager<LocalizationService, EventArgs>.AddHandler(
@@ -324,8 +378,144 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
             nameof(LocalizationService.CultureChanged),
             OnCultureChanged);
 
-    private void OnCultureChanged(object? sender, EventArgs e) =>
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        OnPropertyChanged(nameof(PackVersionDisplay));
+        OnPropertyChanged(nameof(GameVersionDisplay));
+        OnPropertyChanged(nameof(LoaderDisplay));
         OnPropertyChanged(nameof(Name));
+    }
+}
+
+internal static partial class ClientCatalogVersionDisplayFormatter
+{
+    internal static string FormatPackVersion(
+        string? projectTitle,
+        string? versionName,
+        string? versionNumber,
+        string? gameVersion)
+    {
+        var title = NormalizeWhitespace(projectTitle);
+        var displayVersion = RemovePackageExtension(NormalizeWhitespace(versionName));
+        var fallbackVersion = RemovePackageExtension(NormalizeWhitespace(versionNumber));
+
+        displayVersion = RemovePhrase(displayVersion, title);
+        displayVersion = RemoveGameVersion(displayVersion, gameVersion);
+        displayVersion = KnownLoaderRegex().Replace(displayVersion, " ");
+        displayVersion = ReleaseLabelRegex().Replace(displayVersion, " ");
+        displayVersion = DanglingConnectorRegex().Replace(displayVersion, " ");
+        displayVersion = NormalizeSeparators(displayVersion);
+
+        if (string.IsNullOrWhiteSpace(displayVersion))
+        {
+            displayVersion = fallbackVersion;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fallbackVersion)
+            && !ContainsPhrase(displayVersion, fallbackVersion))
+        {
+            displayVersion = NormalizeSeparators($"{displayVersion} {fallbackVersion}");
+        }
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return string.IsNullOrWhiteSpace(displayVersion)
+                ? NormalizeWhitespace(versionName)
+                : displayVersion;
+        }
+
+        return string.IsNullOrWhiteSpace(displayVersion)
+            ? title
+            : $"{title} {displayVersion}";
+    }
+
+    internal static string? InferLoader(string? value)
+    {
+        var match = KnownLoaderRegex().Match(value ?? string.Empty);
+        return match.Success ? match.Value : null;
+    }
+
+    internal static string? FormatLoader(string? value)
+    {
+        var loader = InferLoader(value);
+        if (string.IsNullOrWhiteSpace(loader))
+        {
+            return null;
+        }
+
+        var collapsed = Regex.Replace(loader, "[-_\\s]", string.Empty);
+        return collapsed.ToLowerInvariant() switch
+        {
+            "neoforge" => "NeoForge",
+            "forge" => "Forge",
+            "fabric" => "Fabric",
+            "quilt" => "Quilt",
+            _ => null,
+        };
+    }
+
+    private static string RemovePackageExtension(string value) =>
+        PackageExtensionRegex().Replace(value, string.Empty).Trim();
+
+    private static string RemoveGameVersion(string value, string? gameVersion)
+    {
+        if (string.IsNullOrWhiteSpace(gameVersion))
+        {
+            return value;
+        }
+
+        var escapedVersion = Regex.Escape(gameVersion.Trim());
+        return Regex.Replace(
+            value,
+            $@"(?<![A-Za-z0-9])(?:(?:Minecraft|MC)\s*)?{escapedVersion}(?![A-Za-z0-9])",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static string RemovePhrase(string value, string phrase)
+    {
+        if (string.IsNullOrWhiteSpace(phrase))
+        {
+            return value;
+        }
+
+        return Regex.Replace(
+            value,
+            Regex.Escape(phrase),
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static bool ContainsPhrase(string value, string phrase) =>
+        value.Contains(phrase, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeWhitespace(string? value) =>
+        WhitespaceRegex().Replace(value?.Trim() ?? string.Empty, " ");
+
+    private static string NormalizeSeparators(string value)
+    {
+        var normalized = SeparatorRegex().Replace(value, " ");
+        normalized = WhitespaceRegex().Replace(normalized, " ");
+        return normalized.Trim(' ', '-', '–', '—', '|', '·', '_', '.', ',');
+    }
+
+    [GeneratedRegex(@"\.(?:zip|mrpack|jar)(?=$|[^A-Za-z0-9])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PackageExtensionRegex();
+
+    [GeneratedRegex(@"(?<![A-Za-z])(?:neo[-_\s]?forge|forge|fabric|quilt)(?![A-Za-z])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex KnownLoaderRegex();
+
+    [GeneratedRegex(@"(?<![A-Za-z])release(?![A-Za-z])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ReleaseLabelRegex();
+
+    [GeneratedRegex(@"\b(?:for|on)\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DanglingConnectorRegex();
+
+    [GeneratedRegex(@"\s*[-–—|·]+\s*")]
+    private static partial Regex SeparatorRegex();
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex WhitespaceRegex();
 }
 
 public sealed record ClientCatalogLoaderChoice(MinecraftClientLoader? Loader, string Name);

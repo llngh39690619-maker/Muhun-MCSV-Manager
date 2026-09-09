@@ -11,9 +11,14 @@ public sealed class ClientResponsiveLayoutContractTests
         var document = XDocument.Load(TestRepositoryPaths.AppSource(
             "Views",
             "ClientWorkspaceView.xaml"));
+        var embeddedDownloadDocument = XDocument.Load(TestRepositoryPaths.AppSource(
+            "Dialogs",
+            "ClientContentDownloadCenterWindow.xaml"));
         XNamespace controls = "clr-namespace:MinecraftServerManager.App.Controls";
 
-        var panels = document.Descendants(controls + "ResponsiveWrapPanel").ToArray();
+        var panels = document.Descendants(controls + "ResponsiveWrapPanel")
+            .Concat(embeddedDownloadDocument.Descendants(controls + "ResponsiveWrapPanel"))
+            .ToArray();
 
         Assert.Equal(3, panels.Length);
         Assert.All(panels, panel => Assert.NotNull(panel.Attribute("MinItemWidth")));
@@ -70,7 +75,14 @@ public sealed class ClientResponsiveLayoutContractTests
             "{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}",
             (string?)details.Attribute("Visibility"));
         Assert.Equal("2", (string?)details.Attribute("Grid.Column"));
-        Assert.Equal("Top", (string?)details.Attribute("VerticalAlignment"));
+        Assert.Equal("Stretch", (string?)details.Attribute("VerticalAlignment"));
+        var catalogScroll = Assert.Single(
+            body.Elements(presentation + "ScrollViewer"),
+            element => (string?)element.Attribute(xaml + "Name") == "CatalogPageScrollViewer");
+        Assert.Equal("0", (string?)catalogScroll.Attribute("Grid.Column"));
+        Assert.Contains(
+            details.Descendants(presentation + "ScrollViewer"),
+            element => (string?)element.Attribute("VerticalScrollBarVisibility") == "Auto");
         Assert.Contains(body, filters.Ancestors());
 
         Assert.Equal(
@@ -91,7 +103,9 @@ public sealed class ClientResponsiveLayoutContractTests
         Assert.Contains("{Binding OpenClientSettingsCommand}", navigationSource, StringComparison.Ordinal);
         Assert.Contains("{Binding OpenClientJavaSettingsCommand}", navigationSource, StringComparison.Ordinal);
         Assert.Contains("{Binding BrowseAllCatalogCommand}", navigationSource, StringComparison.Ordinal);
-        Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding ToggleDiscoveryDownloadQueueCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding DiscoveryDownloadJobCount}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding HasDiscoveryDownloadJobs", navigationSource, StringComparison.Ordinal);
         Assert.Empty(document.Descendants(presentation + "ColumnDefinition.Style"));
         var navigationHostSource = navigationHost.ToString();
         Assert.Contains("Property=\"Width\" Value=\"202\"", navigationHostSource, StringComparison.Ordinal);
@@ -103,6 +117,17 @@ public sealed class ClientResponsiveLayoutContractTests
             element => ((string?)element.Attribute("Text"))?.Contains(
                 "CatalogSearchText",
                 StringComparison.Ordinal) == true);
+        var searchButton = Assert.Single(
+            filters.Descendants(presentation + "Button"),
+            element => (string?)element.Attribute(xaml + "Name") == "CatalogSearchButton");
+        Assert.Equal("{Binding SearchCatalogCommand}", (string?)searchButton.Attribute("Command"));
+        Assert.Equal(
+            "Auto",
+            (string?)searchButton.Parent!
+                .Element(presentation + "Grid.ColumnDefinitions")!
+                .Elements(presentation + "ColumnDefinition")
+                .Last()
+                .Attribute("Width"));
         Assert.Equal(
             ["modrinth", "curseforge", "ftb"],
             filters.Descendants(presentation + "Button")
@@ -119,6 +144,14 @@ public sealed class ClientResponsiveLayoutContractTests
         Assert.Contains(
             filters.Descendants(presentation + "ComboBox"),
             element => (string?)element.Attribute("ItemsSource") == "{Binding CatalogSortOptions}");
+        Assert.Equal(
+            ["150", "150", "174"],
+            new[] { "CatalogGameVersionFilter", "CatalogLoaderFilter", "CatalogSortFilter" }
+                .Select(name => Assert.Single(
+                    filters.Descendants(presentation + "StackPanel"),
+                    element => (string?)element.Attribute(xaml + "Name") == name))
+                .Select(element => (string)element.Attribute("Width")!)
+                .ToArray());
 
         var resultList = Assert.Single(
             results.Descendants(presentation + "ListBox"),
@@ -134,9 +167,10 @@ public sealed class ClientResponsiveLayoutContractTests
         Assert.Contains(
             details.Descendants(presentation + "ComboBox"),
             element => (string?)element.Attribute("ItemsSource") == "{Binding CatalogVersions}");
-        Assert.Contains(
-            details.Descendants(presentation + "Slider"),
-            element => (string?)element.Attribute("Value") == "{Binding MaximumMemoryMb}");
+        Assert.Empty(details.Descendants(presentation + "Slider"));
+        Assert.Contains("SelectedCatalogVersion.PackVersionDisplay", details.ToString(), StringComparison.Ordinal);
+        Assert.Contains("SelectedCatalogVersion.GameVersionDisplay", details.ToString(), StringComparison.Ordinal);
+        Assert.Contains("SelectedCatalogVersion.LoaderDisplay", details.ToString(), StringComparison.Ordinal);
 
         var pagination = Assert.Single(
             results.Descendants(presentation + "StackPanel"),

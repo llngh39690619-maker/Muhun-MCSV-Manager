@@ -12,6 +12,22 @@ namespace MinecraftServerManager.App.Tests;
 public sealed class ClientCurseForgeCatalogTests
 {
     [Fact]
+    public async Task InitialCatalogSource_IsCurseForge()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: false);
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            new RecordingWorkflow(),
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing));
+
+        Assert.Equal("curseforge", viewModel.CatalogSourceId);
+        Assert.True(viewModel.IsCurseForgeCatalogSource);
+        Assert.False(viewModel.IsModrinthCatalogSource);
+    }
+
+    [Fact]
     public async Task SavedCredential_SearchesCurseForgeWithTheSelectedFiltersAndSort()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();
@@ -415,20 +431,24 @@ public sealed class ClientCurseForgeCatalogTests
     }
 
     [Fact]
-    public void CurseForgeCredentialUi_UsesASettingsFileWithoutAPasswordInput()
+    public void CurseForgeCredentialUi_LivesInGeneralSettingsWithoutAPasswordInput()
     {
-        var xaml = File.ReadAllText(
+        var workspaceXaml = File.ReadAllText(
             TestRepositoryPaths.AppSource("Views", "ClientWorkspaceView.xaml"));
+        var settingsXaml = File.ReadAllText(
+            TestRepositoryPaths.AppSource("Dialogs", "GeneralSettingsDialog.xaml"));
 
-        Assert.DoesNotContain("<PasswordBox", xaml, StringComparison.Ordinal);
-        Assert.DoesNotContain("CurseForgeApiKeyBox", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OpenCurseForgeCredentialFileCommand", workspaceXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeleteCurseForgeCredentialCommand", workspaceXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<PasswordBox", settingsXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("CurseForgeApiKeyBox", settingsXaml, StringComparison.Ordinal);
         Assert.Contains(
-            "Command=\"{Binding OpenCurseForgeCredentialFileCommand}\"",
-            xaml,
+            "Command=\"{Binding CurseForgeCredentialSettings.OpenCredentialFileCommand}\"",
+            settingsXaml,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Command=\"{Binding DeleteCurseForgeCredentialCommand}\"",
-            xaml,
+            "Command=\"{Binding CurseForgeCredentialSettings.DeleteCredentialCommand}\"",
+            settingsXaml,
             StringComparison.Ordinal);
     }
 

@@ -19,24 +19,26 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [Fact]
-    public void Window_IsAResizableSixteenByNineDarkModelessSurface()
+    public void DownloadCenter_IsAnEmbeddedMainWorkspaceSurface()
     {
         var document = LoadWindow();
-        var window = Assert.IsType<XElement>(document.Root);
+        var view = Assert.IsType<XElement>(document.Root);
 
-        Assert.Equal("1280", (string?)window.Attribute("Width"));
-        Assert.Equal("720", (string?)window.Attribute("Height"));
-        Assert.Equal("1024", (string?)window.Attribute("MinWidth"));
-        Assert.Equal("576", (string?)window.Attribute("MinHeight"));
-        Assert.Equal("CanResizeWithGrip", (string?)window.Attribute("ResizeMode"));
-        Assert.Equal("{StaticResource AppWindowStyle}", (string?)window.Attribute("Style"));
-        Assert.Equal("False", (string?)window.Attribute("ShowInTaskbar"));
-        Assert.Equal("{Binding CloseContentDownloadCommand}", (string?)window.Attribute("Tag"));
-        Assert.Equal("OnWindowClosing", (string?)window.Attribute("Closing"));
+        Assert.Equal(Presentation + "UserControl", view.Name);
+        Assert.Equal("Transparent", (string?)view.Attribute("Background"));
+        Assert.Null(view.Attribute("Closing"));
 
         var codeBehind = File.ReadAllText(WindowCodeBehindPath());
         Assert.DoesNotContain("ShowDialog", codeBehind, StringComparison.Ordinal);
-        Assert.DoesNotContain("static ClientContentDownloadCenterWindow", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("ClientContentDownloadCenterWindow : UserControl", codeBehind, StringComparison.Ordinal);
+
+        var workspace = File.ReadAllText(TestRepositoryPaths.AppSource("Views", "ClientWorkspaceView.xaml"));
+        Assert.Contains("x:Name=\"IntegratedContentDownloadPage\"", workspace, StringComparison.Ordinal);
+        Assert.Contains("IsIntegratedContentDownloadPage", workspace, StringComparison.Ordinal);
+
+        var mainViewModel = File.ReadAllText(TestRepositoryPaths.AppSource("ViewModels", "MainWindowViewModel.cs"));
+        Assert.DoesNotContain("ContentDownloadCenterRequested", mainViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("_contentDownloadCenterWindow", mainViewModel, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,9 +173,13 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 SetPrivateField(workspace, "_contentDownloadTargetInstanceId", Guid.NewGuid());
                 SetPrivateProperty(workspace, nameof(ClientWorkspaceViewModel.ContentDownloadKind), requestedKind);
 
-                var window = new ClientContentDownloadCenterWindow
+                var view = new ClientContentDownloadCenterWindow
                 {
                     DataContext = workspace,
+                };
+                var host = new Window
+                {
+                    Content = view,
                     WindowStartupLocation = WindowStartupLocation.Manual,
                     Left = -20_000,
                     Top = -20_000,
@@ -181,11 +187,11 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 };
                 try
                 {
-                    window.Show();
-                    window.UpdateLayout();
+                    host.Show();
+                    view.UpdateLayout();
 
-                    var tabs = Assert.IsType<TabControl>(window.FindName("ContentDownloadTabs"));
-                    Assert.True(window.IsLoaded);
+                    var tabs = Assert.IsType<TabControl>(view.FindName("ContentDownloadTabs"));
+                    Assert.True(view.IsLoaded);
                     Assert.Equal(requestedKind, workspace.ContentDownloadKind);
                     Assert.Equal(expectedTabIndex, tabs.SelectedIndex);
 
@@ -206,7 +212,7 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 }
                 finally
                 {
-                    window.Close();
+                    host.Close();
                 }
             });
         }
@@ -217,6 +223,51 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 await workspace.DisposeAsync();
             }
         }
+    }
+
+    [Theory]
+    [InlineData(MinecraftClientContentKind.ResourcePack)]
+    [InlineData(MinecraftClientContentKind.ShaderPack)]
+    public async Task NonModTargetSummary_OmitsTheInstanceLoader(
+        MinecraftClientContentKind kind)
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var paths = new ApplicationPaths(directory.Path);
+        paths.EnsureCreated();
+        var workspace = new ClientWorkspaceViewModel(
+            paths,
+            static () => new NewMinecraftClientDefaultsSettings());
+        try
+        {
+            SetPrivateField(workspace, "_contentDownloadTargetInstanceName", "FTB Skies 2: Aero");
+            SetPrivateField(workspace, "_contentDownloadTargetGameVersion", "1.21.1");
+            SetPrivateField(workspace, "_contentDownloadTargetLoader", MinecraftClientLoader.NeoForge);
+            SetPrivateProperty(workspace, nameof(ClientWorkspaceViewModel.ContentDownloadKind), kind);
+
+            Assert.Contains("MC 1.21.1", workspace.ContentDownloadTargetSummary, StringComparison.Ordinal);
+            Assert.DoesNotContain("NeoForge", workspace.ContentDownloadTargetSummary, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public void ContentInstallJob_DoesNotRepeatAProjectTitleAlreadyInTheSemanticVersion()
+    {
+        using var job = new ClientContentInstallJobViewModel(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "FTB Skies 2: Aero",
+            "sodium",
+            "Sodium",
+            "version",
+            "Sodium 0.8.13 · MC 1.21.1 · NeoForge",
+            "Queued",
+            CancellationToken.None);
+
+        Assert.Equal("Sodium 0.8.13 · MC 1.21.1 · NeoForge", job.DisplayName);
     }
 
     [Fact]
@@ -386,9 +437,13 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 }
 
                 workspace.IsContentDownloadQueueExpanded = false;
-                var window = new ClientContentDownloadCenterWindow
+                var view = new ClientContentDownloadCenterWindow
                 {
                     DataContext = workspace,
+                };
+                var host = new Window
+                {
+                    Content = view,
                     Width = width,
                     Height = height,
                     SizeToContent = SizeToContent.Manual,
@@ -399,18 +454,18 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 };
                 try
                 {
-                    window.Show();
-                    window.UpdateLayout();
+                    host.Show();
+                    view.UpdateLayout();
 
-                    var root = FindFrameworkElement(window, "ContentDownloadRoot");
-                    var mainSplit = FindFrameworkElement(window, "ContentDownloadMainSplit");
-                    var detailsPanel = FindFrameworkElement(window, "ContentDownloadDetailsPanel");
-                    var versionSelector = FindFrameworkElement(window, "FixedContentDownloadVersionSelector");
-                    var detailsScroll = FindFrameworkElement(window, "ContentDownloadDetailsScrollViewer");
-                    var detailActions = FindFrameworkElement(window, "FixedContentDownloadDetailActions");
-                    var queuePanel = FindFrameworkElement(window, "ContentDownloadQueuePanel");
-                    var queueList = FindFrameworkElement(window, "ContentDownloadQueueList");
-                    var fixedBar = FindFrameworkElement(window, "FixedContentDownloadBar");
+                    var root = FindFrameworkElement(view, "ContentDownloadRoot");
+                    var mainSplit = FindFrameworkElement(view, "ContentDownloadMainSplit");
+                    var detailsPanel = FindFrameworkElement(view, "ContentDownloadDetailsPanel");
+                    var versionSelector = FindFrameworkElement(view, "FixedContentDownloadVersionSelector");
+                    var detailsScroll = FindFrameworkElement(view, "ContentDownloadDetailsScrollViewer");
+                    var detailActions = FindFrameworkElement(view, "FixedContentDownloadDetailActions");
+                    var queuePanel = FindFrameworkElement(view, "ContentDownloadQueuePanel");
+                    var queueList = FindFrameworkElement(view, "ContentDownloadQueueList");
+                    var fixedBar = FindFrameworkElement(view, "FixedContentDownloadBar");
 
                     var mainBefore = BoundsWithin(mainSplit, root);
                     var fixedBarBefore = BoundsWithin(fixedBar, root);
@@ -424,7 +479,7 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                         detailActions);
 
                     workspace.IsContentDownloadQueueExpanded = true;
-                    window.UpdateLayout();
+                    view.UpdateLayout();
 
                     Assert.Equal(Visibility.Visible, queuePanel.Visibility);
                     Assert.InRange(queuePanel.ActualHeight, 149d, 240.5d);
@@ -455,7 +510,7 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                 }
                 finally
                 {
-                    window.Close();
+                    host.Close();
                 }
             });
         }
