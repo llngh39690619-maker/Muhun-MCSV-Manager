@@ -251,6 +251,8 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
 
 public sealed class ClientCatalogVersionItemViewModel : ObservableObject
 {
+    private bool _isResolvingLoaderMetadata;
+    private bool _loaderMetadataUnavailable;
     public ClientCatalogVersionItemViewModel(
         ModrinthClientModpackVersion version,
         string? projectTitle = null)
@@ -297,7 +299,7 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
 
     public FtbClientCatalogVersion? FtbVersion { get; }
 
-    public OnlineModpackVersion? CurseForgeVersion { get; }
+    public OnlineModpackVersion? CurseForgeVersion { get; private set; }
 
     public string? ProjectTitle { get; }
 
@@ -337,15 +339,68 @@ public sealed class ClientCatalogVersionItemViewModel : ObservableObject
             ? LocalizationService.Current.Get("client.vm.catalog.ftb.unknownGameVersion")
             : PreferredGameVersion)}";
 
-    public string LoaderDisplay => ClientCatalogVersionDisplayFormatter.FormatLoader(RawLoader)
-        ?? LocalizationService.Current.Get("client.vm.loader.unknown");
+    public string LoaderDisplay
+    {
+        get
+        {
+            var loader = ClientCatalogVersionDisplayFormatter.FormatLoader(RawLoader);
+            if (loader is not null)
+            {
+                return loader == "Vanilla"
+                    ? LocalizationService.Current.Get("client.vm.loader.vanilla")
+                    : loader;
+            }
+
+            return LocalizationService.Current.Get(_isResolvingLoaderMetadata
+                ? "client.vm.loader.readingMetadata"
+                : _loaderMetadataUnavailable
+                    ? "client.vm.loader.metadataUnavailable"
+                    : "client.vm.loader.unknown");
+        }
+    }
+
+    internal bool NeedsLoaderMetadata => CurseForgeVersion is not null &&
+        ClientCatalogVersionDisplayFormatter.FormatLoader(RawLoader) is null;
+
+    internal bool IsResolvingLoaderMetadata => _isResolvingLoaderMetadata;
+
+    internal void BeginLoaderMetadataResolution()
+    {
+        _isResolvingLoaderMetadata = true;
+        _loaderMetadataUnavailable = false;
+        OnPropertyChanged(nameof(LoaderDisplay));
+        OnPropertyChanged(nameof(Name));
+    }
+
+    internal void ApplyResolvedMetadata(OnlineModpackVersion? resolvedVersion)
+    {
+        if (resolvedVersion is not null && CurseForgeVersion is { } original &&
+            resolvedVersion.Provider == original.Provider &&
+            resolvedVersion.ProjectId == original.ProjectId &&
+            resolvedVersion.VersionId == original.VersionId)
+        {
+            CurseForgeVersion = resolvedVersion;
+            GameVersions = string.IsNullOrWhiteSpace(resolvedVersion.MinecraftVersion)
+                ? []
+                : [resolvedVersion.MinecraftVersion];
+            OnPropertyChanged(nameof(CurseForgeVersion));
+            OnPropertyChanged(nameof(GameVersions));
+        }
+
+        _isResolvingLoaderMetadata = false;
+        _loaderMetadataUnavailable = NeedsLoaderMetadata;
+        OnPropertyChanged(nameof(PackVersionDisplay));
+        OnPropertyChanged(nameof(GameVersionDisplay));
+        OnPropertyChanged(nameof(LoaderDisplay));
+        OnPropertyChanged(nameof(Name));
+    }
 
     public string Name => string.Join(
         " · ",
         new[] { PackVersionDisplay, GameVersionDisplay, LoaderDisplay }
             .Where(static value => !string.IsNullOrWhiteSpace(value)));
 
-    public IReadOnlyList<string> GameVersions { get; }
+    public IReadOnlyList<string> GameVersions { get; private set; }
 
     private string? PreferredGameVersion => GameVersions.FirstOrDefault(static value =>
         !string.IsNullOrWhiteSpace(value));
@@ -440,6 +495,13 @@ internal static partial class ClientCatalogVersionDisplayFormatter
 
     internal static string? FormatLoader(string? value)
     {
+        // Vanilla is valid explicit manifest metadata. Do not infer it from pack names such
+        // as "Vanilla Plus", which may still require a mod loader.
+        if (string.Equals(value?.Trim(), "Vanilla", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Vanilla";
+        }
+
         var loader = InferLoader(value);
         if (string.IsNullOrWhiteSpace(loader))
         {

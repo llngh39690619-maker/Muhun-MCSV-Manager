@@ -115,6 +115,8 @@ public sealed class ClientCatalogVersionDisplayTests
     [InlineData("Forge 47.3.0", "Forge")]
     [InlineData("fabric-loader", "Fabric")]
     [InlineData("Quilt", "Quilt")]
+    [InlineData("vanilla", "Vanilla")]
+    [InlineData("Vanilla Plus", null)]
     [InlineData("custom runtime", null)]
     public void LoaderFormatting_UsesOnlySupportedLoaderFamilies(
         string rawLoader,

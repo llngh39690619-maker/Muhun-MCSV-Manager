@@ -171,43 +171,38 @@
                             Style="{StaticResource DownloadCenterToolbarPrimaryButton}"
                             Margin="10,0,0,0" MinWidth="94" />
 
-                    <Grid Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="190" />
-                            <ColumnDefinition Width="190" />
-                            <ColumnDefinition Width="190" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Border Padding="14,8" CornerRadius="8"
-                                Background="{DynamicResource AccentDarkBrush}"
-                                BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1"
-                                VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{DynamicResource L10n.client.catalog.source}"
-                                           Style="{StaticResource MutedText}" Margin="0,0,7,0" />
-                                <TextBlock Text="Modrinth" FontWeight="SemiBold" />
-                            </StackPanel>
-                        </Border>
-                        <ComboBox Grid.Column="1" Margin="10,0,0,0"
-                                  ItemsSource="{Binding ContentDownloadLoaders}"
-                                  SelectedItem="{Binding SelectedContentDownloadLoader}"
-                                  DisplayMemberPath="DisplayName"
-                                  Visibility="{Binding IsModContentDownload, Converter={StaticResource BoolToVisibility}}" />
-                        <ComboBox Grid.Column="2" Margin="10,0,0,0"
-                                  ItemsSource="{Binding ContentDownloadCategories}"
-                                  SelectedItem="{Binding SelectedContentDownloadCategory}"
-                                  DisplayMemberPath="DisplayName"
-                                  ToolTip="{DynamicResource L10n.client.catalog.category}" />
-                        <ComboBox Grid.Column="3" Margin="10,0,0,0"
-                                  ItemsSource="{Binding ContentDownloadSortOptions}"
-                                  SelectedItem="{Binding SelectedContentDownloadSort}"
-                                  DisplayMemberPath="DisplayName"
-                                  ToolTip="{DynamicResource L10n.client.catalog.sort}" />
-                        <TextBlock Grid.Column="4" Text="{Binding ContentDownloadDescription}"
-                                   Style="{StaticResource MutedText}" Margin="14,0,0,0"
+                    <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
+                        <controls:ResponsiveToolbarPanel x:Name="ContentDownloadSourceAndFilters">
+                            <Border Padding="14,8" CornerRadius="8"
+                                    Background="{DynamicResource AccentDarkBrush}"
+                                    BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1"
+                                    VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{DynamicResource L10n.client.catalog.source}"
+                                               Style="{StaticResource MutedText}" Margin="0,0,7,0" />
+                                    <TextBlock Text="Modrinth" FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Border>
+                            <ComboBox Width="180"
+                                      ItemsSource="{Binding ContentDownloadLoaders}"
+                                      SelectedItem="{Binding SelectedContentDownloadLoader}"
+                                      DisplayMemberPath="DisplayName"
+                                      Visibility="{Binding IsModContentDownload, Converter={StaticResource BoolToVisibility}}" />
+                            <ComboBox Width="180"
+                                      ItemsSource="{Binding ContentDownloadCategories}"
+                                      SelectedItem="{Binding SelectedContentDownloadCategory}"
+                                      DisplayMemberPath="DisplayName"
+                                      ToolTip="{DynamicResource L10n.client.catalog.category}" />
+                            <ComboBox Width="180"
+                                      ItemsSource="{Binding ContentDownloadSortOptions}"
+                                      SelectedItem="{Binding SelectedContentDownloadSort}"
+                                      DisplayMemberPath="DisplayName"
+                                      ToolTip="{DynamicResource L10n.client.catalog.sort}" />
+                        </controls:ResponsiveToolbarPanel>
+                        <TextBlock Text="{Binding ContentDownloadDescription}"
+                                   Style="{StaticResource MutedText}" Margin="0,7,0,0"
                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    </Grid>
+                    </StackPanel>
                 </Grid>
             </Border>
 

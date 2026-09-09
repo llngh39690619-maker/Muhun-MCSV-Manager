@@ -117,6 +117,38 @@ public sealed class CurseForgeModpackManifestInspector
     }
 
     /// <summary>
+    /// Inspects a caller-owned seekable stream without extracting content or closing the stream.
+    /// This validates ZIP/manifest structure only; a remote preview stream has not verified the
+    /// complete archive hash and must not be treated as a verified installation package.
+    /// </summary>
+    public async Task<CurseForgeModpackManifestInfo> InspectAsync(
+        Stream archiveStream,
+        CurseForgeManifestInspectionLimits? limits = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(archiveStream);
+        limits ??= new CurseForgeManifestInspectionLimits();
+        limits.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!archiveStream.CanRead || !archiveStream.CanSeek
+            || archiveStream.Length < 1 || archiveStream.Length > limits.MaxArchiveBytes)
+        {
+            throw new InvalidDataException("CurseForge ZIP preview requires a bounded readable, seekable archive.");
+        }
+
+        try
+        {
+            archiveStream.Position = 0;
+            using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
+            return await InspectOpenArchiveAsync(archive, limits, cancellationToken).ConfigureAwait(false);
+        }
+        catch (NotSupportedException exception)
+        {
+            throw new InvalidDataException("CurseForge client pack 使用不支援的 ZIP 功能。", exception);
+        }
+    }
+
+    /// <summary>
     /// Revalidates the archive and applies only its manifest-declared <c>overrides</c> files to an
     /// existing staging directory. The archive remains open from validation through extraction so
     /// a path swap cannot substitute unvalidated ZIP content between those phases.

@@ -21,23 +21,26 @@ public sealed class CurseForgeModpackProvider
     private const int MaximumResultIndex = 10_000;
     private readonly HttpClient _apiClient;
     private readonly HttpClient _downloadClient;
+    private readonly HttpClient _metadataClient;
     private readonly string _userAgent;
 
     public CurseForgeModpackProvider(
         HttpClient apiClient,
         HttpClient downloadClient,
-        string userAgent)
+        string userAgent,
+        HttpClient? metadataClient = null)
     {
         ArgumentNullException.ThrowIfNull(apiClient);
         ArgumentNullException.ThrowIfNull(downloadClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(userAgent);
-        if (ReferenceEquals(apiClient, downloadClient))
+        if (ReferenceEquals(apiClient, downloadClient) || ReferenceEquals(apiClient, metadataClient))
         {
             throw new ArgumentException("CurseForge API 與 CDN 下載必須使用不同的 HttpClient。", nameof(downloadClient));
         }
 
         _apiClient = apiClient;
         _downloadClient = downloadClient;
+        _metadataClient = metadataClient ?? downloadClient;
         _userAgent = userAgent.Trim();
         EnsureNoDefaultApiKeyHeaders();
     }
@@ -490,6 +493,130 @@ public sealed class CurseForgeModpackProvider
             expectedHash.Value);
     }
 
+    /// <summary>
+    /// Reads exact client-pack manifest metadata using bounded CDN byte ranges. This does not
+    /// download or verify the complete archive hash and never authorizes an installation;
+    /// installers must continue to use DownloadVerifiedFileAsync and inspect that verified ZIP.
+    /// </summary>
+    public async Task<CurseForgeModpackManifestInfo> InspectClientPackMetadataAsync(
+        string apiKey,
+        int modId,
+        int fileId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidatePositiveId(modId, nameof(modId));
+        ValidatePositiveId(fileId, nameof(fileId));
+        var project = await GetProjectAsync(apiKey, modId, cancellationToken).ConfigureAwait(false);
+        if (!project.IsAvailable || !project.AllowModDistribution)
+        {
+            throw new CurseForgeServerPackException(
+                CurseForgeServerPackResolutionStatus.DistributionUnavailable,
+                "作者沒有開放此 CurseForge 專案供第三方下載。 ");
+        }
+
+        var file = await GetFileAsync(apiKey, modId, fileId, cancellationToken).ConfigureAwait(false);
+        ValidateFileIdentity(file, modId, fileId);
+        if (!file.IsAvailable)
+        {
+            throw new CurseForgeServerPackException(
+                CurseForgeServerPackResolutionStatus.SelectedFileUnavailable,
+                "指定的 CurseForge 檔案目前無法下載。 ");
+        }
+
+        if (file.IsServerPack || file.FileLength is < 1 or > MaximumPackFileBytes)
+        {
+            throw new InvalidDataException("CurseForge metadata preview requires a bounded client-pack file.");
+        }
+
+        var officialUri = await GetDownloadUriAsync(apiKey, modId, fileId, cancellationToken).ConfigureAwait(false);
+        EnsureNoDefaultApiKeyHeaders();
+        var downloadUri = await ResolveMetadataDownloadUriAsync(officialUri, cancellationToken).ConfigureAwait(false);
+        return await Task.Run(async () =>
+        {
+            using var input = new CurseForgeMetadataPreviewStream(
+                _metadataClient, downloadUri, file.FileLength, _userAgent, cancellationToken);
+            return await new CurseForgeModpackManifestInspector()
+                .InspectAsync(input, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Uri> ResolveMetadataDownloadUriAsync(Uri officialUri, CancellationToken cancellationToken)
+    {
+        const int maximumRedirects = 3;
+        var current = officialUri;
+        for (var redirects = 0; redirects <= maximumRedirects; redirects++)
+        {
+            if (!IsAllowedMetadataRedirect(current, officialUri))
+            {
+                throw new InvalidDataException("CurseForge ZIP metadata redirect left its allowed HTTPS CDN origins.");
+            }
+
+            EnsureNoDefaultApiKeyHeaders();
+            // Some official edge endpoints redirect a normal request but return 404 when Range
+            // is attached. Resolve only their returned Location before requesting archive bytes.
+            using var request = new HttpRequestMessage(HttpMethod.Head, current);
+            request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+            request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("identity"));
+            using var response = await _metadataClient.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            var finalUri = response.RequestMessage?.RequestUri;
+            if (finalUri is null || !IsAllowedMetadataRedirect(finalUri, officialUri))
+            {
+                throw new InvalidDataException("CurseForge ZIP metadata HEAD returned an unsafe final URI.");
+            }
+
+            if (response.StatusCode is HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented)
+            {
+                return finalUri;
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                return finalUri;
+            }
+
+            if (response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Found
+                or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect)
+            {
+                if (redirects == maximumRedirects || response.Headers.Location is not { } location)
+                {
+                    throw new InvalidDataException("CurseForge ZIP metadata HEAD exceeded its redirect limit or omitted Location.");
+                }
+
+                var destination = location.IsAbsoluteUri ? location : new Uri(finalUri, location);
+                if (!IsAllowedMetadataRedirect(destination, officialUri))
+                {
+                    throw new InvalidDataException("CurseForge ZIP metadata HEAD refused an unsafe redirect destination.");
+                }
+
+                current = destination;
+                continue;
+            }
+
+            throw new HttpRequestException(
+                $"CurseForge ZIP metadata HEAD failed: HTTP {(int)response.StatusCode}.",
+                null, response.StatusCode);
+        }
+
+        throw new InvalidDataException("CurseForge ZIP metadata HEAD exceeded its redirect limit.");
+    }
+
+    internal static bool IsAllowedMetadataRedirect(Uri candidate, Uri original)
+    {
+        if (!candidate.IsAbsoluteUri || candidate.Scheme != Uri.UriSchemeHttps
+            || !string.IsNullOrEmpty(candidate.UserInfo))
+        {
+            return false;
+        }
+
+        var sameOrigin = candidate.Scheme == original.Scheme && candidate.Port == original.Port
+                         && candidate.IdnHost.Equals(original.IdnHost, StringComparison.OrdinalIgnoreCase);
+        var officialCdn = candidate.IsDefaultPort &&
+                          (candidate.IdnHost.Equals("forgecdn.net", StringComparison.OrdinalIgnoreCase)
+                           || candidate.IdnHost.EndsWith(".forgecdn.net", StringComparison.OrdinalIgnoreCase));
+        return sameOrigin || officialCdn;
+    }
+
     private async Task<CurseForgeModpackFile> GetFileAsync(
         string apiKey,
         int modId,
@@ -688,7 +815,8 @@ public sealed class CurseForgeModpackProvider
     private void EnsureNoDefaultApiKeyHeaders()
     {
         if (_apiClient.DefaultRequestHeaders.Contains("x-api-key")
-            || _downloadClient.DefaultRequestHeaders.Contains("x-api-key"))
+            || _downloadClient.DefaultRequestHeaders.Contains("x-api-key")
+            || _metadataClient.DefaultRequestHeaders.Contains("x-api-key"))
         {
             throw new InvalidOperationException("x-api-key 不可設定為 HttpClient 的預設 Header。 ");
         }

@@ -271,6 +271,9 @@ public sealed record OnlineModpackVersion(
     DateTimeOffset ReleasedAtUtc,
     bool HasOfficialServerPack)
 {
+    /// <summary>Non-secret provider file identity used only to invalidate preview metadata.</summary>
+    public string? MetadataFingerprint { get; init; }
+
     public string ReleaseDateDisplay => ReleasedAtUtc == DateTimeOffset.MinValue
         ? LocalizationService.Current.Get("online.updatedDateUnavailable")
         : ReleasedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
@@ -386,6 +389,17 @@ public interface IOnlineModpackWorkflow
         OnlineModpackSearchResult project,
         SecureString? transientApiKey,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Optionally enriches one exact catalogue file for display. Preview metadata is not download
+    /// authorization or proof of archive integrity; installation must revalidate the complete file.
+    /// </summary>
+    Task<OnlineModpackVersion> ResolveVersionMetadataAsync(
+        OnlineModpackSearchResult project,
+        OnlineModpackVersion version,
+        SecureString? curseForgeApiKey = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(version);
 
     Task<ServerInstance> InstallAsync(
         OnlineModpackInstallRequest request,

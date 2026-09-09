@@ -470,6 +470,8 @@
     "client.vm.loader.availability.unsupportedVersion": "Unavailable for this game version",
     "client.vm.loader.vanilla": "Vanilla",
     "client.vm.loader.unknown": "Unknown loader",
+    "client.vm.loader.readingMetadata": "Reading loader…",
+    "client.vm.loader.metadataUnavailable": "Loader details unavailable",
     "client.vm.progress.content.complete": "Safely imported {0:N0} items.",
     "client.vm.progress.content.copy": "Safely importing item {0:N0} of {1:N0}…",
     "client.vm.progress.install.base": "Installing Minecraft game files…",

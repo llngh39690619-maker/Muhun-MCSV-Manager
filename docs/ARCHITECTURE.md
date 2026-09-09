@@ -90,6 +90,12 @@ Spigot／CraftBukkit 目錄分成兩種明確證據模式。現代 12 個 stable
 
 網路工作採 workload-aware parallelism。Modrinth 依 manifest 檔案數及總大小選擇 1／2／4／8／12／16 workers，FTB 使用高吞吐固定工作數；第一個不可恢復錯誤會取消同批工作，但仍等待已啟動工作清理 `.partial` 與 staging。正式 Server UI 與 production workflow 支援 FTB、Modrinth 及使用者自備 Key 的 CurseForge；客戶端 CurseForge 使用相同的每使用者 DPAPI 憑證，透過官方 API 搜尋、查詢正式版本與安裝精確檔案。模組包 ZIP、manifest 相依檔和 overrides 全部在受管理 staging 下載及驗證，完成後才原子提交；只有官方散布政策或 download-url 明確拒絕根模組包時才提供專案頁備援。
 
+### CurseForge 版本預覽
+
+API 檔案標籤與 exact-file index 沒有載入器時，客戶端先呈現版本清單，再對該檔案的官方 client ZIP 背景讀取 root manifest。入口 CDN 的 HEAD 轉址解析與 Range 下載使用專用、禁止自動轉址的 HttpClient；只沿 API／官方 CDN 回傳的 HTTPS Location 取得最終網址。每個預覽以 64 KiB 區塊讀取、最多 8 MiB／128 次 Range 請求，並核對 Content-Range、長度及 representation validator；不下載整包的 mods 或 overrides。預覽僅是顯示中繼資料，不代表整個 ZIP 雜湊已驗證，不能供安裝提交使用。
+
+背景工作最多兩筆，選中版本優先；切換專案、來源、頁面及關閉時取消，晚回覆不得寫入其他版本。成功快取只保留 exact project/file、API 檔案 fingerprint、MC 與 loader，最多 128 筆、15 分鐘，無金鑰與下載 URL。401／429 停止該批次；單檔失敗可重選重試。同 Minecraft 版本的另一個檔案不能充當目前檔案的 loader 證據。
+
 ## 0.4.5 BuildTools JVM 與官方 Loader 子程序邊界
 
 BuildTools 的 Java 版本規則除了選出可用 JDK，也決定 JVM 穩定策略。Java 25 以上的 BuildTools operation 會在清除 ambient 環境後，透過受控 `_JAVA_OPTIONS` 同時傳入 `-XX:TieredStopAtLevel=1` 與真 LF `line.separator`；前者讓主程序及其 Java／Maven 子程序使用 C1 編譯層級，降低現場 HotSpot JIT compiler replay 致命失敗的風險，後者維持 0.4.4 的官方可重現輸出條件。Java 24 以下只傳入行尾設定，不任意改變既有 JIT 策略。無論 JVM 模式為何，四個 repository refs post-check 與官方 Spigot／CraftBukkit output SHA-256 equality 都仍是 blocking gate。
@@ -110,7 +116,7 @@ Windows 可重現性是工具鏈契約的一部分。受管理 MinGit 以固定 
 
 這些關卡修正 Windows CRLF checkout／commit 對 Maven POM 與 patch 輸入的改寫；舊行為可能先完成約 5–7 分鐘本機編譯，最後才得到與官方可重現輸出不同的 JAR。0.4.4 仍把官方逐版 JSON 的 Spigot／CraftBukkit output SHA-256 equality 當成 blocking gate：實際輸出 hash 只用於比對與診斷，不得以「JAR 可開啟」、本機 refs 大致正確或編譯 exit code 0 取代官方 hash。
 
-以下描述僅是 0.4.4 當時的歷史 production 限制，已被 1.2.9-beta.23 的第 23 條現行規則取代：當時線上模組包 surface 只有 FTB 與 Modrinth，ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。當時的 UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站；Core 內既有 CurseForge Provider 只保留作低階相容程式碼與安全測試，不能構成隱藏的產品入口。
+以下描述僅是 0.4.4 當時的歷史 production 限制，已被 1.2.9-beta.24 的第 23 條現行規則取代：當時線上模組包 surface 只有 FTB 與 Modrinth，ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。當時的 UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站；Core 內既有 CurseForge Provider 只保留作低階相容程式碼與安全測試，不能構成隱藏的產品入口。
 
 ## 0.4.3 BuildTools 工具鏈、清理與刪除邊界
 

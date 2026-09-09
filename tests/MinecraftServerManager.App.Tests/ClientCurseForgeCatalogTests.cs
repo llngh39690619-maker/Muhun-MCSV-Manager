@@ -11,7 +11,7 @@ using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Tests;
 
-public sealed class ClientCurseForgeCatalogTests
+public sealed partial class ClientCurseForgeCatalogTests
 {
     [Fact]
     public async Task InitialCatalogSource_IsCurseForge()
@@ -740,6 +740,23 @@ public sealed class ClientCurseForgeCatalogTests
         public IReadOnlyList<OnlineModpackSearchResult> Results { get; init; } = [];
 
         public IReadOnlyList<OnlineModpackVersion> Versions { get; init; } = [];
+
+        public List<(OnlineModpackSearchResult Project, OnlineModpackVersion Version, CancellationToken Token)> MetadataRequests { get; } = [];
+
+        public Func<OnlineModpackVersion, CancellationToken, Task<OnlineModpackVersion>>? MetadataHandler { get; init; }
+
+        public Task<OnlineModpackVersion> ResolveVersionMetadataAsync(
+            OnlineModpackSearchResult project,
+            OnlineModpackVersion version,
+            SecureString? curseForgeApiKey = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.NotNull(curseForgeApiKey);
+            Assert.True(curseForgeApiKey.IsReadOnly());
+            MetadataRequests.Add((project, version, cancellationToken));
+            return MetadataHandler?.Invoke(version, cancellationToken) ?? Task.FromResult(version);
+        }
 
         public Exception? BrowseError { get; init; }
 

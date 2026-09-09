@@ -28,6 +28,11 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
     private readonly HttpClient _javaRuntimeClient = new();
     private readonly HttpClient _curseApiClient;
     private readonly HttpClient _curseDownloadClient = new();
+    private readonly HttpClient _cursePreviewClient = new(new SocketsHttpHandler
+    {
+        // Metadata preview resolves official CDN redirects before sending byte-range requests.
+        AllowAutoRedirect = false
+    });
     private readonly FtbCatalogProvider _ftbCatalog;
     private readonly FtbInstallerDownloader _ftbDownloader;
     private readonly FtbServerInstaller _ftbInstaller;
@@ -117,7 +122,8 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         _curseForge = curseForge ?? new CurseForgeModpackProvider(
             _curseApiClient,
             _curseDownloadClient,
-            UserAgent);
+            UserAgent,
+            metadataClient: _cursePreviewClient);
         _curseManifestInspector = curseManifestInspector
             ?? new CurseForgeModpackManifestInspector();
         _afterStagingPromotedForTesting = afterStagingPromotedForTesting;
@@ -438,7 +444,10 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
                 ResolveCurseForgeLoader(file, curseForgeProject.LatestFileIndexes),
                 file.ReleaseType switch { 1 => "release", 2 => "beta", 3 => "alpha", _ => "unknown" },
                 file.FileDate ?? DateTimeOffset.MinValue,
-                HasOfficialServerPack: file.ServerPackFileId is not null))
+                HasOfficialServerPack: file.ServerPackFileId is not null)
+            {
+                MetadataFingerprint = GetMetadataFingerprint(file)
+            })
             .ToArray();
     }
 
@@ -1341,24 +1350,9 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
             return string.Empty;
         }
 
-        var minecraftVersion = file.GameVersions.FirstOrDefault(value =>
-            MinecraftVersionPattern().IsMatch(value));
-        if (string.IsNullOrWhiteSpace(minecraftVersion))
-        {
-            return string.Empty;
-        }
-
-        var gameScoped = ResolveUniqueLoader(
-            latestFileIndexes
-                .Where(index => index.GameVersion.Equals(
-                    minecraftVersion,
-                    StringComparison.OrdinalIgnoreCase))
-                .Select(index => index.ModLoader),
-            unknownIsConflict: true,
-            out _);
-        return gameScoped is { } gameScopedLoader
-            ? FormatCurseForgeLoader(gameScopedLoader)
-            : string.Empty;
+        // Another release of the same pack and Minecraft version may use a different loader.
+        // Leave this file unresolved until its own manifest has been inspected for the preview.
+        return string.Empty;
     }
 
     private static CurseForgeModLoaderType? ResolveUniqueLoader(
@@ -1894,6 +1888,7 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         _javaRuntimeClient.Dispose();
         _curseApiClient.Dispose();
         _curseDownloadClient.Dispose();
+        _cursePreviewClient.Dispose();
         if (_ownsArtworkCache && _artworkCache is IDisposable disposableArtworkCache)
         {
             disposableArtworkCache.Dispose();

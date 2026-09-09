@@ -46,7 +46,7 @@ public sealed class CurseForgeLoaderResolutionTests
     }
 
     [Fact]
-    public void UniqueGameVersionIndexResolvesRlcCraftWithoutHardCodingThePack()
+    public void AnotherFileWithSameGameVersionCannotDetermineThisFilesLoader()
     {
         var file = CreateFile(
             fileId: 4_612_979,
@@ -60,7 +60,7 @@ public sealed class CurseForgeLoaderResolutionTests
 
         var loader = OnlineModpackWorkflow.ResolveCurseForgeLoader(file, indexes);
 
-        Assert.Equal("Forge", loader);
+        Assert.Equal(string.Empty, loader);
     }
 
     [Fact]

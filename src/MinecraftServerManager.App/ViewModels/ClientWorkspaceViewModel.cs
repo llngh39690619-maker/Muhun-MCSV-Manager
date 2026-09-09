@@ -89,6 +89,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly BedrockOfficialHandoffService _bedrockOfficialHandoff;
     private readonly SemaphoreSlim _contentGate = new(1, 1);
     private readonly SemaphoreSlim _contentDownloadInstallGate = new(1, 1);
+    private readonly SemaphoreSlim _catalogVersionMetadataGate = new(2, 2);
+    private readonly HashSet<Task> _catalogVersionMetadataTasks = [];
+    private readonly object _catalogVersionMetadataTaskGate = new();
+    private CatalogVersionMetadataBatch? _catalogVersionMetadataBatch;
     private readonly LatestOperationCoordinator _contentRefreshCoordinator;
     private readonly LatestOperationCoordinator _dashboardModsRefreshCoordinator;
     private readonly BatchObservableCollection<ClientInstanceItemViewModel> _instances = [];
@@ -1406,6 +1410,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
+            CancelCatalogVersionMetadata();
+
             OnPropertyChanged(nameof(IsModrinthCatalogSource));
             OnPropertyChanged(nameof(IsCurseForgeCatalogSource));
             OnPropertyChanged(nameof(IsFtbCatalogSource));
@@ -1741,6 +1747,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
+            CancelCatalogVersionMetadata();
             CatalogVersions.Clear();
             SelectedCatalogVersion = null;
             IsCatalogDetailOpen = value is not null;
@@ -1769,6 +1776,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 OnPropertyChanged(nameof(ShowsCatalogInstallOptions));
                 OnPropertyChanged(nameof(CatalogInstallActionText));
                 InstallCatalogPackCommand.NotifyCanExecuteChanged();
+                PrioritizeCatalogVersionMetadata(value);
             }
         }
     }
@@ -3604,10 +3612,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                                   version.MinecraftVersion?.Trim(),
                                   selectedGameVersion,
                                   StringComparison.OrdinalIgnoreCase)) &&
-                             (selectedLoader.Length == 0 ||
+                             (selectedLoader.Length == 0 || string.IsNullOrWhiteSpace(version.Loader) ||
                               NormalizeCurseForgeLoaderName(version.Loader) == selectedLoader)))
                 {
-                    CatalogVersions.Add(new ClientCatalogVersionItemViewModel(version, project.Title));
+                    var item = new ClientCatalogVersionItemViewModel(version, project.Title);
+                    if (selectedLoader.Length == 0 || item.NeedsLoaderMetadata ||
+                        NormalizeCurseForgeLoaderName(item.LoaderDisplay) == selectedLoader)
+                    {
+                        CatalogVersions.Add(item);
+                    }
                 }
 
                 SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
@@ -3617,6 +3630,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                         "client.vm.catalog.curseForge.versionsLoaded",
                         project.Title,
                         CatalogVersions.Count);
+                StartCatalogVersionMetadata(project, cancellation.Token);
                 return;
             }
 
@@ -3662,6 +3676,266 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
              !ReferenceEquals(cancellation, _catalogVersionCancellation)))
         {
             // A superseded project must not surface an error over the current project's state.
+        }
+    }
+
+    private sealed class CatalogVersionMetadataBatch(
+        ClientModpackProjectItemViewModel project,
+        CancellationTokenSource cancellation)
+    {
+        public ClientModpackProjectItemViewModel Project { get; } = project;
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+        public List<ClientCatalogVersionItemViewModel> Pending { get; } = [];
+        public HashSet<ClientCatalogVersionItemViewModel> Active { get; } = [];
+        public int Workers { get; set; }
+        public bool IsRetired { get; set; }
+        private bool _cancellationDisposed;
+
+        public void DisposeCancellationIfIdle()
+        {
+            if (IsRetired && Workers == 0 && !_cancellationDisposed)
+            {
+                _cancellationDisposed = true;
+                Cancellation.Dispose();
+            }
+        }
+    }
+
+    private void StartCatalogVersionMetadata(
+        ClientModpackProjectItemViewModel project,
+        CancellationToken cancellationToken)
+    {
+        CancelCatalogVersionMetadata();
+        if (_disposed || !ReferenceEquals(project, SelectedCatalogProject) ||
+            project.CurseForgeProject is null || cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var batch = new CatalogVersionMetadataBatch(
+            project,
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken));
+        _catalogVersionMetadataBatch = batch;
+        foreach (var item in CatalogVersions.Where(static item => item.NeedsLoaderMetadata))
+        {
+            item.BeginLoaderMetadataResolution();
+            batch.Pending.Add(item);
+        }
+
+        StartCatalogVersionMetadataWorkers(batch);
+    }
+
+    private void PrioritizeCatalogVersionMetadata(ClientCatalogVersionItemViewModel? item)
+    {
+        if (item is null || !item.NeedsLoaderMetadata ||
+            _catalogVersionMetadataBatch is not { } batch ||
+            !IsCurrentCatalogVersionMetadata(batch) || !CatalogVersions.Contains(item))
+        {
+            return;
+        }
+
+        lock (batch)
+        {
+            if (batch.Active.Contains(item))
+            {
+                return;
+            }
+
+            // Selecting a failed item again is an explicit retry; queued items move to the front.
+            batch.Pending.Remove(item);
+            batch.Pending.Insert(0, item);
+            item.BeginLoaderMetadataResolution();
+        }
+
+        StartCatalogVersionMetadataWorkers(batch);
+    }
+
+    private bool IsCurrentCatalogVersionMetadata(CatalogVersionMetadataBatch batch) =>
+        !_disposed && ReferenceEquals(batch, _catalogVersionMetadataBatch) &&
+        ReferenceEquals(batch.Project, SelectedCatalogProject) && IsCurseForgeCatalogSource &&
+        !batch.Cancellation.IsCancellationRequested;
+
+    private void StartCatalogVersionMetadataWorkers(CatalogVersionMetadataBatch batch)
+    {
+        while (IsCurrentCatalogVersionMetadata(batch))
+        {
+            lock (batch)
+            {
+                if (batch.Workers >= 2 || batch.Pending.Count == 0)
+                {
+                    return;
+                }
+
+                batch.Workers++;
+            }
+
+            var task = RunCatalogVersionMetadataWorkerAsync(batch);
+            lock (_catalogVersionMetadataTaskGate)
+            {
+                _catalogVersionMetadataTasks.Add(task);
+            }
+
+            _ = ObserveCatalogVersionMetadataWorkerAsync(task);
+        }
+    }
+
+    private async Task ObserveCatalogVersionMetadataWorkerAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        finally
+        {
+            lock (_catalogVersionMetadataTaskGate)
+            {
+                _catalogVersionMetadataTasks.Remove(task);
+            }
+        }
+    }
+
+    private async Task RunCatalogVersionMetadataWorkerAsync(CatalogVersionMetadataBatch batch)
+    {
+        try
+        {
+            while (IsCurrentCatalogVersionMetadata(batch))
+            {
+                ClientCatalogVersionItemViewModel item;
+                lock (batch)
+                {
+                    if (batch.Pending.Count == 0)
+                    {
+                        return;
+                    }
+
+                    item = SelectedCatalogVersion is { } selected && batch.Pending.Contains(selected)
+                        ? selected
+                        : batch.Pending[0];
+                    batch.Pending.Remove(item);
+                    batch.Active.Add(item);
+                }
+
+                OnlineModpackVersion? resolved = null;
+                try
+                {
+                    // The gate also bounds requests from canceled batches whose transport is
+                    // still unwinding while a newly selected project starts loading.
+                    await _catalogVersionMetadataGate.WaitAsync(batch.Cancellation.Token);
+                    try
+                    {
+                        using var credential = AcquireCurseForgeCredential();
+                        if (credential is not null && item.CurseForgeVersion is { } version)
+                        {
+                            resolved = await _onlineModpackWorkflow.ResolveVersionMetadataAsync(
+                                batch.Project.CurseForgeProject!,
+                                version,
+                                credential,
+                                batch.Cancellation.Token);
+                        }
+                    }
+                    finally
+                    {
+                        _catalogVersionMetadataGate.Release();
+                    }
+                }
+                catch (OperationCanceledException) when (batch.Cancellation.IsCancellationRequested)
+                {
+                }
+                catch (CurseForgeApiException error) when (
+                    error.ErrorCode is CurseForgeApiErrorCode.InvalidApiKey or CurseForgeApiErrorCode.RateLimited)
+                {
+                    if (IsCurrentCatalogVersionMetadata(batch))
+                    {
+                        if (error.ErrorCode == CurseForgeApiErrorCode.InvalidApiKey)
+                        {
+                            _isCurseForgeCredentialRejected = true;
+                            HasCurseForgeCredential = false;
+                        }
+
+                        CatalogStatusText = error.ErrorCode == CurseForgeApiErrorCode.InvalidApiKey
+                            ? L("client.vm.catalog.curseForge.invalidCredential")
+                            : L("client.vm.catalog.curseForge.rateLimited");
+                        ErrorText = CatalogStatusText;
+                        // Stop the whole queue on account-wide failures. Retrying every remaining
+                        // file would repeat a rejected credential or ignore the API's rate limit.
+                        CancelCatalogVersionMetadata();
+                    }
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    Debug.WriteLine($"CurseForge version metadata unavailable: {error.GetType().Name}");
+                }
+                finally
+                {
+                    lock (batch)
+                    {
+                        batch.Active.Remove(item);
+                    }
+                }
+
+                if (!IsCurrentCatalogVersionMetadata(batch) || !CatalogVersions.Contains(item))
+                {
+                    continue;
+                }
+
+                item.ApplyResolvedMetadata(resolved);
+                var selectedLoader = NormalizeCurseForgeLoaderName(
+                    MapCurseForgeCatalogLoader(SelectedCatalogLoader?.Loader));
+                var selectedGameVersion = SelectedCatalogGameVersion?.Version?.Trim();
+                if ((!item.NeedsLoaderMetadata && selectedLoader.Length > 0 &&
+                     NormalizeCurseForgeLoaderName(item.LoaderDisplay) != selectedLoader) ||
+                    (!string.IsNullOrWhiteSpace(selectedGameVersion) &&
+                     item.CurseForgeVersion?.MinecraftVersion != selectedGameVersion))
+                {
+                    CatalogVersions.Remove(item);
+                    if (ReferenceEquals(item, SelectedCatalogVersion))
+                    {
+                        SelectedCatalogVersion = CatalogVersions.FirstOrDefault();
+                    }
+
+                    CatalogStatusText = CatalogVersions.Count == 0
+                        ? L("client.vm.catalog.curseForge.noVersions", batch.Project.Title)
+                        : L("client.vm.catalog.curseForge.versionsLoaded", batch.Project.Title, CatalogVersions.Count);
+                }
+
+                if (ReferenceEquals(item, SelectedCatalogVersion))
+                {
+                    RefreshCurseForgeInstallPolicyBindings();
+                }
+            }
+        }
+        finally
+        {
+            lock (batch)
+            {
+                batch.Workers--;
+                batch.DisposeCancellationIfIdle();
+            }
+        }
+    }
+
+    private void CancelCatalogVersionMetadata()
+    {
+        var batch = _catalogVersionMetadataBatch;
+        _catalogVersionMetadataBatch = null;
+        if (batch is null)
+        {
+            return;
+        }
+
+        ClientCatalogVersionItemViewModel[] unfinished;
+        lock (batch)
+        {
+            unfinished = batch.Pending.Concat(batch.Active).Distinct().ToArray();
+            batch.IsRetired = true;
+            batch.Cancellation.Cancel();
+            batch.Pending.Clear();
+            batch.DisposeCancellationIfIdle();
+        }
+
+        foreach (var item in unfinished.Where(static item => item.IsResolvingLoaderMetadata))
+        {
+            item.ApplyResolvedMetadata(null);
         }
     }
 
@@ -4551,6 +4825,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     {
         _catalogBrowseCancellation?.Cancel();
         _catalogVersionCancellation?.Cancel();
+        CancelCatalogVersionMetadata();
     }
 
     private async Task CreateInstanceAsync()
@@ -8045,6 +8320,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _disposed = true;
         _launcherWindowLifecycle.BeginShutdown();
         _lifetimeCancellation.Cancel();
+        CancelCatalogVersionMetadata();
         _loaderRefreshCancellation?.Cancel();
         _operationCancellation?.Cancel();
         _catalogBrowseCancellation?.Cancel();
@@ -8074,11 +8350,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             contentDownloadInstallTasks = _contentDownloadInstallTasks.ToArray();
         }
 
+        Task[] catalogVersionMetadataTasks;
+        lock (_catalogVersionMetadataTaskGate)
+        {
+            catalogVersionMetadataTasks = _catalogVersionMetadataTasks.ToArray();
+        }
+
         try
         {
             await Task.WhenAll(
                 observerTasks.Concat(profileSynchronizationTasks)
                     .Concat(contentDownloadInstallTasks)
+                    .Concat(catalogVersionMetadataTasks)
                     .Append(_initialCatalogRefreshTask)
                     .Append(_loaderRefreshTask)
                     .Append(_catalogBrowseTask)
@@ -8120,6 +8403,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         _accountLoginCancellation?.Dispose();
         _skinTextureLoadCancellation?.Dispose();
         _lifetimeCancellation.Dispose();
+        _catalogVersionMetadataGate.Dispose();
         CatalogInstallJobs.CollectionChanged -= OnCatalogInstallJobsChanged;
         foreach (var job in _observedCatalogInstallJobs)
         {

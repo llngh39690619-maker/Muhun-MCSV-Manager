@@ -470,6 +470,8 @@
     "client.vm.loader.availability.unsupportedVersion": "此遊戲版本不可用",
     "client.vm.loader.vanilla": "原版",
     "client.vm.loader.unknown": "未知載入器",
+    "client.vm.loader.readingMetadata": "正在讀取載入器…",
+    "client.vm.loader.metadataUnavailable": "載入器資料暫無",
     "client.vm.progress.content.complete": "已安全匯入 {0:N0} 個項目。",
     "client.vm.progress.content.copy": "正在安全匯入項目 {0:N0} / {1:N0}…",
     "client.vm.progress.install.base": "正在安裝 Minecraft 遊戲檔案…",

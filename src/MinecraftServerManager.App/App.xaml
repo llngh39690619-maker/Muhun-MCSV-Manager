@@ -144,7 +144,11 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="ComboBox">
                         <Grid>
-                            <ToggleButton x:Name="DropDownToggle"
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="30" />
+                            </Grid.ColumnDefinitions>
+                            <ToggleButton x:Name="DropDownToggle" Grid.ColumnSpan="2"
                                           Focusable="False"
                                           ClickMode="Press"
                                           Background="{TemplateBinding Background}"
@@ -181,14 +185,20 @@
                                     </ControlTemplate>
                                 </ToggleButton.Template>
                             </ToggleButton>
-                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                            <ContentPresenter x:Name="SelectionContentPresenter" Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                              IsHitTestVisible="False"
+                                              IsHitTestVisible="False" ClipToBounds="True"
                                               Content="{TemplateBinding SelectionBoxItem}"
                                               ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" />
-                            <Popup x:Name="PART_Popup"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
+                            <Popup x:Name="PART_Popup" Grid.ColumnSpan="2"
                                    AllowsTransparency="True"
                                    IsOpen="{TemplateBinding IsDropDownOpen}"
                                    Placement="Bottom"
