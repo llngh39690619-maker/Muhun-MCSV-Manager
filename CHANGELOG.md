@@ -2,6 +2,18 @@
 
 ## 未發布
 
+## 1.2.9-beta.23 — CurseForge 客戶端直接安裝版
+
+- 客戶端 CurseForge 模組包不再一律跳轉官網；作者允許第三方散布時，會以官方 API 下載使用者選定的精確正式版本、安裝 Minecraft 與 Loader、取得 manifest 必要檔案並安全套用 overrides，完成後直接建立可啟動實例。
+- 每個根模組包與相依檔都會在下載當下重新確認專案、檔案身分、可用性及散布政策，並驗證官方長度與 SHA-1／MD5；API Key 只送往 `api.curseforge.com`，不會送往 CDN、寫入命令列、日誌、registry 或一般設定。
+- CurseForge ZIP 會先完整檢查 manifest、路徑穿越、大小寫／Unicode 衝突、符號與 reparse 連結、解壓大小及壓縮比例；安裝在隔離 staging 完成後才原子提交，任何下載、雜湊、Loader、路徑或 registry 失敗都清除半成品。
+- Loader 顯示改用檔案明確標籤與官方 `latestFilesIndexes.modLoader`；RLCraft 等舊版模組包可正確顯示 Forge，歧義時仍保持未知而不猜測，實際安裝則以已驗證 manifest 的 primary loader 為最終權威。
+- 只有作者禁止第三方散布或根檔未提供官方 download-url 時，該「專案＋檔案」才切換為官方專案頁；相依檔缺失、雜湊錯誤或安全驗證失敗不會被官網跳轉掩蓋。失效金鑰、權限不足與限流也改用明確狀態呈現。
+- 本版本只建立本機驗收安裝包，不建立 GitHub Release、不推送 tag，也不附加 Windows EXE、APK、簽章、雜湊或其他二進位成品至公開發布。
+- 本機正式發行驗證通過：11 個測試專案共 `3,533 / 3,533` 項通過；Release 建置 `0` 警告、`0` 錯誤；26 個專案的 NuGet 弱點稽核為 `0` advisories；正式套件 manifest 驗證 `30` 個檔案。
+- Android 驗證成品使用 `versionCode 42`，簽署 APK SHA-256 為 `4D1B61E993EDA98594638A344691D50DE231041ED85D64672BBEBEC64CFAF7B1`。單一 Windows 安裝器大小 `259,903,264` bytes，SHA-256 為 `55A8E11E240A99B9F5D774882F26B9CE2AD735CB7CB8AF5BD35EDC55D52D0149`；本機 Authenticode 與 DigiCert 時間戳記驗證為 `Valid`。
+- **狀態：Beta，本機驗證完成，未發布。**
+
 ## 1.2.9-beta.22 — 客戶端整合探索與版本語意版
 
 - 客戶端保留 B 遊戲啟動器首頁，模組包探索改為 C 內容探索格局；左側集中模組包、模組、材質包、光影包、瀏覽全部、Java Runtime、遊戲設定與下載清單，中央清單可獨立捲動，右側即時預覽固定不跟著內容移動。

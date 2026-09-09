@@ -1,10 +1,10 @@
 # X MCSV
 
-X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.22**。
+X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客戶端管理工具。目前 repository 的 Beta 來源快照版本為 **1.2.9-beta.23**。
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta。** 1.2.9-beta.22 僅進行本機正式發行驗證。透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布時仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證產生的單一 installer EXE 只用於本機安裝與驗收，不是 GitHub Release 下載項目。
+> **發行狀態：Beta。** 1.2.9-beta.23 僅進行本機正式發行驗證。透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布時仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證產生的單一 installer EXE 只用於本機安裝與驗收，不是 GitHub Release 下載項目。
 
 ## English summary
 
@@ -109,7 +109,7 @@ docs/                                       架構、操作、安全與驗收文
 - PowerShell 7.4 或更新版本。
 - Android 建置另需由專案腳本固定的 JDK、Gradle 與 Android Build Tools。
 
-### 使用單一 Windows 安裝 EXE（1.2.9-beta.22 不作為 GitHub Release 附件）
+### 使用單一 Windows 安裝 EXE（1.2.9-beta.23 不作為 GitHub Release 附件）
 
 - 啟動 installer EXE 後會顯示 Windows UAC 系統管理員確認，用來建立受保護的程式、Service 及資料 ACL；日常 GUI 不需要以系統管理員身分執行。
 - 預設位置為 `C:\Program Files\MCSV`；安裝畫面可選擇其他安全的本機非磁碟根目錄。選定後所有正式產品資料都留在該安裝根目錄，不使用 AppData／ProgramData fallback。
@@ -138,7 +138,7 @@ dotnet test .\MinecraftServerManager.sln `
   -p:TreatWarningsAsErrors=true
 ```
 
-正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；1.2.9-beta.22 的 GitHub Pre-release 仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式產品-簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
+正式發行流程包含 self-contained publish、Windows／Provider／APK 簽章、RSA-PSS manifest、逐檔 SHA-256、單一 installer EXE 封裝及獨立磁碟驗證。本機驗證會實際產生 installer EXE 以測試乾淨電腦安裝、自由選擇安裝位置、Service 啟用與回復；1.2.9-beta.23 的 GitHub Pre-release 仍只保留原始碼與文件，不會附加這個本機二進位產物。最近一次已公開記錄的完整結果見 [1.1.0 正式測試報告](docs/測試報告-1.1.0.md)，流程見[正式產品-簽章與安全發布](docs/正式產品-簽章與安全發布.md)。
 
 ## Web 與手機管理
 
@@ -147,7 +147,7 @@ dotnet test .\MinecraftServerManager.sln `
 3. 在遠端管理視窗按「重新連線」；尚未登入時 GUI 會開啟受信任的官方 Tailscale，用戶完成登入後 X MCSV 會在背景自動重試。
 4. 目前登入的桌面 GUI 會透過受信任的官方 Tailscale CLI 將裝置名稱固定為 `x-mcsv`；只有 MagicDNS、HTTPS 憑證與唯一的持久 Funnel 路由全數通過驗證後，才把 `https://x-mcsv.<tailnet>.ts.net/` 提交給 Service。Tailnet suffix 由 Tailscale 自動取得，不需要手動提供 DNSName；同名衝突時會停止並顯示診斷，不會改用 `x-mcsv-1` 或猜測網址。
 5. 固定 HTTPS 網址建立後即可登入 Web 面板；Service 重啟可依驗證 receipt 恢復 loopback Web Host，GUI 會將此狀態標示為已設定／快取，不會誤標為已即時確認 Funnel 在線。
-6. iOS 可使用 Safari「加入主畫面」；Android 可側載本機正式發行驗證產生的簽署 APK（1.2.9-beta.22 的 GitHub 發布仍不提供 APK）。
+6. iOS 可使用 Safari「加入主畫面」；Android 可側載本機正式發行驗證產生的簽署 APK（1.2.9-beta.23 的 GitHub 發布仍不提供 APK）。
 
 遠端後端會重新檢查登入狀態、角色、Server scope、Origin、CSRF 與 Idempotency-Key；前端隱藏按鈕不被視為安全授權。
 

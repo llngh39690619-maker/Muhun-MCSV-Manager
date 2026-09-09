@@ -110,7 +110,7 @@ Windows 可重現性是工具鏈契約的一部分。受管理 MinGit 以固定 
 
 這些關卡修正 Windows CRLF checkout／commit 對 Maven POM 與 patch 輸入的改寫；舊行為可能先完成約 5–7 分鐘本機編譯，最後才得到與官方可重現輸出不同的 JAR。0.4.4 仍把官方逐版 JSON 的 Spigot／CraftBukkit output SHA-256 equality 當成 blocking gate：實際輸出 hash 只用於比對與診斷，不得以「JAR 可開啟」、本機 refs 大致正確或編譯 exit code 0 取代官方 hash。
 
-以下描述僅是 0.4.4 當時的歷史 production 限制，已被 1.2.9-beta.22 的第 23 條現行規則取代：當時線上模組包 surface 只有 FTB 與 Modrinth，ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。當時的 UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站；Core 內既有 CurseForge Provider 只保留作低階相容程式碼與安全測試，不能構成隱藏的產品入口。
+以下描述僅是 0.4.4 當時的歷史 production 限制，已被 1.2.9-beta.23 的第 23 條現行規則取代：當時線上模組包 surface 只有 FTB 與 Modrinth，ViewModel 的 provider 選擇只能接受自身 `Providers` 集合中的這兩個值；production `IOnlineModpackWorkflow` 的搜尋、推薦、版本與安裝公開入口收到 CurseForge 時必須明確 `NotSupported`。當時的 UI、鍵盤、Automation 與診斷 fixture 不呈現 API Key 或 CurseForge 控制項，且不爬取網站；Core 內既有 CurseForge Provider 只保留作低階相容程式碼與安全測試，不能構成隱藏的產品入口。
 
 ## 0.4.3 BuildTools 工具鏈、清理與刪除邊界
 
