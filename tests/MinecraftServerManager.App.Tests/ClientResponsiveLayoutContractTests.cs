@@ -93,6 +93,9 @@ public sealed class ClientResponsiveLayoutContractTests
             element => (string?)element.Attribute(xaml + "Name") == "CatalogDiscoveryInstanceList");
         Assert.Equal("{Binding Instances}", (string?)instanceList.Attribute("ItemsSource"));
         Assert.Equal("{Binding SelectedInstance}", (string?)instanceList.Attribute("SelectedItem"));
+        Assert.Equal(
+            "OnCatalogDiscoveryInstancePreviewMouseLeftButtonDown",
+            (string?)instanceList.Attribute("PreviewMouseLeftButtonDown"));
         var navigationSource = navigation.ToString();
         Assert.Contains("{Binding NewInstanceCommand}", navigationSource, StringComparison.Ordinal);
         Assert.Contains("{Binding OpenCatalogCommand}", navigationSource, StringComparison.Ordinal);

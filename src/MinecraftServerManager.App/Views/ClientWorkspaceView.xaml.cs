@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using MinecraftServerManager.App.ViewModels;
 
 namespace MinecraftServerManager.App.Views;
 
@@ -30,6 +31,25 @@ public partial class ClientWorkspaceView : UserControl
             return;
         }
 
+        e.Handled = true;
+    }
+
+    private void OnCatalogDiscoveryInstancePreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left
+            || sender is not ListBox instanceList
+            || e.OriginalSource is not DependencyObject source
+            || ItemsControl.ContainerFromElement(instanceList, source) is not ListBoxItem item
+            || item.DataContext is not ClientInstanceItemViewModel instance
+            || DataContext is not ClientWorkspaceViewModel viewModel
+            || !viewModel.OpenInstanceDashboardCommand.CanExecute(instance))
+        {
+            return;
+        }
+
+        viewModel.OpenInstanceDashboardCommand.Execute(instance);
         e.Handled = true;
     }
 

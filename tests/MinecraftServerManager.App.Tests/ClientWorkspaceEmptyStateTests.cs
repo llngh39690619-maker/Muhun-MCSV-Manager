@@ -64,6 +64,34 @@ public sealed class ClientWorkspaceEmptyStateTests
     }
 
     [Fact]
+    public async Task OpeningAlreadySelectedInstance_ReturnsFromCatalogToDashboard()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        await using var viewModel = new ClientWorkspaceViewModel(
+            new ApplicationPaths(directory.Path),
+            static () => new NewMinecraftClientDefaultsSettings());
+        var instance = new ClientInstanceItemViewModel(new MinecraftClientInstance
+        {
+            Name = "Existing client",
+            GameVersion = "1.21.1",
+            InstalledVersionId = "1.21.1",
+            DirectoryPath = directory.Path,
+        });
+        viewModel.Instances.Add(instance);
+        viewModel.SelectedInstance = instance;
+        viewModel.OpenCatalogCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.IsCatalogPage);
+
+        viewModel.OpenInstanceDashboardCommand.Execute(instance);
+
+        Assert.Same(instance, viewModel.SelectedInstance);
+        Assert.False(viewModel.IsCreatePage);
+        Assert.False(viewModel.IsCatalogPage);
+        Assert.False(viewModel.IsSettingsPage);
+        Assert.True(viewModel.IsDashboardPage);
+    }
+
+    [Fact]
     public async Task SelectingAnInstanceDuringInitialization_PreservesExplicitCreateNavigation()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();

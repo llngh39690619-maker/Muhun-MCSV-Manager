@@ -413,6 +413,7 @@
                             <ListBox x:Name="CatalogDiscoveryInstanceList"
                                      ItemsSource="{Binding Instances}"
                                      SelectedItem="{Binding SelectedInstance}"
+                                     PreviewMouseLeftButtonDown="OnCatalogDiscoveryInstancePreviewMouseLeftButtonDown"
                                      MaxHeight="180" Background="Transparent" BorderThickness="0"
                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                      ScrollViewer.VerticalScrollBarVisibility="Auto"

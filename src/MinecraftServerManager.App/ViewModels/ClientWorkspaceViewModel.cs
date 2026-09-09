@@ -361,6 +361,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         InitializeCommand = new AsyncRelayCommand(() => RunGuardedAsync(InitializeAsync), () => !_isInitialized);
         RefreshCatalogCommand = new AsyncRelayCommand(() => RunGuardedAsync(RefreshCatalogAsync), () => !IsBusy);
         OpenDashboardCommand = new RelayCommand(OpenDashboard);
+        OpenInstanceDashboardCommand = new RelayCommand(
+            OpenInstanceDashboard,
+            CanOpenInstanceDashboard);
         NewInstanceCommand = new RelayCommand(ShowCreatePage);
         OpenCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(OpenCatalogAsync));
@@ -673,6 +676,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand InitializeCommand { get; }
     public AsyncRelayCommand RefreshCatalogCommand { get; }
     public RelayCommand OpenDashboardCommand { get; }
+    public RelayCommand OpenInstanceDashboardCommand { get; }
     public RelayCommand NewInstanceCommand { get; }
     public AsyncRelayCommand OpenCatalogCommand { get; }
     public RelayCommand CloseCatalogCommand { get; }
@@ -5548,6 +5552,21 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         ShowSelectedInstance();
     }
+
+    private void OpenInstanceDashboard(object? parameter)
+    {
+        if (parameter is not ClientInstanceItemViewModel instance
+            || !Instances.Contains(instance))
+        {
+            return;
+        }
+
+        SelectedInstance = instance;
+        OpenDashboard();
+    }
+
+    private bool CanOpenInstanceDashboard(object? parameter) =>
+        parameter is ClientInstanceItemViewModel instance && Instances.Contains(instance);
 
     private async Task OpenClientSettingsAsync(ClientSettingsSection section)
     {
