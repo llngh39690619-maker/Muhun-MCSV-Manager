@@ -107,4 +107,28 @@ public sealed class ProductLocalizationCatalogTests
             "已顯示 20 / 100 個結果",
             ProductLocalizationCatalog.Format("zh-TW", "client.vm.catalog.resultsSummary", 20, 100));
     }
+
+    [Fact]
+    public void ClientDiscoverySidebar_ExposesStableBilingualLabels()
+    {
+        Assert.Equal(
+            "內容探索",
+            ProductLocalizationCatalog.Format("zh-TW", "client.launcher.sidebar.contentDiscovery"));
+        Assert.Equal(
+            "實用工具",
+            ProductLocalizationCatalog.Format("zh-TW", "client.launcher.sidebar.utilities"));
+        Assert.Equal(
+            "瀏覽全部",
+            ProductLocalizationCatalog.Format("zh-TW", "client.launcher.sidebar.browseAll"));
+
+        Assert.Equal(
+            "Content discovery",
+            ProductLocalizationCatalog.Format("en-US", "client.launcher.sidebar.contentDiscovery"));
+        Assert.Equal(
+            "Utilities",
+            ProductLocalizationCatalog.Format("en-US", "client.launcher.sidebar.utilities"));
+        Assert.Equal(
+            "Browse all",
+            ProductLocalizationCatalog.Format("en-US", "client.launcher.sidebar.browseAll"));
+    }
 }

@@ -1,5 +1,7 @@
+using System.IO;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.App.Services;
+using MinecraftServerManager.GameClient;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Tests;
@@ -19,6 +21,10 @@ public sealed class ClientWorkspaceEmptyStateTests
         Assert.False(viewModel.IsCatalogPage);
         Assert.False(viewModel.IsSettingsPage);
         Assert.False(viewModel.IsDashboardPage);
+        Assert.False(viewModel.OpenClientSettingsCommand.CanExecute(null));
+        Assert.False(viewModel.OpenClientJavaSettingsCommand.CanExecute(null));
+        Assert.True(viewModel.IsClientGameSettingsSection);
+        Assert.False(viewModel.IsClientJavaSettingsSection);
 
         viewModel.NewInstanceCommand.Execute(null);
 
@@ -78,5 +84,63 @@ public sealed class ClientWorkspaceEmptyStateTests
         Assert.Same(instance, viewModel.SelectedInstance);
         Assert.True(viewModel.IsCreatePage);
         Assert.False(viewModel.IsDashboardPage);
+    }
+
+    [Fact]
+    public async Task SettingsEntrypoints_OpenTheirOwnGameAndJavaSections()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var paths = new ApplicationPaths(directory.Path);
+        paths.EnsureCreated();
+        var instanceDirectory = Path.Combine(paths.Clients, "settings-navigation");
+        Directory.CreateDirectory(instanceDirectory);
+        var model = new MinecraftClientInstance
+        {
+            Id = Guid.NewGuid(),
+            Name = "Settings navigation",
+            GameVersion = "1.21.1",
+            InstalledVersionId = "1.21.1",
+            DirectoryPath = instanceDirectory,
+        };
+        using (var registry = new MinecraftClientRegistry(paths.ClientRegistryFile))
+        {
+            await registry.SaveAsync(new MinecraftClientRegistryDocument
+            {
+                Instances = [model],
+            });
+        }
+
+        await using var viewModel = new ClientWorkspaceViewModel(
+            paths,
+            static () => new NewMinecraftClientDefaultsSettings());
+        viewModel.SelectedInstance = new ClientInstanceItemViewModel(model);
+
+        viewModel.OpenClientJavaSettingsCommand.Execute(null);
+        await WaitUntilAsync(() =>
+            viewModel.IsSettingsPage && viewModel.IsClientJavaSettingsSection);
+
+        Assert.False(viewModel.IsClientGameSettingsSection);
+        viewModel.CloseClientSettingsCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.OpenClientSettingsCommand.CanExecute(null));
+
+        viewModel.OpenClientSettingsCommand.Execute(null);
+        await WaitUntilAsync(() =>
+            viewModel.IsSettingsPage && viewModel.IsClientGameSettingsSection);
+
+        Assert.False(viewModel.IsClientJavaSettingsSection);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException("The client workspace did not reach the expected navigation state.");
+            }
+
+            await Task.Delay(10);
+        }
     }
 }

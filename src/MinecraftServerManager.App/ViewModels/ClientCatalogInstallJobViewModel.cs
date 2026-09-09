@@ -16,6 +16,7 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
     private const int MaximumActivityEntries = 24;
     private const double MaximumNonCompletedProgress = 0.99d;
     private string _statusText;
+    private string? _artworkImagePath;
     private string _currentStage = "queued";
     private string? _failedStage;
     private string? _failureDiagnosticId;
@@ -28,7 +29,8 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         string projectTitle,
         string versionName,
         string sourceLabel,
-        string initialStatus)
+        string initialStatus,
+        string? artworkImagePath = null)
     {
         if (id == Guid.Empty)
         {
@@ -43,6 +45,9 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
         ProjectTitle = projectTitle.Trim();
         VersionName = versionName.Trim();
         SourceLabel = sourceLabel.Trim();
+        _artworkImagePath = string.IsNullOrWhiteSpace(artworkImagePath)
+            ? null
+            : artworkImagePath;
         _statusText = initialStatus.Trim();
         Activities.Add(new ClientCatalogInstallActivityItemViewModel(
             _currentStage,
@@ -56,6 +61,12 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
     public string VersionName { get; }
 
     public string SourceLabel { get; }
+
+    public string? ArtworkImagePath
+    {
+        get => _artworkImagePath;
+        private set => SetProperty(ref _artworkImagePath, value);
+    }
 
     public string DisplayName => $"{ProjectTitle} · {VersionName}";
 
@@ -116,6 +127,14 @@ public sealed class ClientCatalogInstallJobViewModel : ObservableObject
     public bool IsTerminal => !IsRunning;
 
     public bool IsFailed => State == ClientCatalogInstallJobState.Failed;
+
+    internal void UpdateArtworkImagePath(string? artworkImagePath)
+    {
+        if (!string.IsNullOrWhiteSpace(artworkImagePath))
+        {
+            ArtworkImagePath = artworkImagePath;
+        }
+    }
 
     internal void Report(string stage, string statusText, double? progressValue = null)
     {

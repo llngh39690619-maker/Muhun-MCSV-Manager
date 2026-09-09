@@ -26,6 +26,18 @@ internal sealed record LoaderCatalogQueryResult(
     IReadOnlyList<MinecraftLoaderCatalogEntry> Versions,
     Exception? Error);
 
+public sealed record ClientCatalogPaginationItem(
+    string DisplayText,
+    int? PageNumber,
+    bool IsCurrent,
+    bool CanNavigate);
+
+public enum ClientSettingsSection
+{
+    Game,
+    JavaRuntime,
+}
+
 public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposable
 {
     private static readonly MinecraftClientLoader[] FixedLoaderOrder =
@@ -136,6 +148,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private bool _isBusy;
     private bool _isCreatePage;
     private bool _isSettingsPage;
+    private ClientSettingsSection _clientSettingsSection = ClientSettingsSection.Game;
     private bool _isCatalogPage;
     private bool _isCatalogBusy;
     private bool _isCatalogDetailOpen;
@@ -199,6 +212,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private int _catalogResultLimit = 20;
     private int _catalogTotalHits;
     private int _catalogNextOffset;
+    private int _catalogCurrentPage = 1;
     private string _catalogStatusText = string.Empty;
     private string? _lastFtbInstallFailureLocalizationKey;
     private string? _lastFtbInstallDiagnosticId;
@@ -235,7 +249,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         IReadOnlyList<IMinecraftLoaderCatalogProvider>? loaderCatalogs,
         IOnlineModpackWorkflow? onlineModpackWorkflow = null,
         ICurseForgeCredentialStore? curseForgeCredentialStore = null,
-        ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null)
+        ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null,
+        IModrinthClientModpackCatalog? modrinthCatalog = null)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _getGlobalDefaults = getGlobalDefaults ?? throw new ArgumentNullException(nameof(getGlobalDefaults));
@@ -284,7 +299,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             _memoryRecommendationService,
             new CmlMinecraftClientProcessBuilder(),
             _processRecoveryService);
-        _modrinthCatalog = new ModrinthClientModpackCatalog(_catalogHttpClient, UserAgent);
+        _modrinthCatalog = modrinthCatalog
+            ?? new ModrinthClientModpackCatalog(_catalogHttpClient, UserAgent);
         _modrinthContentCatalog = new ModrinthClientContentCatalog(_catalogHttpClient, UserAgent);
         _modrinthContentInstaller = new ModrinthClientContentInstaller(
             Path.Combine(_paths.ClientStaging, "content-downloads"),
@@ -359,10 +375,32 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         SearchCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(() => LoadCatalogAsync(append: false)),
             () => IsBrowsableCatalogSource && !IsCatalogBusy);
+        BrowseAllCatalogCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(BrowseAllCatalogAsync),
+            () => IsBrowsableCatalogSource && !IsCatalogBusy);
         LoadMoreCatalogCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(() => LoadCatalogAsync(append: true)),
             () => (IsModrinthCatalogSource || IsCurseForgeCatalogSource) &&
-                  !IsCatalogBusy && HasMoreCatalogResults);
+                  !IsCatalogBusy && _catalogNextOffset > 0 && HasMoreCatalogResults);
+        GoToCatalogPageCommand = new AsyncRelayCommand(
+            parameter => RunGuardedAsync(() => GoToCatalogPageAsync(parameter)),
+            CanNavigateToCatalogPage);
+        PreviousCatalogPageCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(() => LoadCatalogAsync(
+                append: false,
+                pageNumber: CatalogCurrentPage - 1)),
+            () => SupportsCatalogPagination &&
+                  !IsCatalogBusy &&
+                  _catalogNextOffset > 0 &&
+                  CatalogCurrentPage > 1);
+        NextCatalogPageCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(() => LoadCatalogAsync(
+                append: false,
+                pageNumber: CatalogCurrentPage + 1)),
+            () => SupportsCatalogPagination &&
+                  !IsCatalogBusy &&
+                  _catalogNextOffset > 0 &&
+                  CatalogCurrentPage < CatalogPageCount);
         OpenCurseForgeCredentialFileCommand = new RelayCommand(
             OpenCurseForgeCredentialFile,
             () => IsCurseForgeCatalogSource && !IsCatalogBusy);
@@ -381,8 +419,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ToggleCatalogInstallSidebarCommand = new RelayCommand(
             () => IsCatalogInstallSidebarVisible = !IsCatalogInstallSidebarVisible);
         ToggleCatalogInstallQueueCommand = new RelayCommand(
-            () => IsCatalogInstallQueueExpanded = !IsCatalogInstallQueueExpanded,
-            () => HasCatalogInstallJobs);
+            () => IsCatalogInstallQueueExpanded = !IsCatalogInstallQueueExpanded);
         ClearCompletedCatalogInstallJobsCommand = new RelayCommand(
             ClearCompletedCatalogInstallJobs,
             () => HasCompletedCatalogInstallJobs);
@@ -525,7 +562,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             () => RunGuardedAsync(ToggleRecycleBinAsync),
             () => SelectedInstance is not null && !IsBusy);
         OpenClientSettingsCommand = new AsyncRelayCommand(
-            () => RunGuardedAsync(OpenClientSettingsAsync),
+            () => RunGuardedAsync(() => OpenClientSettingsAsync(ClientSettingsSection.Game)),
+            () => SelectedInstance is { IsRunning: false } && !IsBusy);
+        OpenClientJavaSettingsCommand = new AsyncRelayCommand(
+            () => RunGuardedAsync(() => OpenClientSettingsAsync(ClientSettingsSection.JavaRuntime)),
             () => SelectedInstance is { IsRunning: false } && !IsBusy);
         SaveClientSettingsCommand = new AsyncRelayCommand(
             () => RunGuardedAsync(SaveClientSettingsAsync),
@@ -611,7 +651,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public IReadOnlyList<BedrockChannelChoiceViewModel> BedrockChannelChoices =>
         _bedrockChannelChoices;
 
-    public IReadOnlyList<int> CatalogResultLimits { get; } = [20, 40, 60, 80, 100];
+    public IReadOnlyList<int> CatalogResultLimits { get; } = [20, 40];
 
     public AsyncRelayCommand InitializeCommand { get; }
     public AsyncRelayCommand RefreshCatalogCommand { get; }
@@ -622,7 +662,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public RelayCommand CloseCatalogDetailsCommand { get; }
     public AsyncRelayCommand SelectCatalogSourceCommand { get; }
     public AsyncRelayCommand SearchCatalogCommand { get; }
+    public AsyncRelayCommand BrowseAllCatalogCommand { get; }
     public AsyncRelayCommand LoadMoreCatalogCommand { get; }
+    public AsyncRelayCommand GoToCatalogPageCommand { get; }
+    public AsyncRelayCommand PreviousCatalogPageCommand { get; }
+    public AsyncRelayCommand NextCatalogPageCommand { get; }
     public RelayCommand OpenCurseForgeCredentialFileCommand { get; }
     public RelayCommand DeleteCurseForgeCredentialCommand { get; }
     public AsyncRelayCommand InstallCatalogPackCommand { get; }
@@ -684,6 +728,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     public AsyncRelayCommand RestoreContentCommand { get; }
     public AsyncRelayCommand ToggleRecycleBinCommand { get; }
     public AsyncRelayCommand OpenClientSettingsCommand { get; }
+    public AsyncRelayCommand OpenClientJavaSettingsCommand { get; }
     public AsyncRelayCommand SaveClientSettingsCommand { get; }
     public RelayCommand CloseClientSettingsCommand { get; }
     public RelayCommand DiscardClientSettingsChangesCommand { get; }
@@ -804,6 +849,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             SearchContentDownloadCommand.NotifyCanExecuteChanged();
             InstallContentDownloadCommand.NotifyCanExecuteChanged();
             OpenClientSettingsCommand.NotifyCanExecuteChanged();
+            OpenClientJavaSettingsCommand.NotifyCanExecuteChanged();
             SaveClientSettingsCommand.NotifyCanExecuteChanged();
             RefreshContentCommand.NotifyCanExecuteChanged();
             ImportContentCommand.NotifyCanExecuteChanged();
@@ -1100,6 +1146,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 RestoreContentCommand.NotifyCanExecuteChanged();
                 ToggleRecycleBinCommand.NotifyCanExecuteChanged();
                 OpenClientSettingsCommand.NotifyCanExecuteChanged();
+                OpenClientJavaSettingsCommand.NotifyCanExecuteChanged();
                 SaveClientSettingsCommand.NotifyCanExecuteChanged();
                 ChooseClientJavaCommand.NotifyCanExecuteChanged();
                 OpenBedrockOfficialCommand.NotifyCanExecuteChanged();
@@ -1140,6 +1187,25 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
         }
     }
+
+    public ClientSettingsSection ActiveClientSettingsSection
+    {
+        get => _clientSettingsSection;
+        private set
+        {
+            if (SetProperty(ref _clientSettingsSection, value))
+            {
+                OnPropertyChanged(nameof(IsClientGameSettingsSection));
+                OnPropertyChanged(nameof(IsClientJavaSettingsSection));
+            }
+        }
+    }
+
+    public bool IsClientGameSettingsSection =>
+        ActiveClientSettingsSection == ClientSettingsSection.Game;
+
+    public bool IsClientJavaSettingsSection =>
+        ActiveClientSettingsSection == ClientSettingsSection.JavaRuntime;
 
     public bool IsCatalogPage
     {
@@ -1258,7 +1324,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             }
 
             SearchCatalogCommand.NotifyCanExecuteChanged();
+            BrowseAllCatalogCommand.NotifyCanExecuteChanged();
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+            GoToCatalogPageCommand.NotifyCanExecuteChanged();
+            PreviousCatalogPageCommand.NotifyCanExecuteChanged();
+            NextCatalogPageCommand.NotifyCanExecuteChanged();
             OpenCurseForgeCredentialFileCommand.NotifyCanExecuteChanged();
             DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
@@ -1281,6 +1351,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(ShowsFtbInstallDiagnostic));
             OnPropertyChanged(nameof(IsBrowsableCatalogSource));
             OnPropertyChanged(nameof(IsUnavailableCatalogSource));
+            OnPropertyChanged(nameof(SupportsCatalogPagination));
+            OnPropertyChanged(nameof(ShowsCatalogPagination));
+            OnPropertyChanged(nameof(CatalogPaginationItems));
             OnPropertyChanged(nameof(IsCatalogResultsView));
             OnPropertyChanged(nameof(ShowsCatalogSortFilter));
             OnPropertyChanged(nameof(ShowsCatalogCategoryFilter));
@@ -1293,7 +1366,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(ShowsModrinthInstallOptions));
 #pragma warning restore CS0618
             SearchCatalogCommand.NotifyCanExecuteChanged();
+            BrowseAllCatalogCommand.NotifyCanExecuteChanged();
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+            GoToCatalogPageCommand.NotifyCanExecuteChanged();
+            PreviousCatalogPageCommand.NotifyCanExecuteChanged();
+            NextCatalogPageCommand.NotifyCanExecuteChanged();
             OpenCurseForgeCredentialFileCommand.NotifyCanExecuteChanged();
             DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
@@ -1320,6 +1397,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             OnPropertyChanged(nameof(IsUnavailableCatalogSource));
             OnPropertyChanged(nameof(CurseForgeCredentialStatusText));
             SearchCatalogCommand.NotifyCanExecuteChanged();
+            BrowseAllCatalogCommand.NotifyCanExecuteChanged();
             DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
         }
     }
@@ -1348,6 +1426,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool IsBrowsableCatalogSource =>
         IsModrinthCatalogSource || IsCurseForgeCatalogSource || IsFtbCatalogSource;
+
+    public bool SupportsCatalogPagination => IsModrinthCatalogSource || IsCurseForgeCatalogSource;
 
     public bool IsUnavailableCatalogSource =>
         !IsBrowsableCatalogSource || IsCurseForgeCatalogSource && !HasCurseForgeCredential;
@@ -1386,6 +1466,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _catalogSearchText, value))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1398,6 +1479,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedCatalogGameVersion, value))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1410,6 +1492,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedCatalogLoader, value))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1422,6 +1505,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedCatalogCategory, value))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1434,6 +1518,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedCatalogSort, value))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1447,6 +1532,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             var normalized = CatalogResultLimits.Contains(value) ? value : 20;
             if (SetProperty(ref _catalogResultLimit, normalized))
             {
+                ResetCatalogPageForQueryChange();
                 ScheduleCatalogRefresh();
             }
         }
@@ -1462,6 +1548,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 OnPropertyChanged(nameof(CatalogResultsSummary));
                 OnPropertyChanged(nameof(HasMoreCatalogResults));
                 LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+                RefreshCatalogPagination();
             }
         }
     }
@@ -1470,6 +1557,103 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         L("client.vm.catalog.resultsSummary", CatalogProjects.Count, CatalogTotalHits);
 
     public bool HasMoreCatalogResults => _catalogNextOffset < CatalogTotalHits;
+
+    public int CatalogCurrentPage => _catalogCurrentPage;
+
+    public int CatalogPageCount => CalculateCatalogPageCount(
+        CatalogTotalHits,
+        CatalogResultLimit);
+
+    public bool ShowsCatalogPagination => SupportsCatalogPagination && CatalogPageCount > 1;
+
+    public IReadOnlyList<ClientCatalogPaginationItem> CatalogPaginationItems =>
+        SupportsCatalogPagination
+            ? CreateCatalogPaginationItems(
+                CatalogTotalHits,
+                CatalogResultLimit,
+                CatalogCurrentPage)
+            : [];
+
+    internal static IReadOnlyList<ClientCatalogPaginationItem> CreateCatalogPaginationItems(
+        int totalHits,
+        int resultLimit,
+        int currentPage)
+    {
+        var pageCount = CalculateCatalogPageCount(totalHits, resultLimit);
+        if (pageCount == 0)
+        {
+            return [];
+        }
+
+        currentPage = Math.Clamp(currentPage, 1, pageCount);
+        var items = new List<ClientCatalogPaginationItem>(9);
+
+        void AddPage(int pageNumber) => items.Add(new(
+            pageNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            pageNumber,
+            pageNumber == currentPage,
+            pageNumber != currentPage));
+
+        void AddEllipsis() => items.Add(new("…", null, false, false));
+
+        if (pageCount <= 7)
+        {
+            for (var pageNumber = 1; pageNumber <= pageCount; pageNumber++)
+            {
+                AddPage(pageNumber);
+            }
+
+            return items;
+        }
+
+        if (currentPage <= 4)
+        {
+            for (var pageNumber = 1; pageNumber <= 5; pageNumber++)
+            {
+                AddPage(pageNumber);
+            }
+
+            AddEllipsis();
+            AddPage(pageCount);
+            return items;
+        }
+
+        if (currentPage >= pageCount - 3)
+        {
+            AddPage(1);
+            AddEllipsis();
+            for (var pageNumber = pageCount - 4; pageNumber <= pageCount; pageNumber++)
+            {
+                AddPage(pageNumber);
+            }
+
+            return items;
+        }
+
+        AddPage(1);
+        AddEllipsis();
+        AddPage(currentPage - 1);
+        AddPage(currentPage);
+        AddPage(currentPage + 1);
+        AddEllipsis();
+        AddPage(pageCount);
+        return items;
+    }
+
+    private static int CalculateCatalogPageCount(int totalHits, int resultLimit)
+    {
+        if (totalHits <= 0 || resultLimit <= 0)
+        {
+            return 0;
+        }
+
+        return checked(((totalHits - 1) / resultLimit) + 1);
+    }
+
+    private int CalculateCatalogPageFromNextOffset(int nextOffset) =>
+        nextOffset <= 0
+            ? 1
+            : checked(((nextOffset - 1) / CatalogResultLimit) + 1);
 
     public string CatalogStatusText
     {
@@ -2666,6 +2850,109 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
+    private async Task BrowseAllCatalogAsync()
+    {
+        if (!IsBrowsableCatalogSource || IsCatalogBusy)
+        {
+            return;
+        }
+
+        CancelCatalogRequests();
+        SetProperty(ref _catalogSearchText, string.Empty, nameof(CatalogSearchText));
+        SetProperty(
+            ref _selectedCatalogGameVersion,
+            CatalogGameVersions.FirstOrDefault(static choice => choice.Version is null),
+            nameof(SelectedCatalogGameVersion));
+        SetProperty(
+            ref _selectedCatalogLoader,
+            CatalogLoaders.FirstOrDefault(static choice => choice.Loader is null),
+            nameof(SelectedCatalogLoader));
+        SetProperty(
+            ref _selectedCatalogCategory,
+            CatalogCategories.FirstOrDefault(static choice => choice.Category is null),
+            nameof(SelectedCatalogCategory));
+        ResetCatalogPageForQueryChange();
+        await LoadCatalogAsync(append: false, pageNumber: 1);
+    }
+
+    private bool CanNavigateToCatalogPage(object? parameter)
+    {
+        return TryGetCatalogPageNumber(parameter, out var pageNumber)
+               && SupportsCatalogPagination
+               && !IsCatalogBusy
+               && _catalogNextOffset > 0
+               && pageNumber >= 1
+               && pageNumber <= CatalogPageCount
+               && pageNumber != CatalogCurrentPage;
+    }
+
+    private async Task GoToCatalogPageAsync(object? parameter)
+    {
+        if (!CanNavigateToCatalogPage(parameter)
+            || !TryGetCatalogPageNumber(parameter, out var pageNumber))
+        {
+            return;
+        }
+
+        await LoadCatalogAsync(append: false, pageNumber: pageNumber);
+    }
+
+    private static bool TryGetCatalogPageNumber(object? parameter, out int pageNumber)
+    {
+        switch (parameter)
+        {
+            case int value:
+                pageNumber = value;
+                return true;
+            case ClientCatalogPaginationItem { PageNumber: int value }:
+                pageNumber = value;
+                return true;
+            default:
+                pageNumber = 0;
+                return false;
+        }
+    }
+
+    private void ResetCatalogPageForQueryChange()
+    {
+        _catalogNextOffset = 0;
+        SetCatalogCurrentPage(1);
+        OnPropertyChanged(nameof(HasMoreCatalogResults));
+        LoadMoreCatalogCommand.NotifyCanExecuteChanged();
+    }
+
+    private void SetCatalogCurrentPage(int pageNumber)
+    {
+        var normalized = Math.Clamp(pageNumber, 1, Math.Max(1, CatalogPageCount));
+        if (_catalogCurrentPage != normalized)
+        {
+            _catalogCurrentPage = normalized;
+            OnPropertyChanged(nameof(CatalogCurrentPage));
+        }
+
+        RefreshCatalogPagination();
+    }
+
+    private void RefreshCatalogPagination()
+    {
+        var normalized = Math.Clamp(
+            _catalogCurrentPage,
+            1,
+            Math.Max(1, CatalogPageCount));
+        if (_catalogCurrentPage != normalized)
+        {
+            _catalogCurrentPage = normalized;
+            OnPropertyChanged(nameof(CatalogCurrentPage));
+        }
+
+        OnPropertyChanged(nameof(CatalogPageCount));
+        OnPropertyChanged(nameof(ShowsCatalogPagination));
+        OnPropertyChanged(nameof(CatalogPaginationItems));
+        GoToCatalogPageCommand.NotifyCanExecuteChanged();
+        PreviousCatalogPageCommand.NotifyCanExecuteChanged();
+        NextCatalogPageCommand.NotifyCanExecuteChanged();
+    }
+
     private void ScheduleCatalogRefresh()
     {
         if (!IsCatalogPage || !IsBrowsableCatalogSource || _disposed)
@@ -2687,7 +2974,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 return;
             }
 
-            await LoadCatalogPageCoreAsync(append: false, cancellation);
+            await LoadCatalogPageCoreAsync(
+                append: false,
+                requestCancellation: cancellation,
+                pageNumber: 1);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -2699,7 +2989,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
     }
 
-    private async Task LoadCatalogAsync(bool append)
+    private async Task LoadCatalogAsync(bool append, int pageNumber = 1)
     {
         if (!IsBrowsableCatalogSource)
         {
@@ -2713,17 +3003,22 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             return;
         }
 
+        pageNumber = Math.Max(1, pageNumber);
         var cancellation = ReplaceCatalogBrowseCancellation();
-        var task = LoadCatalogPageCoreAsync(append, cancellation);
+        var task = LoadCatalogPageCoreAsync(append, cancellation, pageNumber);
         _catalogBrowseTask = task;
         await task;
     }
 
     private async Task LoadCatalogPageCoreAsync(
         bool append,
-        CancellationTokenSource requestCancellation)
+        CancellationTokenSource requestCancellation,
+        int pageNumber)
     {
         var cancellationToken = requestCancellation.Token;
+        var offset = append
+            ? _catalogNextOffset
+            : checked((pageNumber - 1) * CatalogResultLimit);
         IsCatalogBusy = true;
         try
         {
@@ -2740,11 +3035,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
             if (IsCurseForgeCatalogSource)
             {
-                await LoadCurseForgeCatalogPageAsync(requestCancellation, append);
+                await LoadCurseForgeCatalogPageAsync(
+                    requestCancellation,
+                    append,
+                    offset,
+                    pageNumber);
                 return;
             }
 
-            var offset = append ? _catalogNextOffset : 0;
             CatalogStatusText = string.IsNullOrWhiteSpace(CatalogSearchText)
                 ? L("client.vm.catalog.loadingFeatured")
                 : L("client.vm.catalog.searching", CatalogSearchText.Trim());
@@ -2778,8 +3076,16 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 CatalogProjects.Add(item);
             }
 
+            if (!append && additions.Length > 0)
+            {
+                SelectedCatalogProject = additions[0];
+            }
+
             _catalogNextOffset = Math.Max(offset, page.Offset) + Math.Max(1, page.Limit);
             CatalogTotalHits = page.TotalHits;
+            SetCatalogCurrentPage(append
+                ? CalculateCatalogPageFromNextOffset(_catalogNextOffset)
+                : pageNumber);
             OnPropertyChanged(nameof(CatalogResultsSummary));
             OnPropertyChanged(nameof(HasMoreCatalogResults));
             LoadMoreCatalogCommand.NotifyCanExecuteChanged();
@@ -2829,8 +3135,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             CatalogProjects.Add(item);
         }
 
+        if (additions.Length > 0)
+        {
+            SelectedCatalogProject = additions[0];
+        }
+
         _catalogNextOffset = additions.Length;
         CatalogTotalHits = page.TotalHits;
+        SetCatalogCurrentPage(1);
         OnPropertyChanged(nameof(CatalogResultsSummary));
         OnPropertyChanged(nameof(HasMoreCatalogResults));
         LoadMoreCatalogCommand.NotifyCanExecuteChanged();
@@ -2846,7 +3158,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private async Task LoadCurseForgeCatalogPageAsync(
         CancellationTokenSource requestCancellation,
-        bool append)
+        bool append,
+        int offset,
+        int pageNumber)
     {
         var cancellationToken = requestCancellation.Token;
         using var credential = AcquireCurseForgeCredential();
@@ -2857,14 +3171,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             return;
         }
 
-        var offset = append ? _catalogNextOffset : 0;
         CatalogStatusText = string.IsNullOrWhiteSpace(CatalogSearchText)
             ? L("client.vm.catalog.curseForge.loadingFeatured")
             : L("client.vm.catalog.curseForge.searching", CatalogSearchText.Trim());
-        IReadOnlyList<OnlineModpackSearchResult> projects;
+        OnlineModpackBrowsePage page;
         try
         {
-            projects = await _onlineModpackWorkflow.BrowseAsync(
+            page = await _onlineModpackWorkflow.BrowsePageAsync(
                 new OnlineModpackBrowseRequest(
                     OnlineModpackProvider.CurseForge,
                     Query: CatalogSearchText.Trim(),
@@ -2914,6 +3227,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             return;
         }
 
+        var projects = page.Projects;
         cancellationToken.ThrowIfCancellationRequested();
         if (!ReferenceEquals(_catalogBrowseCancellation, requestCancellation)
             || !IsCurseForgeCatalogSource)
@@ -2933,13 +3247,20 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             CatalogProjects.Add(item);
         }
 
+        if (!append && additions.Length > 0)
+        {
+            SelectedCatalogProject = additions[0];
+        }
+
         _catalogNextOffset = checked(offset + projects.Count);
-        // CurseForge's provider-neutral workflow intentionally does not expose a potentially
-        // stale total. Keep one sentinel result while a full page was returned so infinite scroll
-        // remains available without claiming an exact count.
-        CatalogTotalHits = projects.Count == CatalogResultLimit
-            ? checked(_catalogNextOffset + 1)
-            : _catalogNextOffset;
+        CatalogTotalHits = page.TotalHits is int totalHits
+            ? Math.Max(_catalogNextOffset, totalHits)
+            : projects.Count == CatalogResultLimit
+                ? checked(_catalogNextOffset + 1)
+                : _catalogNextOffset;
+        SetCatalogCurrentPage(append
+            ? CalculateCatalogPageFromNextOffset(_catalogNextOffset)
+            : pageNumber);
         OnPropertyChanged(nameof(CatalogResultsSummary));
         OnPropertyChanged(nameof(HasMoreCatalogResults));
         LoadMoreCatalogCommand.NotifyCanExecuteChanged();
@@ -3006,10 +3327,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                             item.PreviewImageUri,
                             cancellationToken);
                         cancellationToken.ThrowIfCancellationRequested();
-                        if (CatalogProjects.Contains(item))
-                        {
-                            item.SetCachedArtwork(icon, preview);
-                        }
+                        // Installation keeps the selected project alive even if the user changes
+                        // source or leaves the catalogue while the optional image is downloading.
+                        // Hydrate that detached item as well so its background job can adopt the
+                        // cached artwork instead of remaining on the fallback icon forever.
+                        item.SetCachedArtwork(icon, preview);
                     })
                     .ToArray();
                 await Task.WhenAll(batch);
@@ -3286,6 +3608,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             job.Report("prepare-java", StatusText);
             var java = await ResolveJavaAsync(javaMajor, operation.Token);
             await CacheCatalogArtworkAsync([project], operation.Token);
+            job.UpdateArtworkImagePath(project.CardImagePath);
             operation.Token.ThrowIfCancellationRequested();
             var request = new ModrinthClientPackInstallRequest(
                 Guid.NewGuid(),
@@ -3399,6 +3722,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             job.Report("cache-artwork", StatusText, 0.08d);
             ProgressValue = job.ProgressValue;
             await CacheCatalogArtworkAsync([project], operation.Token);
+            job.UpdateArtworkImagePath(project.CardImagePath);
             operation.Token.ThrowIfCancellationRequested();
             var request = new FtbClientPackInstallRequest(
                 Guid.NewGuid(),
@@ -3709,7 +4033,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             project.Title,
             version.Name,
             project.SourceLabel,
-            L("client.vm.catalog.jobs.queued"));
+            L("client.vm.catalog.jobs.queued"),
+            project.CardImagePath);
         ProgressValue = 0d;
         CatalogInstallJobs.Insert(0, job);
         ActiveCatalogInstallJob = job;
@@ -3851,6 +4176,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         SelectedCatalogVersion = null;
         CatalogTotalHits = 0;
         _catalogNextOffset = 0;
+        SetCatalogCurrentPage(1);
         OnPropertyChanged(nameof(CatalogResultsSummary));
         OnPropertyChanged(nameof(HasMoreCatalogResults));
     }
@@ -4665,6 +4991,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             QuickLaunchCommand.NotifyCanExecuteChanged();
             StopClientCommand.NotifyCanExecuteChanged();
             OpenClientSettingsCommand.NotifyCanExecuteChanged();
+            OpenClientJavaSettingsCommand.NotifyCanExecuteChanged();
             DeleteClientInstanceCommand.NotifyCanExecuteChanged();
             NotifyContentMutationStateChanged();
         }
@@ -5082,7 +5409,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         ShowSelectedInstance();
     }
 
-    private async Task OpenClientSettingsAsync()
+    private async Task OpenClientSettingsAsync(ClientSettingsSection section)
     {
         var instance = SelectedInstance ?? throw new InvalidOperationException(L("client.vm.validation.instance"));
         var settings = await _instanceSettingsService.GetSettingsAsync(instance.Id);
@@ -5092,6 +5419,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         SettingsEditor = CreateClientSettingsEditor(instance, settings);
+        ActiveClientSettingsSection = section;
         IsClientSettingsClosePromptOpen = false;
         IsCreatePage = false;
         IsCatalogPage = false;

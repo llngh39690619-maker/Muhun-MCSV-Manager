@@ -156,7 +156,14 @@ public sealed class ClientWorkspacePresentationTests
         var document = XDocument.Load(TestRepositoryPaths.AppSource(
             "Views",
             "ClientWorkspaceView.xaml"));
-        var buttons = document
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var sectionTabs = document
+            .Descendants(Presentation + "Border")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "ClientLauncherSectionTabs",
+                StringComparison.Ordinal));
+        var buttons = sectionTabs
             .Descendants(Presentation + "Button")
             .Where(button => string.Equals(
                 (string?)button.Attribute("Command"),
@@ -433,7 +440,10 @@ public sealed class ClientWorkspacePresentationTests
                 StringComparison.Ordinal));
 
         Assert.Equal("0", (string?)pageScrollViewer.Attribute("Grid.Row"));
-        Assert.Equal("1", (string?)actionBar.Attribute("Grid.Row"));
+        Assert.Equal("0", (string?)actionBar.Attribute("Grid.Row"));
+        Assert.Equal("356", (string?)actionBar.Attribute("Width"));
+        Assert.Equal("Right", (string?)actionBar.Attribute("HorizontalAlignment"));
+        Assert.Equal("Bottom", (string?)actionBar.Attribute("VerticalAlignment"));
         Assert.Empty(installButtonsInScrollContent);
         Assert.Contains(
             actionBar.Descendants(presentation + "Button"),
@@ -442,16 +452,75 @@ public sealed class ClientWorkspacePresentationTests
                 "{Binding InstallCatalogPackCommand}",
                 StringComparison.Ordinal));
         Assert.DoesNotContain(pageScrollViewer, installTray.Ancestors());
-        Assert.Equal("1", (string?)installTray.Attribute("Grid.Row"));
+        Assert.Equal("2", (string?)installTray.Attribute("Grid.Row"));
+        Assert.Equal("Stretch", (string?)installTray.Attribute("HorizontalAlignment"));
+        Assert.Equal("Bottom", (string?)installTray.Attribute("VerticalAlignment"));
+        Assert.Equal("142", (string?)installTray.Attribute("MaxHeight"));
         Assert.Contains("{Binding CatalogInstallJobs}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding IsFailed}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{DynamicResource DangerBrush}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains("{Binding CancelOperationCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains("{Binding ClearCompletedCatalogInstallJobsCommand}", installTray.ToString(), StringComparison.Ordinal);
         Assert.Contains(
-            "{Binding SelectedCatalogProject.FullDescription}",
+            "Binding=\"{Binding IsCatalogPage}\" Value=\"True\"",
+            installTray.ToString(),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "{Binding IsCatalogInstallQueueExpanded, Converter={StaticResource BoolToVisibility}}",
+            installTray.ToString(),
+            StringComparison.Ordinal);
+        Assert.Contains("L10n.client.vm.catalog.jobs.empty", installTray.ToString(), StringComparison.Ordinal);
+        Assert.Contains(
+            "{Binding HasCatalogInstallJobs, Converter={StaticResource InverseBoolToVisibility}}",
+            installTray.ToString(),
+            StringComparison.Ordinal);
+
+        var horizontalJobs = installTray
+            .Descendants(presentation + "ListBox")
+            .Single(element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "CatalogInstallBackgroundJobList",
+                StringComparison.Ordinal));
+        Assert.Equal("Auto", (string?)horizontalJobs.Attribute("ScrollViewer.HorizontalScrollBarVisibility"));
+        Assert.Equal("Disabled", (string?)horizontalJobs.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+        Assert.Equal("True", (string?)horizontalJobs.Attribute("VirtualizingPanel.IsVirtualizing"));
+        Assert.Equal("Recycling", (string?)horizontalJobs.Attribute("VirtualizingPanel.VirtualizationMode"));
+        var horizontalPanel = Assert.Single(horizontalJobs.Descendants(presentation + "VirtualizingStackPanel"));
+        Assert.Equal("Horizontal", (string?)horizontalPanel.Attribute("Orientation"));
+
+        var jobCard = Assert.Single(
+            horizontalJobs
+                .Element(presentation + "ListBox.ItemTemplate")!
+                .Elements(presentation + "DataTemplate"));
+        var jobCardSource = jobCard.ToString();
+        Assert.Contains("Binding DisplayName", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding SourceLabel", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding ArtworkImagePath", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding StatusText", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding ProgressValue", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding IsProgressIndeterminate", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding DataContext.CancelOperationCommand", jobCardSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "{Binding SelectedCatalogProject.Description}",
             catalogLayout.ToString(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SettingsNavigation_SeparatesGameAndJavaRuntimeSections()
+    {
+        var xaml = File.ReadAllText(TestRepositoryPaths.AppSource(
+            "Views",
+            "ClientWorkspaceView.xaml"));
+
+        Assert.Contains("Command=\"{Binding OpenClientJavaSettingsCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ClientGameGeneralSettingsCard\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ClientGameResolutionSettingsCard\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ClientJavaMemorySettingsCard\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"ClientJavaAdvancedSettingsCard\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("DataContext.IsClientGameSettingsSection", xaml, StringComparison.Ordinal);
+        Assert.Contains("DataContext.IsClientJavaSettingsSection", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

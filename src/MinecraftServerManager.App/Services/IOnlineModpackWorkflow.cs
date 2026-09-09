@@ -91,6 +91,16 @@ public sealed record OnlineModpackBrowseRequest(
 }
 
 /// <summary>
+/// One provider-neutral catalogue page. <see cref="TotalHits"/> is the provider-reported exact
+/// result count when available; compatibility workflows may return <see langword="null"/>.
+/// </summary>
+public sealed record OnlineModpackBrowsePage(
+    IReadOnlyList<OnlineModpackSearchResult> Projects,
+    int Offset,
+    int Limit,
+    int? TotalHits);
+
+/// <summary>
 /// A catalogue result whose media addresses have passed first-line metadata validation.
 /// Non-HTTPS, literal-IP, localhost or credential-bearing addresses are reduced to null. The
 /// bounded image downloader must still resolve and revalidate DNS before each connection.
@@ -308,6 +318,20 @@ public interface IOnlineModpackWorkflow
     /// workflows may leave it null; catalog results remain fully usable without images.
     /// </summary>
     IOnlineModpackArtworkCache? ArtworkCache => null;
+
+    async Task<OnlineModpackBrowsePage> BrowsePageAsync(
+        OnlineModpackBrowseRequest request,
+        SecureString? transientApiKey,
+        CancellationToken cancellationToken)
+    {
+        var projects = await BrowseAsync(request, transientApiKey, cancellationToken)
+            .ConfigureAwait(false);
+        return new OnlineModpackBrowsePage(
+            projects,
+            request.Offset,
+            request.Limit,
+            TotalHits: null);
+    }
 
     async Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseAsync(
         OnlineModpackBrowseRequest request,

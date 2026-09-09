@@ -163,33 +163,58 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         OnlineModpackBrowseRequest request,
         SecureString? transientApiKey,
         CancellationToken cancellationToken)
+        => (await BrowsePageAsync(request, transientApiKey, cancellationToken)
+            .ConfigureAwait(false)).Projects;
+
+    public async Task<OnlineModpackBrowsePage> BrowsePageAsync(
+        OnlineModpackBrowseRequest request,
+        SecureString? transientApiKey,
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
         return request.Provider switch
         {
-            OnlineModpackProvider.Ftb => await BrowseFtbAsync(request, cancellationToken)
-                .ConfigureAwait(false),
-            OnlineModpackProvider.Modrinth => (await _modrinthCatalog.SearchAsync(
-                    new ModrinthModpackSearchRequest(
-                        Query: request.Query.Trim(),
-                        GameVersion: TrimOrNull(request.GameVersion),
-                        Loader: TrimOrNull(request.Loader),
-                        Offset: request.Offset,
-                        Limit: request.Limit,
-                        Index: MapModrinthIndex(request.Sort),
-                        SourceCategory: TrimOrNull(request.SourceCategory)),
+            OnlineModpackProvider.Ftb => new OnlineModpackBrowsePage(
+                await BrowseFtbAsync(request, cancellationToken).ConfigureAwait(false),
+                request.Offset,
+                request.Limit,
+                TotalHits: null),
+            OnlineModpackProvider.Modrinth => await BrowseModrinthPageAsync(
+                    request,
                     cancellationToken)
-                .ConfigureAwait(false)).Projects.Select(MapModrinthProject).ToArray(),
+                .ConfigureAwait(false),
             OnlineModpackProvider.CurseForge => await WithApiKeyAsync(
                 transientApiKey,
-                key => BrowseCurseForgeAsync(key, request, cancellationToken)),
+                key => BrowseCurseForgePageAsync(key, request, cancellationToken)),
             _ => throw new ArgumentOutOfRangeException(nameof(request))
         };
     }
 
-    private async Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseCurseForgeAsync(
+    private async Task<OnlineModpackBrowsePage> BrowseModrinthPageAsync(
+        OnlineModpackBrowseRequest request,
+        CancellationToken cancellationToken)
+    {
+        var page = await _modrinthCatalog.SearchAsync(
+                new ModrinthModpackSearchRequest(
+                    Query: request.Query.Trim(),
+                    GameVersion: TrimOrNull(request.GameVersion),
+                    Loader: TrimOrNull(request.Loader),
+                    Offset: request.Offset,
+                    Limit: request.Limit,
+                    Index: MapModrinthIndex(request.Sort),
+                    SourceCategory: TrimOrNull(request.SourceCategory)),
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new OnlineModpackBrowsePage(
+            page.Projects.Select(MapModrinthProject).ToArray(),
+            page.Offset,
+            page.Limit,
+            page.TotalHits);
+    }
+
+    private async Task<OnlineModpackBrowsePage> BrowseCurseForgePageAsync(
         string apiKey,
         OnlineModpackBrowseRequest request,
         CancellationToken cancellationToken)
@@ -199,6 +224,7 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         var seenModIds = new HashSet<int>();
         var index = request.Offset;
         var scanEndExclusive = checked(request.Offset + request.Limit);
+        int? totalHits = null;
         while (results.Count < request.Limit && index < scanEndExclusive)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -221,10 +247,15 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
                 .ConfigureAwait(false);
 
             var received = page.Projects.Count;
+            totalHits = Math.Max(
+                totalHits ?? 0,
+                Math.Max(0, page.Pagination.TotalCount));
             if (received == 0)
             {
                 break;
             }
+
+            totalHits = Math.Max(totalHits.Value, checked(index + received));
 
             foreach (var project in page.Projects)
             {
@@ -255,7 +286,11 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
             index = nextIndex;
         }
 
-        return results.Take(request.Limit).ToArray();
+        return new OnlineModpackBrowsePage(
+            results.Take(request.Limit).ToArray(),
+            request.Offset,
+            request.Limit,
+            totalHits ?? request.Offset);
     }
 
     private async Task<IReadOnlyList<OnlineModpackSearchResult>> BrowseFtbAsync(

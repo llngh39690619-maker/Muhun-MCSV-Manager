@@ -49,6 +49,12 @@ public sealed class ClientResponsiveLayoutContractTests
         var details = Assert.Single(
             body.Descendants(presentation + "Border"),
             element => (string?)element.Attribute(xaml + "Name") == "CatalogDiscoveryDetailPanel");
+        var navigation = Assert.Single(
+            document.Descendants(presentation + "ScrollViewer"),
+            element => (string?)element.Attribute(xaml + "Name") == "CatalogDiscoveryNavigation");
+        var navigationHost = Assert.Single(
+            document.Descendants(presentation + "Border"),
+            element => (string?)element.Attribute(xaml + "Name") == "ClientWorkspaceNavigation");
 
         Assert.Equal(
             ["*", "14", "356"],
@@ -56,12 +62,41 @@ public sealed class ClientResponsiveLayoutContractTests
                 .Elements(presentation + "ColumnDefinition")
                 .Select(column => (string)column.Attribute("Width")!)
                 .ToArray());
+        Assert.Null(body.Attribute("Visibility"));
         Assert.Equal(
             "{Binding IsBrowsableCatalogSource, Converter={StaticResource BoolToVisibility}}",
-            (string?)body.Attribute("Visibility"));
+            (string?)results.Attribute("Visibility"));
         Assert.Equal(
             "{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}",
             (string?)details.Attribute("Visibility"));
+        Assert.Equal("2", (string?)details.Attribute("Grid.Column"));
+        Assert.Equal("Top", (string?)details.Attribute("VerticalAlignment"));
+        Assert.Contains(body, filters.Ancestors());
+
+        Assert.Equal(
+            "{Binding IsCatalogPage, Converter={StaticResource BoolToVisibility}}",
+            (string?)navigation.Attribute("Visibility"));
+        var instanceList = Assert.Single(
+            navigation.Descendants(presentation + "ListBox"),
+            element => (string?)element.Attribute(xaml + "Name") == "CatalogDiscoveryInstanceList");
+        Assert.Equal("{Binding Instances}", (string?)instanceList.Attribute("ItemsSource"));
+        Assert.Equal("{Binding SelectedInstance}", (string?)instanceList.Attribute("SelectedItem"));
+        var navigationSource = navigation.ToString();
+        Assert.Contains("{Binding NewInstanceCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenCatalogCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenContentDownloadCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("MinecraftClientContentKind.Mod", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("MinecraftClientContentKind.ResourcePack", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("MinecraftClientContentKind.ShaderPack", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenClientSettingsCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding OpenClientJavaSettingsCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding BrowseAllCatalogCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Contains("{Binding ToggleCatalogInstallQueueCommand}", navigationSource, StringComparison.Ordinal);
+        Assert.Empty(document.Descendants(presentation + "ColumnDefinition.Style"));
+        var navigationHostSource = navigationHost.ToString();
+        Assert.Contains("Property=\"Width\" Value=\"202\"", navigationHostSource, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding IsCatalogPage}\" Value=\"True\"", navigationHostSource, StringComparison.Ordinal);
+        Assert.Contains("Property=\"Width\" Value=\"246\"", navigationHostSource, StringComparison.Ordinal);
 
         Assert.Contains(
             filters.Descendants(presentation + "TextBox"),
@@ -89,8 +124,8 @@ public sealed class ClientResponsiveLayoutContractTests
             results.Descendants(presentation + "ListBox"),
             element => (string?)element.Attribute(xaml + "Name") == "CatalogResultsList");
         var resultPanel = Assert.Single(resultList.Descendants(controls + "ResponsiveWrapPanel"));
-        Assert.Equal("330", (string?)resultPanel.Attribute("MinItemWidth"));
-        Assert.Equal("162", (string?)resultPanel.Attribute("ItemHeight"));
+        Assert.Equal("280", (string?)resultPanel.Attribute("MinItemWidth"));
+        Assert.Equal("138", (string?)resultPanel.Attribute("ItemHeight"));
         Assert.Equal("2", (string?)resultPanel.Attribute("MaximumColumns"));
         Assert.Contains(
             resultList.Descendants(presentation + "Image"),
@@ -99,6 +134,32 @@ public sealed class ClientResponsiveLayoutContractTests
         Assert.Contains(
             details.Descendants(presentation + "ComboBox"),
             element => (string?)element.Attribute("ItemsSource") == "{Binding CatalogVersions}");
+        Assert.Contains(
+            details.Descendants(presentation + "Slider"),
+            element => (string?)element.Attribute("Value") == "{Binding MaximumMemoryMb}");
+
+        var pagination = Assert.Single(
+            results.Descendants(presentation + "StackPanel"),
+            element => (string?)element.Attribute(xaml + "Name") == "CatalogPagination");
+        Assert.Equal(
+            "{Binding ShowsCatalogPagination, Converter={StaticResource BoolToVisibility}}",
+            (string?)pagination.Attribute("Visibility"));
+        Assert.Contains(
+            pagination.Descendants(presentation + "Button"),
+            element => (string?)element.Attribute("Command") == "{Binding PreviousCatalogPageCommand}");
+        Assert.Contains(
+            pagination.Descendants(presentation + "Button"),
+            element => (string?)element.Attribute("Command") == "{Binding NextCatalogPageCommand}");
+        var pageItems = Assert.Single(pagination.Descendants(presentation + "ItemsControl"));
+        Assert.Equal("{Binding CatalogPaginationItems}", (string?)pageItems.Attribute("ItemsSource"));
+        var pageButton = Assert.Single(
+            pageItems.Descendants(presentation + "Button"),
+            element => ((string?)element.Attribute("Command"))?.Contains(
+                "GoToCatalogPageCommand",
+                StringComparison.Ordinal) == true);
+        Assert.Equal("{Binding PageNumber}", (string?)pageButton.Attribute("CommandParameter"));
+        Assert.Equal("{Binding CanNavigate}", (string?)pageButton.Attribute("IsEnabled"));
+        Assert.Contains("Binding IsCurrent", pageButton.ToString(), StringComparison.Ordinal);
 
         Assert.NotNull(document.Descendants(presentation + "Border").SingleOrDefault(
             element => (string?)element.Attribute(xaml + "Name") == "ClientLauncherHero"));

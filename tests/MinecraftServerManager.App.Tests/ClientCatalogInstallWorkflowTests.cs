@@ -50,7 +50,7 @@ public sealed class ClientCatalogInstallWorkflowTests
 
         Assert.True(viewModel.IsCatalogInstallSidebarVisible);
         Assert.True(viewModel.ToggleCatalogInstallSidebarCommand.CanExecute(null));
-        Assert.False(viewModel.ToggleCatalogInstallQueueCommand.CanExecute(null));
+        Assert.True(viewModel.ToggleCatalogInstallQueueCommand.CanExecute(null));
         viewModel.ToggleCatalogInstallSidebarCommand.Execute(null);
         Assert.False(viewModel.IsCatalogInstallSidebarVisible);
 
@@ -132,6 +132,24 @@ public sealed class ClientCatalogInstallWorkflowTests
 
         Assert.Equal(ClientCatalogInstallJobState.Completed, completed.State);
         Assert.Equal(1d, completed.ProgressValue);
+    }
+
+    [Fact]
+    public void InstallJob_RefreshesArtworkWhenTheCacheCompletesAfterTheJobStarts()
+    {
+        var job = new ClientCatalogInstallJobViewModel(
+            Guid.NewGuid(),
+            "FTB Pack",
+            "Stable",
+            "FTB",
+            "Queued");
+        var changes = new List<string?>();
+        job.PropertyChanged += (_, eventArgs) => changes.Add(eventArgs.PropertyName);
+
+        job.UpdateArtworkImagePath("C:\\cache\\pack-preview.webp");
+
+        Assert.Equal("C:\\cache\\pack-preview.webp", job.ArtworkImagePath);
+        Assert.Contains(nameof(ClientCatalogInstallJobViewModel.ArtworkImagePath), changes);
     }
 
     [Theory]

@@ -98,6 +98,59 @@ public sealed class OnlineModpackWorkflowTests
     }
 
     [Fact]
+    public async Task BrowseCurseForgePage_PropagatesOfficialTotalCountAndRequestedOffset()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var searchIndexes = new List<int>();
+        using var apiClient = new HttpClient(new CurseHttpHandler(request =>
+        {
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/v1/games" => JsonResponse(CurseGamesJson),
+                "/v1/categories" => JsonResponse(CurseCategoriesJson),
+                "/v1/mods/search" => CreateCurseSearchResponse(
+                    RecordSearchIndex(request.RequestUri, searchIndexes),
+                    ReadQueryInteger(request.RequestUri, "pageSize"),
+                    Enumerable.Range(
+                        ReadQueryInteger(request.RequestUri, "index") + 1,
+                        ReadQueryInteger(request.RequestUri, "pageSize")),
+                    totalCount: 2_500),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            };
+        }));
+        using var downloadClient = new HttpClient(new CurseHttpHandler(_ =>
+            throw new Xunit.Sdk.XunitException("Catalogue browse must not call the CDN.")));
+        var provider = new CurseForgeModpackProvider(
+            apiClient,
+            downloadClient,
+            "MuhunMCSVManager.Tests/1.0");
+        using var workflow = new OnlineModpackWorkflow(
+            new ApplicationPaths(directory.Path),
+            modrinthCatalog: null,
+            modrinthInstaller: null,
+            modrinthLoaderBootstrapper: null,
+            modrinthJavaRuntimeResolver: null,
+            curseForge: provider);
+        using var apiKey = CreateSecureString("transient-curse-key");
+
+        var page = await workflow.BrowsePageAsync(
+            new OnlineModpackBrowseRequest(
+                OnlineModpackProvider.CurseForge,
+                Offset: 2_480,
+                Limit: 20),
+            apiKey,
+            CancellationToken.None);
+
+        Assert.Equal([2_480], searchIndexes);
+        Assert.Equal(2_480, page.Offset);
+        Assert.Equal(20, page.Limit);
+        Assert.Equal(2_500, page.TotalHits);
+        Assert.Equal(20, page.Projects.Count);
+        Assert.Equal("2481", page.Projects[0].ProjectId);
+        Assert.Equal("2500", page.Projects[^1].ProjectId);
+    }
+
+    [Fact]
     public async Task BrowseCurseForge_OversizedProviderPageIsHardCappedAtRequestedLimit()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();

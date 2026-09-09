@@ -63,6 +63,111 @@ public sealed class ClientCurseForgeCatalogTests
     }
 
     [Fact]
+    public async Task SavedCredential_PageCommandUsesCurseForgeOffsetAndReplacesResults()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var importer = new FakeCredentialImporter(
+            credentialStore,
+            CurseForgeCredentialImportResult.Missing);
+        var workflow = new RecordingWorkflow
+        {
+            BrowseHandler = (request, _) =>
+            {
+                var count = request.Offset == 0 ? request.Limit : 5;
+                return Task.FromResult<IReadOnlyList<OnlineModpackSearchResult>>(
+                    Enumerable.Range(request.Offset, count)
+                        .Select(index => CreateProject($"curseforge-project-{index}"))
+                        .ToArray());
+            },
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            importer);
+
+        viewModel.SelectCatalogSourceCommand.Execute("curseforge");
+        await WaitUntilAsync(() =>
+            workflow.Requests.Count == 1 &&
+            !viewModel.IsCatalogBusy &&
+            viewModel.CatalogProjects.Count == 20);
+
+        Assert.True(viewModel.NextCatalogPageCommand.CanExecute(null));
+        viewModel.GoToCatalogPageCommand.Execute(2);
+        await WaitUntilAsync(() =>
+            workflow.Requests.Count == 2 &&
+            !viewModel.IsCatalogBusy &&
+            viewModel.CatalogCurrentPage == 2);
+
+        Assert.Equal(20, workflow.Requests[1].Offset);
+        Assert.Equal(5, viewModel.CatalogProjects.Count);
+        Assert.Equal("curseforge-project-20", viewModel.CatalogProjects[0].ProjectId);
+        Assert.DoesNotContain(
+            viewModel.CatalogProjects,
+            static project => project.ProjectId == "curseforge-project-0");
+        Assert.Equal(25, viewModel.CatalogTotalHits);
+        Assert.False(viewModel.NextCatalogPageCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task SavedCredential_OfficialTotalShowsFarPagesAndJumpUsesExactOffset()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var importer = new FakeCredentialImporter(
+            credentialStore,
+            CurseForgeCredentialImportResult.Missing);
+        const int totalHits = 2_500;
+        var workflow = new RecordingWorkflow
+        {
+            BrowsePageHandler = (request, _) =>
+            {
+                var count = Math.Min(request.Limit, Math.Max(0, totalHits - request.Offset));
+                IReadOnlyList<OnlineModpackSearchResult> projects = Enumerable
+                    .Range(request.Offset, count)
+                    .Select(index => CreateProject($"curseforge-project-{index}"))
+                    .ToArray();
+                return Task.FromResult(new OnlineModpackBrowsePage(
+                    projects,
+                    request.Offset,
+                    request.Limit,
+                    totalHits));
+            },
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            importer);
+
+        viewModel.SelectCatalogSourceCommand.Execute("curseforge");
+        await WaitUntilAsync(() =>
+            workflow.Requests.Count == 1 &&
+            !viewModel.IsCatalogBusy &&
+            viewModel.CatalogProjects.Count == 20);
+
+        Assert.Equal(totalHits, viewModel.CatalogTotalHits);
+        Assert.Equal(125, viewModel.CatalogPageCount);
+        Assert.Equal(
+            new[] { "1", "2", "3", "4", "5", "…", "125" },
+            viewModel.CatalogPaginationItems
+                .Select(static item => item.DisplayText)
+                .ToArray());
+
+        viewModel.GoToCatalogPageCommand.Execute(125);
+        await WaitUntilAsync(() =>
+            workflow.Requests.Count == 2 &&
+            !viewModel.IsCatalogBusy &&
+            viewModel.CatalogCurrentPage == 125);
+
+        Assert.Equal(2_480, workflow.Requests[1].Offset);
+        Assert.Equal("curseforge-project-2480", viewModel.CatalogProjects[0].ProjectId);
+        Assert.Equal(totalHits, viewModel.CatalogTotalHits);
+        Assert.False(viewModel.NextCatalogPageCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task MissingCredential_DoesNotCallTheCurseForgeWorkflow()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();
@@ -396,6 +501,11 @@ public sealed class ClientCurseForgeCatalogTests
             CancellationToken,
             Task<IReadOnlyList<OnlineModpackSearchResult>>>? BrowseHandler { get; init; }
 
+        public Func<
+            OnlineModpackBrowseRequest,
+            CancellationToken,
+            Task<OnlineModpackBrowsePage>>? BrowsePageHandler { get; init; }
+
         public int VersionRequestCount { get; private set; }
 
         public bool CredentialWasSupplied { get; private set; }
@@ -408,9 +518,7 @@ public sealed class ClientCurseForgeCatalogTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Requests.Add(request);
-            CredentialWasSupplied = transientApiKey is not null;
-            CredentialWasReadOnly = transientApiKey?.IsReadOnly() == true;
+            RecordRequest(request, transientApiKey);
             if (BrowseHandler is not null)
             {
                 return BrowseHandler(request, cancellationToken);
@@ -419,6 +527,35 @@ public sealed class ClientCurseForgeCatalogTests
             return BrowseError is null
                 ? Task.FromResult(Results)
                 : Task.FromException<IReadOnlyList<OnlineModpackSearchResult>>(BrowseError);
+        }
+
+        public async Task<OnlineModpackBrowsePage> BrowsePageAsync(
+            OnlineModpackBrowseRequest request,
+            SecureString? transientApiKey,
+            CancellationToken cancellationToken)
+        {
+            if (BrowsePageHandler is null)
+            {
+                var projects = await BrowseAsync(request, transientApiKey, cancellationToken);
+                return new OnlineModpackBrowsePage(
+                    projects,
+                    request.Offset,
+                    request.Limit,
+                    TotalHits: null);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            RecordRequest(request, transientApiKey);
+            return await BrowsePageHandler(request, cancellationToken);
+        }
+
+        private void RecordRequest(
+            OnlineModpackBrowseRequest request,
+            SecureString? transientApiKey)
+        {
+            Requests.Add(request);
+            CredentialWasSupplied = transientApiKey is not null;
+            CredentialWasReadOnly = transientApiKey?.IsReadOnly() == true;
         }
 
         public Task<IReadOnlyList<OnlineModpackSearchResult>> SearchAsync(
