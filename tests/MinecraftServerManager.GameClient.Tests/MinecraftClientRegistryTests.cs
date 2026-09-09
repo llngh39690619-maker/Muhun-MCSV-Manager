@@ -208,6 +208,52 @@ public sealed class MinecraftClientRegistryTests : IDisposable
     }
 
     [Fact]
+    public async Task Registry_AcceptsExactCurseForgeIdentityAndOfficialArtworkHost()
+    {
+        var instance = CreateInstance(
+            "curseforge",
+            Path.Combine(_root, "instances", "curseforge"));
+        instance.CatalogProvider = "curseforge";
+        instance.CatalogProjectId = "285109";
+        instance.CatalogVersionId = "4612979";
+        instance.CatalogIconUri = new Uri("https://media.forgecdn.net/avatars/123/icon.png");
+        instance.CatalogPreviewUri = new Uri("https://mediafilez.forgecdn.net/screenshots/preview.jpg");
+        using var registry = new MinecraftClientRegistry(Path.Combine(_root, "curseforge-registry.json"));
+
+        await registry.SaveAsync(new MinecraftClientRegistryDocument { Instances = [instance] });
+
+        var stored = Assert.Single((await registry.LoadAsync()).Instances);
+        Assert.Equal("curseforge", stored.CatalogProvider);
+        Assert.Equal("285109", stored.CatalogProjectId);
+        Assert.Equal("4612979", stored.CatalogVersionId);
+    }
+
+    [Fact]
+    public async Task Registry_RejectsInvalidCurseForgeIdentityAndNonOfficialArtworkHost()
+    {
+        var invalidIdentity = CreateInstance(
+            "invalid-curseforge-id",
+            Path.Combine(_root, "instances", "invalid-curseforge-id"));
+        invalidIdentity.CatalogProvider = "curseforge";
+        invalidIdentity.CatalogProjectId = "0285109";
+        invalidIdentity.CatalogVersionId = "4612979";
+        var invalidArtwork = CreateInstance(
+            "invalid-curseforge-art",
+            Path.Combine(_root, "instances", "invalid-curseforge-art"));
+        invalidArtwork.CatalogProvider = "curseforge";
+        invalidArtwork.CatalogProjectId = "285109";
+        invalidArtwork.CatalogVersionId = "4612979";
+        invalidArtwork.CatalogIconUri = new Uri("https://forgecdn.net.example.invalid/icon.png");
+        using var registry = new MinecraftClientRegistry(
+            Path.Combine(_root, "unsafe-curseforge-registry.json"));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
+            new MinecraftClientRegistryDocument { Instances = [invalidIdentity] }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => registry.SaveAsync(
+            new MinecraftClientRegistryDocument { Instances = [invalidArtwork] }));
+    }
+
+    [Fact]
     public async Task Registry_DisposeWaitsForDurableInFlightCommitBeforeClosingStore()
     {
         var path = Path.Combine(_root, "dispose-during-commit.json");

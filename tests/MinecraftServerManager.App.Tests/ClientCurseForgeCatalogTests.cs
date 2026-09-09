@@ -1,10 +1,12 @@
 using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security;
 using MinecraftServerManager.App.Services;
 using MinecraftServerManager.App.ViewModels;
 using MinecraftServerManager.Core.Models;
 using MinecraftServerManager.Core.Providers;
+using MinecraftServerManager.GameClient;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.Tests;
@@ -312,6 +314,224 @@ public sealed class ClientCurseForgeCatalogTests
     }
 
     [Fact]
+    public async Task DistributionAllowed_ShowsVerifiedDirectInstallInsteadOfOfficialPageAction()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var project = CreateProject("481262", allowsThirdPartyDistribution: true);
+        var workflow = new RecordingWorkflow
+        {
+            Versions = [CreateVersion(project.ProjectId, "4612979", "release")],
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing));
+
+        viewModel.SelectedCatalogProject = new ClientModpackProjectItemViewModel(project);
+
+        await WaitUntilAsync(() => viewModel.SelectedCatalogVersion is not null);
+        Assert.False(viewModel.IsSelectedCurseForgeManualDownloadRequired);
+        Assert.True(viewModel.ShowsCatalogInstallOptions);
+        Assert.Equal(
+            LocalizationService.Current.Get("client.action.install"),
+            viewModel.CatalogInstallActionText);
+        Assert.True(viewModel.InstallCatalogPackCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task DistributionForbidden_ShowsOnlyTheExplicitOfficialPageFallback()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var project = CreateProject("481262", allowsThirdPartyDistribution: false);
+        var workflow = new RecordingWorkflow
+        {
+            Versions = [CreateVersion(project.ProjectId, "4612979", "release")],
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing));
+
+        viewModel.SelectedCatalogProject = new ClientModpackProjectItemViewModel(project);
+
+        await WaitUntilAsync(() => viewModel.SelectedCatalogVersion is not null);
+        Assert.True(viewModel.IsSelectedCurseForgeManualDownloadRequired);
+        Assert.False(viewModel.ShowsCatalogInstallOptions);
+        Assert.Equal(
+            LocalizationService.Current.Get("client.catalog.curseForgeOpenProject"),
+            viewModel.CatalogInstallActionText);
+        Assert.True(viewModel.InstallCatalogPackCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task DirectInstall_PassesExactCurseForgeIdsExpectedGameVersionAndReadOnlyCredential()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var project = CreateProject("481262", allowsThirdPartyDistribution: true);
+        var workflow = new RecordingWorkflow
+        {
+            Versions =
+            [
+                CreateVersion(
+                    project.ProjectId,
+                    "4612979",
+                    "release",
+                    minecraftVersion: "1.12.2",
+                    loader: "Forge"),
+            ],
+        };
+        var installer = new RecordingCurseForgeInstaller(directory.Path);
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing),
+            releaseCatalog: new StaticReleaseCatalog("1.12.2"),
+            curseForgeInstaller: installer,
+            resolveCatalogJavaAsync: static (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(@"C:\test-java\bin\java.exe");
+            });
+        await viewModel.InitializeForDiagnosticsAsync();
+        viewModel.SelectedCatalogProject = new ClientModpackProjectItemViewModel(project);
+        await WaitUntilAsync(() => viewModel.SelectedCatalogVersion is not null);
+
+        viewModel.InstallCatalogPackCommand.Execute(null);
+
+        await WaitUntilAsync(() =>
+            installer.Invocations.Count == 1 &&
+            viewModel.CatalogInstallJobs.SingleOrDefault()?.IsTerminal == true);
+        var invocation = Assert.Single(installer.Invocations);
+        Assert.Equal(481262, invocation.Request.ModId);
+        Assert.Equal(4612979, invocation.Request.FileId);
+        Assert.Equal("1.12.2", invocation.Request.ExpectedMinecraftVersion);
+        Assert.Equal("x", invocation.Credential);
+        Assert.True(invocation.CredentialWasReadOnly);
+        Assert.Equal(@"C:\test-java\bin\java.exe", invocation.JavaExecutablePath);
+        Assert.False(Assert.Single(viewModel.CatalogInstallJobs).IsFailed);
+        Assert.Single(viewModel.Instances);
+    }
+
+    [Fact]
+    public async Task DistributionUnavailable_FallbackIsScopedToExactProjectAndFileAndSurvivesSelectionChanges()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var firstProject = CreateProject("481262", allowsThirdPartyDistribution: true);
+        var secondProject = CreateProject("777777", allowsThirdPartyDistribution: true);
+        const string sharedFileId = "4612979";
+        var workflow = new RecordingWorkflow
+        {
+            Versions =
+            [
+                CreateVersion(firstProject.ProjectId, sharedFileId, "release"),
+                CreateVersion(secondProject.ProjectId, sharedFileId, "release"),
+            ],
+        };
+        var installer = new RecordingCurseForgeInstaller(directory.Path)
+        {
+            Error = new CurseForgeServerPackException(
+                CurseForgeServerPackResolutionStatus.DistributionUnavailable,
+                "Third-party distribution is unavailable."),
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing),
+            releaseCatalog: new StaticReleaseCatalog("1.20.1"),
+            curseForgeInstaller: installer,
+            resolveCatalogJavaAsync: static (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(@"C:\test-java\bin\java.exe");
+            });
+        await viewModel.InitializeForDiagnosticsAsync();
+        var firstItem = new ClientModpackProjectItemViewModel(firstProject);
+        var secondItem = new ClientModpackProjectItemViewModel(secondProject);
+        viewModel.SelectedCatalogProject = firstItem;
+        await WaitUntilAsync(() =>
+            viewModel.SelectedCatalogVersion?.CurseForgeVersion?.ProjectId == firstProject.ProjectId);
+
+        viewModel.InstallCatalogPackCommand.Execute(null);
+
+        await WaitUntilAsync(() =>
+            installer.Invocations.Count == 1 &&
+            viewModel.IsSelectedCurseForgeManualDownloadRequired &&
+            viewModel.CatalogInstallJobs.SingleOrDefault()?.IsTerminal == true);
+        Assert.Equal(
+            LocalizationService.Current.Get("client.catalog.curseForgeOpenProject"),
+            viewModel.CatalogInstallActionText);
+
+        viewModel.SelectedCatalogProject = secondItem;
+        await WaitUntilAsync(() =>
+            viewModel.SelectedCatalogVersion?.CurseForgeVersion?.ProjectId == secondProject.ProjectId);
+        Assert.False(viewModel.IsSelectedCurseForgeManualDownloadRequired);
+        Assert.True(viewModel.ShowsCatalogInstallOptions);
+        Assert.Equal(
+            LocalizationService.Current.Get("client.action.install"),
+            viewModel.CatalogInstallActionText);
+
+        viewModel.SelectedCatalogProject = firstItem;
+        await WaitUntilAsync(() =>
+            viewModel.SelectedCatalogVersion?.CurseForgeVersion?.ProjectId == firstProject.ProjectId);
+        Assert.True(viewModel.IsSelectedCurseForgeManualDownloadRequired);
+        Assert.False(viewModel.ShowsCatalogInstallOptions);
+    }
+
+    [Fact]
+    public async Task DirectInstall_InvalidApiKeyShowsCredentialMessageAndDisablesCredentialState()
+    {
+        using var directory = new AppearanceThemeServiceTests.TestDirectory();
+        var credentialStore = new FakeCredentialStore(hasCredential: true);
+        var project = CreateProject("481262", allowsThirdPartyDistribution: true);
+        var workflow = new RecordingWorkflow
+        {
+            Versions = [CreateVersion(project.ProjectId, "4612979", "release")],
+        };
+        var installer = new RecordingCurseForgeInstaller(directory.Path)
+        {
+            Error = new CurseForgeApiException(
+                CurseForgeApiErrorCode.InvalidApiKey,
+                HttpStatusCode.Unauthorized),
+        };
+        await using var viewModel = CreateViewModel(
+            directory.Path,
+            workflow,
+            credentialStore,
+            new FakeCredentialImporter(credentialStore, CurseForgeCredentialImportResult.Missing),
+            releaseCatalog: new StaticReleaseCatalog("1.20.1"),
+            curseForgeInstaller: installer,
+            resolveCatalogJavaAsync: static (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(@"C:\test-java\bin\java.exe");
+            });
+        await viewModel.InitializeForDiagnosticsAsync();
+        viewModel.SelectedCatalogProject = new ClientModpackProjectItemViewModel(project);
+        await WaitUntilAsync(() => viewModel.SelectedCatalogVersion is not null);
+
+        viewModel.InstallCatalogPackCommand.Execute(null);
+
+        var expected = LocalizationService.Current.Get(
+            "client.vm.catalog.curseForge.invalidCredential");
+        await WaitUntilAsync(() =>
+            installer.Invocations.Count == 1 &&
+            !viewModel.HasCurseForgeCredential &&
+            viewModel.CatalogStatusText == expected &&
+            viewModel.CatalogInstallJobs.SingleOrDefault()?.IsTerminal == true);
+        Assert.Equal(expected, viewModel.ErrorText);
+        Assert.True(Assert.Single(viewModel.CatalogInstallJobs).IsFailed);
+        Assert.False(viewModel.InstallCatalogPackCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task SavedSettingsFile_IsImportedByDebouncedSearchWithoutReselectingCurseForge()
     {
         using var directory = new AppearanceThemeServiceTests.TestDirectory();
@@ -456,18 +676,24 @@ public sealed class ClientCurseForgeCatalogTests
         string root,
         IOnlineModpackWorkflow workflow,
         ICurseForgeCredentialStore credentialStore,
-        ICurseForgeCredentialFileImportService importer) =>
+        ICurseForgeCredentialFileImportService importer,
+        IMinecraftReleaseCatalog? releaseCatalog = null,
+        ICurseForgeMinecraftClientPackInstaller? curseForgeInstaller = null,
+        Func<int, CancellationToken, Task<string>>? resolveCatalogJavaAsync = null) =>
         new(
             new ApplicationPaths(root),
             static () => new NewMinecraftClientDefaultsSettings(),
-            releaseCatalog: null,
+            releaseCatalog,
             loaderCatalogs: [],
             onlineModpackWorkflow: workflow,
             curseForgeCredentialStore: credentialStore,
-            curseForgeCredentialFileImportService: importer);
+            curseForgeCredentialFileImportService: importer,
+            curseForgeInstaller: curseForgeInstaller,
+            resolveCatalogJavaAsync: resolveCatalogJavaAsync);
 
     private static OnlineModpackSearchResult CreateProject(
-        string projectId = "curseforge-project") =>
+        string projectId = "curseforge-project",
+        bool? allowsThirdPartyDistribution = null) =>
         new(
             OnlineModpackProvider.CurseForge,
             projectId,
@@ -476,7 +702,8 @@ public sealed class ClientCurseForgeCatalogTests
             "Test author",
             new Uri("https://www.curseforge.com/minecraft/modpacks/test-project"),
             downloadCount: 42,
-            updatedAtUtc: DateTimeOffset.Parse("2026-01-02T03:04:05Z"));
+            updatedAtUtc: DateTimeOffset.Parse("2026-01-02T03:04:05Z"),
+            allowsThirdPartyDistribution: allowsThirdPartyDistribution);
 
     private static OnlineModpackVersion CreateVersion(
         string projectId,
@@ -601,6 +828,95 @@ public sealed class ClientCurseForgeCatalogTests
             IProgress<OnlineModpackInstallProgress> progress,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class StaticReleaseCatalog(params string[] versions) : IMinecraftReleaseCatalog
+    {
+        private readonly MinecraftReleaseCatalogSnapshot _snapshot = new(
+            versions[0],
+            DateTimeOffset.Parse("2026-01-02T03:04:05Z"),
+            versions.Select((version, index) => new MinecraftReleaseInfo(
+                    version,
+                    DateTimeOffset.Parse("2026-01-02T03:04:05Z").AddDays(-index),
+                    new Uri($"https://piston-meta.mojang.com/v1/packages/{index}/{version}.json"),
+                    new string((char)('a' + index), 40),
+                    1))
+                .ToArray());
+
+        public Task<MinecraftReleaseCatalogSnapshot> GetStableReleasesAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_snapshot);
+        }
+    }
+
+    private sealed class RecordingCurseForgeInstaller(string root) :
+        ICurseForgeMinecraftClientPackInstaller
+    {
+        public List<Invocation> Invocations { get; } = [];
+
+        public Exception? Error { get; init; }
+
+        public Task<CurseForgeClientPackInstallResult> InstallAsync(
+            CurseForgeClientPackInstallRequest request,
+            SecureString apiKey,
+            string? javaExecutablePath,
+            IProgress<CurseForgeClientPackInstallProgress>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Invocations.Add(new Invocation(
+                request,
+                ReadSecureString(apiKey),
+                apiKey.IsReadOnly(),
+                javaExecutablePath));
+            if (Error is not null)
+            {
+                return Task.FromException<CurseForgeClientPackInstallResult>(Error);
+            }
+
+            var instance = new MinecraftClientInstance
+            {
+                Id = request.InstanceId,
+                Name = request.Name,
+                DirectoryPath = Path.Combine(root, "installed", request.InstanceId.ToString("N")),
+                GameVersion = request.ExpectedMinecraftVersion ?? string.Empty,
+                InstalledVersionId = $"curseforge-{request.ModId}-{request.FileId}",
+                Loader = MinecraftClientLoader.Forge,
+                JavaMajorVersion = request.JavaMajorVersion,
+                JavaExecutablePath = javaExecutablePath,
+            };
+            return Task.FromResult(new CurseForgeClientPackInstallResult(
+                instance,
+                request.ModId,
+                request.FileId,
+                request.Name,
+                request.Name,
+                request.FileId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                InstalledContentFiles: 0,
+                SkippedOptionalFiles: 0,
+                InstalledPaths: []));
+        }
+
+        private static string ReadSecureString(SecureString value)
+        {
+            var pointer = Marshal.SecureStringToBSTR(value);
+            try
+            {
+                return Marshal.PtrToStringBSTR(pointer);
+            }
+            finally
+            {
+                Marshal.ZeroFreeBSTR(pointer);
+            }
+        }
+
+        public sealed record Invocation(
+            CurseForgeClientPackInstallRequest Request,
+            string Credential,
+            bool CredentialWasReadOnly,
+            string? JavaExecutablePath);
     }
 
     private sealed class FakeCredentialStore(bool hasCredential) : ICurseForgeCredentialStore

@@ -95,6 +95,58 @@ public sealed class CurseForgeModpackProviderTests
     }
 
     [Fact]
+    public async Task GetProject_ParsesLatestFileLoaderIndexesConservatively()
+    {
+        const string indexes = """
+            [
+              { "gameVersion": "1.20.1", "fileId": 201, "filename": "forge.zip", "releaseType": 1, "gameVersionTypeId": 1, "modLoader": 1 },
+              { "gameVersion": "1.20.1", "fileId": 202, "filename": "fabric.zip", "releaseType": 1, "gameVersionTypeId": 1, "modLoader": 4 },
+              { "gameVersion": "1.20.1", "fileId": 203, "filename": "quilt.zip", "releaseType": 2, "gameVersionTypeId": 1, "modLoader": 5 },
+              { "gameVersion": "1.21.1", "fileId": 204, "filename": "neoforge.zip", "releaseType": 1, "gameVersionTypeId": 2, "modLoader": 6 },
+              { "gameVersion": "1.12.2", "fileId": 205, "filename": "any.zip", "releaseType": 1, "gameVersionTypeId": 1, "modLoader": 0 },
+              { "gameVersion": "1.22", "fileId": 206, "filename": "future.zip", "releaseType": 1, "gameVersionTypeId": 3, "modLoader": 99 }
+            ]
+            """;
+        using var apiClient = new HttpClient(new StubHandler(request =>
+            request.RequestUri!.AbsolutePath == "/v1/mods/100"
+                ? JsonResponse(ProjectResponseJson(latestFilesIndexesJson: indexes))
+                : new HttpResponseMessage(HttpStatusCode.NotFound)));
+        using var downloadClient = EmptyDownloadClient();
+        var provider = new CurseForgeModpackProvider(apiClient, downloadClient, UserAgent);
+
+        var project = await provider.GetProjectAsync(ApiKey, 100);
+
+        Assert.Collection(
+            project.LatestFileIndexes,
+            index => Assert.Equal(CurseForgeModLoaderType.Forge, index.ModLoader),
+            index => Assert.Equal(CurseForgeModLoaderType.Fabric, index.ModLoader),
+            index => Assert.Equal(CurseForgeModLoaderType.Quilt, index.ModLoader),
+            index => Assert.Equal(CurseForgeModLoaderType.NeoForge, index.ModLoader),
+            index => Assert.Equal(CurseForgeModLoaderType.Any, index.ModLoader),
+            index => Assert.Null(index.ModLoader));
+        Assert.Equal(204, project.LatestFileIndexes[3].FileId);
+        Assert.Equal("1.21.1", project.LatestFileIndexes[3].GameVersion);
+        Assert.Equal("neoforge.zip", project.LatestFileIndexes[3].FileName);
+        Assert.Equal(2, project.LatestFileIndexes[2].ReleaseType);
+        Assert.Equal(3, project.LatestFileIndexes[5].GameVersionTypeId);
+    }
+
+    [Fact]
+    public async Task GetProject_NullDistributionPolicyFailsClosedWithoutRejectingTheProject()
+    {
+        using var apiClient = new HttpClient(new StubHandler(request =>
+            request.RequestUri!.AbsolutePath == "/v1/mods/100"
+                ? JsonResponse(ProjectResponseJson(allowDistribution: null))
+                : new HttpResponseMessage(HttpStatusCode.NotFound)));
+        using var downloadClient = EmptyDownloadClient();
+        var provider = new CurseForgeModpackProvider(apiClient, downloadClient, UserAgent);
+
+        var project = await provider.GetProjectAsync(ApiKey, 100);
+
+        Assert.False(project.AllowModDistribution);
+    }
+
+    [Fact]
     public async Task GetFiles_UsesFiltersAndNeverRequestsMoreThanFifty()
     {
         RequestSnapshot? snapshot = null;
@@ -335,10 +387,29 @@ public sealed class CurseForgeModpackProviderTests
         Assert.DoesNotContain(ApiKey, exception.ToString(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task GetDownloadUri_RejectsMissingOrNonHttpsUrlsInsteadOfGuessingCdnPath()
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{ \"data\": null }")]
+    [InlineData("{ \"data\": \"\" }")]
+    public async Task GetDownloadUri_MapsUnavailableDistributionToAnExplicitProviderState(string json)
     {
-        using var apiClient = new HttpClient(new StubHandler(_ => JsonResponse("{ \"data\": null }")));
+        using var apiClient = new HttpClient(new StubHandler(_ => JsonResponse(json)));
+        using var downloadClient = EmptyDownloadClient();
+        var provider = new CurseForgeModpackProvider(apiClient, downloadClient, UserAgent);
+
+        var exception = await Assert.ThrowsAsync<CurseForgeServerPackException>(
+            () => provider.GetDownloadUriAsync(ApiKey, 100, 201));
+
+        Assert.Equal(CurseForgeServerPackResolutionStatus.DistributionUnavailable, exception.Status);
+    }
+
+    [Theory]
+    [InlineData("{ \"data\": 123 }")]
+    [InlineData("{ \"data\": \"not-a-uri\" }")]
+    [InlineData("{ \"data\": \"http://cdn.example.test/file.zip\" }")]
+    public async Task GetDownloadUri_RejectsMalformedOrNonHttpsUrlsWithoutFallingBack(string json)
+    {
+        using var apiClient = new HttpClient(new StubHandler(_ => JsonResponse(json)));
         using var downloadClient = EmptyDownloadClient();
         var provider = new CurseForgeModpackProvider(apiClient, downloadClient, UserAgent);
 
@@ -438,12 +509,18 @@ public sealed class CurseForgeModpackProviderTests
         Content = new StringContent(json, Encoding.UTF8, "application/json")
     };
 
-    internal static string ProjectResponseJson(bool allowDistribution = true, bool isAvailable = true)
+    internal static string ProjectResponseJson(
+        bool? allowDistribution = true,
+        bool isAvailable = true,
+        string latestFilesIndexesJson = "[]")
         => $$"""
-           { "data": {{ProjectObjectJson(allowDistribution, isAvailable)}} }
+           { "data": {{ProjectObjectJson(allowDistribution, isAvailable, latestFilesIndexesJson)}} }
            """;
 
-    internal static string ProjectObjectJson(bool allowDistribution = true, bool isAvailable = true)
+    internal static string ProjectObjectJson(
+        bool? allowDistribution = true,
+        bool isAvailable = true,
+        string latestFilesIndexesJson = "[]")
         => $$"""
            {
              "id": 100, "gameId": 432, "classId": 4471,
@@ -454,7 +531,8 @@ public sealed class CurseForgeModpackProviderTests
              "screenshots": [{ "thumbnailUrl": "https://media.example.test/preview.jpg" }],
              "downloadCount": 123, "dateModified": "2026-08-16T00:00:00Z",
              "isAvailable": {{isAvailable.ToString().ToLowerInvariant()}},
-             "allowModDistribution": {{allowDistribution.ToString().ToLowerInvariant()}}
+             "allowModDistribution": {{(allowDistribution is null ? "null" : allowDistribution.Value.ToString().ToLowerInvariant())}},
+             "latestFilesIndexes": {{latestFilesIndexesJson}}
            }
            """;
 

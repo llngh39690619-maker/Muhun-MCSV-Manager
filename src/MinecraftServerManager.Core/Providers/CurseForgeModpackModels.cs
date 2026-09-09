@@ -77,6 +77,19 @@ public sealed record CurseForgePagination(
     int ResultCount,
     int TotalCount);
 
+/// <summary>
+/// CurseForge's loader-aware index for one of a project's latest files. Unlike the file object's
+/// free-form <c>gameVersions</c> labels, this index carries the official numeric mod-loader kind.
+/// A null loader preserves an unknown future enum value without treating it as <see cref="CurseForgeModLoaderType.Any"/>.
+/// </summary>
+public sealed record CurseForgeFileIndex(
+    string GameVersion,
+    int FileId,
+    string FileName,
+    int ReleaseType,
+    int? GameVersionTypeId,
+    CurseForgeModLoaderType? ModLoader);
+
 public sealed record CurseForgeModpackProject(
     int ModId,
     int GameId,
@@ -91,7 +104,10 @@ public sealed record CurseForgeModpackProject(
     bool AllowModDistribution,
     long DownloadCount,
     DateTimeOffset? DateModified,
-    Uri? PreviewImageUri);
+    Uri? PreviewImageUri)
+{
+    public IReadOnlyList<CurseForgeFileIndex> LatestFileIndexes { get; init; } = [];
+}
 
 public sealed record CurseForgeModpackSearchPage(
     CurseForgeCatalogIds Catalog,

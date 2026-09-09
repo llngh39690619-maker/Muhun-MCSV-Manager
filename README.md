@@ -10,7 +10,7 @@ Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序�
 
 X MCSV is a self-hosted Windows desktop and web-based Minecraft server and client manager. It combines a least-privilege Windows Service, WPF desktop GUI, responsive Web/PWA panel, role-based access control, backups, modpack workflows, notifications, provider isolation, and secure HTTPS remote administration.
 
-The CurseForge catalogs use the official API with a bring-your-own API key, respect each author's third-party distribution setting, attribute projects and authors, avoid rehosting files, and bound requests through caching and query limits. The Java client has no API-key input field: it imports a one-time plaintext settings file into the shared DPAPI CurrentUser credential for that Windows user, deletes the plaintext import after success, and can then search projects and inspect stable versions. Direct CurseForge client installation is not enabled; its action opens only the official project page. X MCSV never embeds the key in the EXE, writes it to the repository, logs, or Service IPC, scrapes CurseForge pages, or bypasses authorization.
+The CurseForge catalogs use the official API with a bring-your-own API key, respect each author's third-party distribution setting, attribute projects and authors, avoid rehosting files, and bound requests through caching and query limits. The Java client has no API-key input field: it imports a one-time plaintext settings file into the shared DPAPI CurrentUser credential for that Windows user, deletes the plaintext import after success, and can then search, inspect, download, verify, and install stable client modpacks. The official project page is offered only when CurseForge explicitly withholds third-party download access. X MCSV never embeds the key in the EXE, writes it to the repository, logs, CDN requests, or Service IPC, scrapes CurseForge pages, or bypasses authorization.
 
 ## 主要功能
 
@@ -19,7 +19,7 @@ The CurseForge catalogs use the official API with a bring-your-own API key, resp
 - 基岩版可建立自訂 X MCSV 本機顯示名稱，並選擇 Microsoft 官方正式版最新版或預覽版最新版通道；它使用獨立捷徑登錄，不建立受管理 Java 實例，也不碰觸世界或 Store 安裝資料。Microsoft 不提供任意歷史 Bedrock 版本的公開消費者下載流程，因此介面不會偽裝成可鎖定或下載舊版。
 - Microsoft OAuth／裝置碼登入、Minecraft Java 擁有權檢查、玩家資料與權杖自動續期；token 僅以目前 Windows 使用者的 DPAPI vault 保存，不要求或保存 Microsoft 密碼。
 - 客戶端 Java 自動準備、全域／自動／手動記憶體、解析度、全螢幕、快速啟動、系統匣、GPU 偏好及有界即時日誌。
-- 客戶端模組、材質包、光影包、地圖與截圖管理；Modrinth 內容搜尋會鎖定實例遊戲版本、驗證正式穩定版本與檔案雜湊、遞迴安裝必要前置模組，並在安全時自動匹配 Forge／NeoForge／Fabric／Quilt。CurseForge 客戶端目錄不顯示 API Key 輸入框；一次性設定檔存檔後，回到搜尋即會自動匯入目前 Windows 使用者的 DPAPI 憑證並直接用於官方專案搜尋及正式版本查詢，也不爬取或繞過網站。
+- 客戶端模組、材質包、光影包、地圖與截圖管理；Modrinth 內容搜尋會鎖定實例遊戲版本、驗證正式穩定版本與檔案雜湊、遞迴安裝必要前置模組，並在安全時自動匹配 Forge／NeoForge／Fabric／Quilt。CurseForge 客戶端目錄不顯示 API Key 輸入框；一次性設定檔存檔後，回到搜尋即會自動匯入目前 Windows 使用者的 DPAPI 憑證，直接用於官方專案搜尋、正式版本查詢與可散布模組包的驗證安裝，也不爬取或繞過網站。
 - 官方 Skin／披風管理；Skin 支援經典／苗條體型、本機 PNG 上傳、即時 3D 走路預覽與滑鼠 360 度旋轉，保存後同步至 Minecraft 官方服務。
 - Minecraft 客戶端在背景啟動 Java，不顯示黑色主控台；啟動後可縮小 X MCSV，遊戲關閉時自動還原主視窗。
 - Windows Service 持續持有 Server；關閉 GUI 不會終止 Service 管理中的 Minecraft 程序或已啟用的 Web 服務。
@@ -27,7 +27,7 @@ The CurseForge catalogs use the official API with a bring-your-own API key, resp
 - 新 GUI 遇到舊版不相容 Service 時會保持唯讀，並可從完整正式發行資料夾以已簽署 Updater 將相同版本背景服務安全更新至受保護的 `Program Files`；驗證或健康檢查失敗時自動回復。
 - 深色 WPF GUI，包含控制台、錯誤／警告分流、玩家資訊、備份、Java、模組／插件、外觀與伺服器設定。
 - 啟動時以各實例保存的 Port 作為起點選擇第一個可用 TCP Port，並以保留機制避免同時啟動時發生競爭；目前支援 `server.properties` 類型核心與 Velocity，BungeeCord／Waterfall 在安全 YAML 編輯支援完成前會明確拒絕啟動。
-- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；CurseForge 目錄使用每使用者的 Windows DPAPI CurrentUser 憑證，Server 模組包更新在尚無保存值時仍可要求只供該次作業使用的 Key。客戶端目錄支援 Modrinth 驗證安裝、FTB 公開正式版直接安裝與官方 App 備援；CurseForge 可使用相同的每使用者 DPAPI 憑證搜尋與查看正式版本，但直接安裝尚未啟用，按鈕只開啟官方專案頁。
+- Server 模組包目錄支援 Modrinth、FTB 與 CurseForge BYOK；CurseForge 目錄使用每使用者的 Windows DPAPI CurrentUser 憑證，Server 模組包更新在尚無保存值時仍可要求只供該次作業使用的 Key。客戶端目錄支援 Modrinth、FTB 與 CurseForge 正式版的驗證安裝；CurseForge 會重新確認作者散布設定、下載精確檔案與必要相依內容、驗證官方大小及雜湊、套用安全 overrides，並在隔離 staging 完成後才加入實例。只有官方 API 明確不提供第三方下載時才顯示官網備援。
 - 模組包疊代更新保留世界與玩家資料，先建立回復點，失敗或健康檢查未通過時可回復。
 - Eclipse Adoptium Temurin Java 8／11／16／17／21／25 下載、SHA-256 完整性驗證、locale／CLDR 健康檢查，以及 ownership receipt 綁定的損壞 Runtime 自動修復。
 - 多帳號、角色、全域與逐 Server 權限、記住裝置、最後 Owner 防護及 SQLite 稽核。
@@ -156,7 +156,7 @@ dotnet test .\MinecraftServerManager.sln `
 - Server 端 CurseForge 查詢／下載使用官方 API，並遵守專案作者的 Distribution 設定。
 - CurseForge API Key 採 BYOK：Server 模組包更新在尚無保存值時可要求只供該次作業使用的 Key；目錄瀏覽則由 Server 與客戶端共用同一個、綁定目前 Windows 使用者的 DPAPI CurrentUser 憑證。客戶端不顯示 API Key 輸入框；使用者將 Key 寫入一次性設定檔並存檔後，回到搜尋即會自動匯入並直接使用。成功時會將 Key 加密存入受管理的每使用者 `ClientSecrets` 並清除明文匯入檔。保存內容只可由同一 Windows 使用者在該電腦解密，且不會回填為明文。
 - 每位 Windows 使用者與每台電腦都應使用自己的 CurseForge API Key；不得把共用 Key 內嵌後再把 EXE 分發給其他人。
-- 客戶端 CurseForge 內容中心可透過官方 API 搜尋專案及查看正式版本；直接安裝尚未啟用，按鈕只開啟對應的 CurseForge 官方專案頁。X MCSV 不爬取頁面、不繞過 API 或作者的散布設定，也不重新託管檔案。免金鑰安裝仍使用 Modrinth 或 FTB 官方公開 API；FTB 只接受公開正式穩定版並逐檔驗證官方 manifest 的 SHA-512／SHA-256／SHA-1，官方 App 保留為失敗備援。
+- 客戶端 CurseForge 內容中心透過官方 API 搜尋、查看並直接安裝正式版本。每次安裝會重新讀取專案與檔案政策，以官方 download-url 取得精確 client ZIP，驗證大小與 SHA-1／MD5，依 `manifest.json` 安裝 Minecraft、Loader 與必要檔案，再以受限 overrides 和 staging 交易提交；任一相依檔、雜湊或安全驗證失敗都完整回滾，不會自動開網頁掩蓋錯誤。只有作者禁止第三方散布或官方 API 明確不提供下載網址時，選取版本才改用經驗證的 CurseForge 官方專案頁。X MCSV 不爬取頁面、不繞過 API 或作者設定，也不重新託管檔案。
 - X MCSV 不重新託管第三方模組包，並在介面顯示來源、專案與作者資訊。
 - 使用者仍須遵守 Minecraft EULA、平台服務條款及各模組／模組包授權。
 

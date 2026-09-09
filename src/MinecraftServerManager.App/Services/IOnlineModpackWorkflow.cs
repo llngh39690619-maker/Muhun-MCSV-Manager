@@ -123,7 +123,8 @@ public sealed record OnlineModpackSearchResult
         long? downloadCount = null,
         DateTimeOffset? updatedAtUtc = null,
         IEnumerable<Uri>? iconUriCandidates = null,
-        IEnumerable<Uri>? previewImageUriCandidates = null)
+        IEnumerable<Uri>? previewImageUriCandidates = null,
+        bool? allowsThirdPartyDistribution = null)
     {
         if (downloadCount < 0)
         {
@@ -148,6 +149,7 @@ public sealed record OnlineModpackSearchResult
         PreviewImageUri = PreviewImageUriCandidates.FirstOrDefault();
         DownloadCount = downloadCount;
         UpdatedAtUtc = updatedAtUtc?.ToUniversalTime();
+        AllowsThirdPartyDistribution = allowsThirdPartyDistribution;
     }
 
     public OnlineModpackProvider Provider { get; init; }
@@ -177,6 +179,13 @@ public sealed record OnlineModpackSearchResult
     public long? DownloadCount { get; init; }
 
     public DateTimeOffset? UpdatedAtUtc { get; init; }
+
+    /// <summary>
+    /// Whether the provider permits a third-party launcher to download project files. This is a
+    /// catalogue hint only; installers must re-read provider metadata immediately before every
+    /// download. Providers that do not expose this policy leave the value null.
+    /// </summary>
+    public bool? AllowsThirdPartyDistribution { get; init; }
 
     public string SourceDisplay => Provider switch
     {

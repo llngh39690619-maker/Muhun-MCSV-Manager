@@ -235,6 +235,20 @@ public sealed class MinecraftClientRegistry : IDisposable
                     throw new InvalidDataException("FTB client catalog provenance is invalid.");
                 }
             }
+            else if (instance.CatalogProvider?.Equals("curseforge", StringComparison.Ordinal) == true)
+            {
+                if (!IsPositiveCatalogNumber(instance.CatalogProjectId) ||
+                    !IsPositiveCatalogNumber(instance.CatalogVersionId) ||
+                    instance.CatalogIconUri is not null &&
+                    !CurseForgeMinecraftClientPackInstaller.IsOfficialCurseForgeArtworkUri(
+                        instance.CatalogIconUri) ||
+                    instance.CatalogPreviewUri is not null &&
+                    !CurseForgeMinecraftClientPackInstaller.IsOfficialCurseForgeArtworkUri(
+                        instance.CatalogPreviewUri))
+                {
+                    throw new InvalidDataException("CurseForge client catalog provenance is invalid.");
+                }
+            }
             else if (instance.CatalogProvider is not null)
             {
                 throw new InvalidDataException("Minecraft client catalog provider is invalid.");

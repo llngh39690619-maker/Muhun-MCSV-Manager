@@ -1276,6 +1276,10 @@
                                                               Margin="0,10,0,2"
                                                               Visibility="{Binding IsModrinthCatalogSource, Converter={StaticResource BoolToVisibility}}" />
                                                 </StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.curseForge.manualOnly}"
+                                                           Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                                           Margin="0,10,0,0"
+                                                           Visibility="{Binding IsSelectedCurseForgeManualDownloadRequired, Converter={StaticResource BoolToVisibility}}" />
                                                 <Button Content="{DynamicResource L10n.client.catalog.ftbFallbackAction}"
                                                         Command="{Binding OpenFtbFallbackCommand}" Margin="0,10,0,0"
                                                         Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />

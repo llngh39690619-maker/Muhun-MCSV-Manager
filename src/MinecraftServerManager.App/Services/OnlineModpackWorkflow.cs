@@ -417,12 +417,15 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
         CancellationToken cancellationToken)
     {
         var modId = ParsePositiveInt(project.ProjectId, "CurseForge Mod ID");
-        var page = await _curseForge.GetFilesAsync(
-                apiKey,
-                modId,
-                pageSize: 50,
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        var projectTask = _curseForge.GetProjectAsync(apiKey, modId, cancellationToken);
+        var filesTask = _curseForge.GetFilesAsync(
+            apiKey,
+            modId,
+            pageSize: 50,
+            cancellationToken: cancellationToken);
+        await Task.WhenAll(projectTask, filesTask).ConfigureAwait(false);
+        var curseForgeProject = await projectTask.ConfigureAwait(false);
+        var page = await filesTask.ConfigureAwait(false);
         return page.Files
             .Where(file => !file.IsServerPack)
             .OrderByDescending(file => file.FileDate)
@@ -432,7 +435,7 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
                 file.FileId.ToString(CultureInfo.InvariantCulture),
                 file.DisplayName,
                 FindMinecraftVersion(file.GameVersions),
-                FindLoader(file.GameVersions),
+                ResolveCurseForgeLoader(file, curseForgeProject.LatestFileIndexes),
                 file.ReleaseType switch { 1 => "release", 2 => "beta", 3 => "alpha", _ => "unknown" },
                 file.FileDate ?? DateTimeOffset.MinValue,
                 HasOfficialServerPack: file.ServerPackFileId is not null))
@@ -1218,7 +1221,8 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
             project.IconUri,
             project.PreviewImageUri,
             project.DownloadCount,
-            project.DateModified);
+            project.DateModified,
+            allowsThirdPartyDistribution: project.AllowModDistribution);
 
     internal static string MapModrinthIndex(OnlineModpackSort sort) => sort switch
     {
@@ -1300,12 +1304,134 @@ public sealed partial class OnlineModpackWorkflow : IOnlineModpackWorkflow, IDis
     private static string FindMinecraftVersion(IReadOnlyList<string> values)
         => values.FirstOrDefault(value => MinecraftVersionPattern().IsMatch(value)) ?? L("common.unknown");
 
-    private static string FindLoader(IReadOnlyList<string> values)
-        => values.FirstOrDefault(value => value.Equals("Forge", StringComparison.OrdinalIgnoreCase)
-                                          || value.Equals("NeoForge", StringComparison.OrdinalIgnoreCase)
-                                          || value.Equals("Fabric", StringComparison.OrdinalIgnoreCase)
-                                          || value.Equals("Quilt", StringComparison.OrdinalIgnoreCase))
-            ?? L("common.unknown");
+    internal static string ResolveCurseForgeLoader(
+        CurseForgeModpackFile file,
+        IReadOnlyList<CurseForgeFileIndex>? latestFileIndexes)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+
+        var declared = ResolveUniqueLoader(
+            file.GameVersions.Select(ParseCurseForgeLoaderLabel),
+            unknownIsConflict: false,
+            out var declaredConflict);
+        if (declared is { } declaredLoader)
+        {
+            return FormatCurseForgeLoader(declaredLoader);
+        }
+
+        if (declaredConflict)
+        {
+            return string.Empty;
+        }
+
+        latestFileIndexes ??= [];
+        var exact = ResolveUniqueLoader(
+            latestFileIndexes
+                .Where(index => index.FileId == file.FileId)
+                .Select(index => index.ModLoader),
+            unknownIsConflict: true,
+            out var exactConflict);
+        if (exact is { } exactLoader)
+        {
+            return FormatCurseForgeLoader(exactLoader);
+        }
+
+        if (exactConflict)
+        {
+            return string.Empty;
+        }
+
+        var minecraftVersion = file.GameVersions.FirstOrDefault(value =>
+            MinecraftVersionPattern().IsMatch(value));
+        if (string.IsNullOrWhiteSpace(minecraftVersion))
+        {
+            return string.Empty;
+        }
+
+        var gameScoped = ResolveUniqueLoader(
+            latestFileIndexes
+                .Where(index => index.GameVersion.Equals(
+                    minecraftVersion,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(index => index.ModLoader),
+            unknownIsConflict: true,
+            out _);
+        return gameScoped is { } gameScopedLoader
+            ? FormatCurseForgeLoader(gameScopedLoader)
+            : string.Empty;
+    }
+
+    private static CurseForgeModLoaderType? ResolveUniqueLoader(
+        IEnumerable<CurseForgeModLoaderType?> values,
+        bool unknownIsConflict,
+        out bool conflict)
+    {
+        var supplied = values.ToArray();
+        if (unknownIsConflict && supplied.Any(static value => value is null))
+        {
+            conflict = true;
+            return null;
+        }
+
+        var loaders = supplied
+            .Where(static value => value.HasValue && value.Value != CurseForgeModLoaderType.Any)
+            .Select(static value => value.GetValueOrDefault())
+            .Distinct()
+            .ToArray();
+        if (loaders.Length != 1)
+        {
+            conflict = loaders.Length > 1;
+            return null;
+        }
+
+        var loader = loaders[0];
+        if (!IsSupportedCurseForgeLoader(loader))
+        {
+            conflict = true;
+            return null;
+        }
+
+        conflict = false;
+        return loader;
+    }
+
+    private static CurseForgeModLoaderType? ParseCurseForgeLoaderLabel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = new string(value
+            .Where(char.IsAsciiLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+        return normalized switch
+        {
+            "forge" => CurseForgeModLoaderType.Forge,
+            "cauldron" => CurseForgeModLoaderType.Cauldron,
+            "liteloader" => CurseForgeModLoaderType.LiteLoader,
+            "fabric" or "fabricloader" => CurseForgeModLoaderType.Fabric,
+            "quilt" or "quiltloader" => CurseForgeModLoaderType.Quilt,
+            "neoforge" => CurseForgeModLoaderType.NeoForge,
+            _ => null
+        };
+    }
+
+    private static bool IsSupportedCurseForgeLoader(CurseForgeModLoaderType loader) => loader is
+        CurseForgeModLoaderType.Forge or
+        CurseForgeModLoaderType.Fabric or
+        CurseForgeModLoaderType.Quilt or
+        CurseForgeModLoaderType.NeoForge;
+
+    private static string FormatCurseForgeLoader(CurseForgeModLoaderType loader) => loader switch
+    {
+        CurseForgeModLoaderType.Forge => "Forge",
+        CurseForgeModLoaderType.Fabric => "Fabric",
+        CurseForgeModLoaderType.Quilt => "Quilt",
+        CurseForgeModLoaderType.NeoForge => "NeoForge",
+        _ => string.Empty
+    };
 
     private static string FormatLoader(string? name, string? version)
         => string.IsNullOrWhiteSpace(name)

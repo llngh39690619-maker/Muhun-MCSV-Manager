@@ -149,6 +149,9 @@ public sealed class ClientModpackProjectItemViewModel : ObservableObject
 
     public Uri? ProjectPageUri => CurseForgeProject?.ProjectPageUri;
 
+    public bool RequiresCurseForgeManualDownload =>
+        CurseForgeProject?.AllowsThirdPartyDistribution is false;
+
     public string DownloadText => Downloads switch
     {
         >= 1_000_000 => L(_metricLocalizationKey, $"{Downloads / 1_000_000d:0.##}M"),

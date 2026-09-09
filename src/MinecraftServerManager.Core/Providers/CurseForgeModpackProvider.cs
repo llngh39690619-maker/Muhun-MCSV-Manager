@@ -348,7 +348,16 @@ public sealed class CurseForgeModpackProvider
             new Uri(ApiBaseUri, $"v1/mods/{Format(modId)}/files/{Format(fileId)}/download-url"),
             cancellationToken).ConfigureAwait(false);
         if (!document.RootElement.TryGetProperty("data", out var data)
-            || data.ValueKind != JsonValueKind.String
+            || data.ValueKind == JsonValueKind.Null
+            || (data.ValueKind == JsonValueKind.String
+                && string.IsNullOrWhiteSpace(data.GetString())))
+        {
+            throw new CurseForgeServerPackException(
+                CurseForgeServerPackResolutionStatus.DistributionUnavailable,
+                "作者未提供可供第三方啟動器使用的 CurseForge 下載 URL。 ");
+        }
+
+        if (data.ValueKind != JsonValueKind.String
             || !Uri.TryCreate(data.GetString(), UriKind.Absolute, out var uri)
             || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrWhiteSpace(uri.Host))
@@ -750,10 +759,53 @@ public sealed class CurseForgeModpackProvider
             website,
             icon,
             ReadRequiredBoolean(element, "isAvailable", "mod"),
-            ReadRequiredBoolean(element, "allowModDistribution", "mod"),
+            ReadOptionalBoolean(element, "allowModDistribution") == true,
             ReadOptionalInt64(element, "downloadCount") ?? 0,
             ReadOptionalDate(element, "dateModified"),
-            preview);
+            preview)
+        {
+            LatestFileIndexes = ReadLatestFileIndexes(element)
+        };
+    }
+
+    private static IReadOnlyList<CurseForgeFileIndex> ReadLatestFileIndexes(JsonElement project)
+    {
+        if (!project.TryGetProperty("latestFilesIndexes", out var indexes)
+            || indexes.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var results = new List<CurseForgeFileIndex>();
+        foreach (var index in indexes.EnumerateArray().Take(MaximumResultIndex))
+        {
+            if (index.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var fileId = ReadOptionalInt32(index, "fileId");
+            var gameVersion = ReadOptionalString(index, "gameVersion")?.Trim();
+            if (fileId is not > 0 || string.IsNullOrWhiteSpace(gameVersion))
+            {
+                continue;
+            }
+
+            var loaderValue = ReadOptionalInt32(index, "modLoader");
+            var loader = loaderValue is { } numericLoader
+                         && Enum.IsDefined(typeof(CurseForgeModLoaderType), numericLoader)
+                ? (CurseForgeModLoaderType?)numericLoader
+                : null;
+            results.Add(new CurseForgeFileIndex(
+                gameVersion,
+                fileId.Value,
+                ReadOptionalString(index, "filename")?.Trim() ?? string.Empty,
+                ReadOptionalInt32(index, "releaseType") ?? 0,
+                ReadOptionalInt32(index, "gameVersionTypeId"),
+                loader));
+        }
+
+        return results.ToArray();
     }
 
     private static CurseForgeModpackFile ParseFile(JsonElement element)

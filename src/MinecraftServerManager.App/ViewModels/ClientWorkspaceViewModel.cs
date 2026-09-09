@@ -73,6 +73,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private readonly MinecraftClientLaunchCoordinator _launchCoordinator;
     private readonly IModrinthClientModpackCatalog _modrinthCatalog;
     private readonly ModrinthMinecraftClientPackInstaller _modrinthInstaller;
+    private readonly ICurseForgeMinecraftClientPackInstaller _curseForgeInstaller;
+    private readonly Func<int, CancellationToken, Task<string>> _resolveCatalogJavaAsync;
     private readonly IModrinthClientContentCatalog _modrinthContentCatalog;
     private readonly ModrinthClientContentInstaller _modrinthContentInstaller;
     private readonly FtbClientCatalog _ftbCatalog;
@@ -214,6 +216,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     private int _catalogNextOffset;
     private int _catalogCurrentPage = 1;
     private string _catalogStatusText = string.Empty;
+    private readonly HashSet<(string ProjectId, string VersionId)> _curseForgeManualFallbackVersions = [];
+    private bool _isCurseForgeCredentialRejected;
     private string? _lastFtbInstallFailureLocalizationKey;
     private string? _lastFtbInstallDiagnosticId;
     private bool _isShowingFtbInstallFailure;
@@ -250,10 +254,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         IOnlineModpackWorkflow? onlineModpackWorkflow = null,
         ICurseForgeCredentialStore? curseForgeCredentialStore = null,
         ICurseForgeCredentialFileImportService? curseForgeCredentialFileImportService = null,
-        IModrinthClientModpackCatalog? modrinthCatalog = null)
+        IModrinthClientModpackCatalog? modrinthCatalog = null,
+        ICurseForgeMinecraftClientPackInstaller? curseForgeInstaller = null,
+        Func<int, CancellationToken, Task<string>>? resolveCatalogJavaAsync = null)
     {
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _getGlobalDefaults = getGlobalDefaults ?? throw new ArgumentNullException(nameof(getGlobalDefaults));
+        _resolveCatalogJavaAsync = resolveCatalogJavaAsync ?? ResolveJavaAsync;
         _paths.EnsureCreated();
         _contentRefreshCoordinator = new LatestOperationCoordinator(
             _lifetimeCancellation.Token);
@@ -315,6 +322,18 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             payloadInstaller,
             _modrinthCatalog,
             _gameHttpClient);
+        _curseForgeInstaller = curseForgeInstaller
+            ?? new CurseForgeMinecraftClientPackInstaller(
+                _paths.Clients,
+                Path.Combine(_paths.ClientStaging, "curseforge-client"),
+                _registry,
+                _releaseCatalog,
+                payloadInstaller,
+                new CurseForgeModpackProvider(
+                    _catalogHttpClient,
+                    _gameHttpClient,
+                    UserAgent),
+                new CurseForgeModpackManifestInspector());
         _ftbInstaller = new FtbMinecraftClientPackInstaller(
             _paths.Clients,
             Path.Combine(_paths.ClientStaging, "ftb"),
@@ -1441,6 +1460,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             SearchCatalogCommand.NotifyCanExecuteChanged();
             BrowseAllCatalogCommand.NotifyCanExecuteChanged();
             DeleteCurseForgeCredentialCommand.NotifyCanExecuteChanged();
+            InstallCatalogPackCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -1480,7 +1500,15 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public bool ShowsCatalogLoadMore => IsModrinthCatalogSource || IsCurseForgeCatalogSource;
 
-    public bool ShowsCatalogInstallOptions => IsBrowsableCatalogSource && !IsCurseForgeCatalogSource;
+    public bool ShowsCatalogInstallOptions =>
+        IsBrowsableCatalogSource && !IsSelectedCurseForgeManualDownloadRequired;
+
+    public bool IsSelectedCurseForgeManualDownloadRequired =>
+        IsCurseForgeCatalogSource &&
+        SelectedCatalogProject is { } project &&
+        (project.RequiresCurseForgeManualDownload ||
+         SelectedCatalogVersion?.CurseForgeVersion is { } version &&
+         _curseForgeManualFallbackVersions.Contains((project.ProjectId, version.VersionId)));
 
     [Obsolete("Use ShowsCatalogInstallOptions.")]
     public bool ShowsModrinthInstallOptions => ShowsCatalogInstallOptions;
@@ -1497,7 +1525,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     public string CatalogInstallActionText => IsFtbCatalogSource
         ? L("client.catalog.ftbInstallAction")
-        : IsCurseForgeCatalogSource
+        : IsSelectedCurseForgeManualDownloadRequired
             ? L("client.catalog.curseForgeOpenProject")
             : L("client.action.install");
 
@@ -1722,6 +1750,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 _catalogVersionTask = RunGuardedAsync(() => LoadSelectedCatalogVersionsAsync(value));
             }
 
+            OnPropertyChanged(nameof(IsSelectedCurseForgeManualDownloadRequired));
+            OnPropertyChanged(nameof(ShowsCatalogInstallOptions));
+            OnPropertyChanged(nameof(CatalogInstallActionText));
             InstallCatalogPackCommand.NotifyCanExecuteChanged();
             OpenFtbFallbackCommand.NotifyCanExecuteChanged();
         }
@@ -1734,6 +1765,9 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         {
             if (SetProperty(ref _selectedCatalogVersion, value))
             {
+                OnPropertyChanged(nameof(IsSelectedCurseForgeManualDownloadRequired));
+                OnPropertyChanged(nameof(ShowsCatalogInstallOptions));
+                OnPropertyChanged(nameof(CatalogInstallActionText));
                 InstallCatalogPackCommand.NotifyCanExecuteChanged();
             }
         }
@@ -2863,6 +2897,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         try
         {
             _curseForgeCredentialStore.Delete();
+            _isCurseForgeCredentialRejected = false;
             HasCurseForgeCredential = false;
             CancelCatalogRequests();
             ClearCatalogResults();
@@ -2877,6 +2912,13 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     private bool EnsureCurseForgeCredentialAvailable()
     {
+        if (_isCurseForgeCredentialRejected)
+        {
+            HasCurseForgeCredential = false;
+            CatalogStatusText = L("client.vm.catalog.curseForge.invalidCredential");
+            return false;
+        }
+
         if (ReadCurseForgeCredentialState())
         {
             HasCurseForgeCredential = true;
@@ -2903,6 +2945,11 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         }
 
         HasCurseForgeCredential = ReadCurseForgeCredentialState();
+        if (result == CurseForgeCredentialImportResult.Imported)
+        {
+            _isCurseForgeCredentialRejected = false;
+        }
+
         CatalogStatusText = result switch
         {
             CurseForgeCredentialImportResult.Imported =>
@@ -2932,6 +2979,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
     internal void ApplyCurseForgeCredentialState(bool hasCredential)
     {
+        _isCurseForgeCredentialRejected = false;
         HasCurseForgeCredential = hasCredential;
         if (!hasCredential)
         {
@@ -3352,6 +3400,12 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                     L("client.vm.catalog.curseForge.rateLimited"),
                 _ => L("client.vm.catalog.curseForge.loadFailed"),
             };
+            if (error.ErrorCode == CurseForgeApiErrorCode.InvalidApiKey)
+            {
+                _isCurseForgeCredentialRejected = true;
+                HasCurseForgeCredential = false;
+            }
+
             ErrorText = CatalogStatusText;
             return;
         }
@@ -3628,7 +3682,14 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
 
         if (IsCurseForgeCatalogSource)
         {
-            return SelectedCatalogProject.ProjectPageUri is not null;
+            if (IsSelectedCurseForgeManualDownloadRequired)
+            {
+                return SelectedCatalogProject.ProjectPageUri is not null;
+            }
+
+            return HasCurseForgeCredential &&
+                   SelectedCatalogVersion?.CurseForgeVersion is not null &&
+                   !string.IsNullOrWhiteSpace(CatalogInstanceName);
         }
 
         return SelectedCatalogVersion is not null &&
@@ -3642,7 +3703,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
     {
         var project = SelectedCatalogProject
                       ?? throw new InvalidOperationException(L("client.vm.validation.pack"));
-        if (project.CurseForgeProject is not null)
+        if (project.CurseForgeProject is not null && IsSelectedCurseForgeManualDownloadRequired)
         {
             OpenSelectedCurseForgeProject(project);
             return;
@@ -3671,6 +3732,10 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             if (project.FtbProject is not null)
             {
                 await InstallSelectedFtbPackAsync(project, version, settings, job);
+            }
+            else if (project.CurseForgeProject is not null)
+            {
+                await InstallSelectedCurseForgePackAsync(project, version, settings, job);
             }
             else
             {
@@ -3726,6 +3791,163 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
         CatalogStatusText = L("client.vm.catalog.curseForge.projectPageOpened", project.Title);
     }
 
+    private async Task InstallSelectedCurseForgePackAsync(
+        ClientModpackProjectItemViewModel project,
+        ClientCatalogVersionItemViewModel version,
+        CatalogInstallSettingsSnapshot settings,
+        ClientCatalogInstallJobViewModel job)
+    {
+        var curseForgeProject = project.CurseForgeProject
+                                ?? throw new InvalidOperationException(
+                                    L("client.vm.validation.pack"));
+        var curseForgeVersion = version.CurseForgeVersion
+                                ?? throw new InvalidOperationException(
+                                    L("client.vm.validation.packVersion"));
+        if (!int.TryParse(
+                curseForgeProject.ProjectId,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var modId) || modId <= 0 ||
+            !int.TryParse(
+                curseForgeVersion.VersionId,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var fileId) || fileId <= 0)
+        {
+            throw new InvalidDataException(L("client.vm.validation.curseForgeSelection"));
+        }
+
+        var gameVersion = curseForgeVersion.MinecraftVersion?.Trim();
+        if (string.IsNullOrWhiteSpace(gameVersion) ||
+            _releaseSnapshot?.Releases.Any(release =>
+                string.Equals(release.Id, gameVersion, StringComparison.Ordinal)) != true)
+        {
+            throw new InvalidOperationException(L("client.vm.validation.catalogGameVersion"));
+        }
+
+        using var credential = AcquireCurseForgeCredential();
+        if (credential is null)
+        {
+            HasCurseForgeCredential = false;
+            throw new InvalidOperationException(
+                L("client.vm.catalog.curseForge.credentialRequired"));
+        }
+
+        var operation = BeginOperation();
+        IsBusy = true;
+        ErrorText = string.Empty;
+        try
+        {
+            var javaMajor = _javaRecommendation.GetRecommendation(
+                gameVersion,
+                CoreType.Unknown).MajorVersion;
+            StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
+            job.Report("prepare-java", StatusText);
+            var java = await _resolveCatalogJavaAsync(javaMajor, operation.Token);
+            await CacheCatalogArtworkAsync([project], operation.Token);
+            job.UpdateArtworkImagePath(project.CardImagePath);
+            operation.Token.ThrowIfCancellationRequested();
+
+            var request = new CurseForgeClientPackInstallRequest(
+                Guid.NewGuid(),
+                settings.InstanceName,
+                modId,
+                fileId,
+                settings.MemoryMode,
+                settings.MinimumMemoryMb,
+                settings.MaximumMemoryMb,
+                settings.WindowWidth,
+                settings.WindowHeight,
+                settings.FullScreen,
+                IncludeOptionalFiles: false,
+                EnableQuickLaunch: settings.EnableQuickLaunch,
+                HideLauncherAfterGameStarts: settings.HideLauncherAfterGameStarts,
+                ShowGameLog: settings.ShowGameLog,
+                EnableDedicatedGpu: settings.EnableDedicatedGpu,
+                EnableDiscordPresence: settings.EnableDiscordPresence,
+                JavaMajorVersion: javaMajor,
+                CatalogIconImagePath: project.IconImagePath,
+                CatalogPreviewImagePath: project.PreviewImagePath,
+                ExpectedMinecraftVersion: gameVersion);
+            var progress = new Progress<CurseForgeClientPackInstallProgress>(value =>
+            {
+                StatusText = LocalizeCurseForgeProgress(value);
+                var fraction = ResolveCatalogInstallProgress(
+                    value.Fraction,
+                    value.CompletedItems,
+                    value.TotalItems);
+                job.Report(value.Stage, StatusText, fraction);
+                if (fraction is not null)
+                {
+                    ProgressValue = fraction.Value;
+                }
+            });
+            var result = await _curseForgeInstaller.InstallAsync(
+                request,
+                credential,
+                java,
+                progress,
+                operation.Token);
+
+            var item = new ClientInstanceItemViewModel(result.Instance)
+            {
+                State = MinecraftClientInstanceState.Ready,
+            };
+            AddInstalledCatalogInstance(item, project);
+            ProgressValue = 1d;
+            CatalogStatusText = L("client.vm.catalog.curseForge.directInstalled", item.Name);
+            StatusText = CatalogStatusText;
+            job.MarkCompleted(StatusText);
+        }
+        catch (CurseForgeServerPackException error) when (
+            error.Status == CurseForgeServerPackResolutionStatus.DistributionUnavailable)
+        {
+            _curseForgeManualFallbackVersions.Add((
+                curseForgeProject.ProjectId,
+                curseForgeVersion.VersionId));
+            var message = L("client.vm.catalog.curseForge.manualFallbackAvailable");
+            if (ReferenceEquals(SelectedCatalogProject, project) &&
+                ReferenceEquals(SelectedCatalogVersion, version))
+            {
+                RefreshCurseForgeInstallPolicyBindings();
+                CatalogStatusText = message;
+            }
+
+            StatusText = message;
+            job.MarkFailed(message, "download-pack");
+        }
+        catch (CurseForgeApiException error)
+        {
+            if (error.ErrorCode == CurseForgeApiErrorCode.InvalidApiKey)
+            {
+                _isCurseForgeCredentialRejected = true;
+                HasCurseForgeCredential = false;
+            }
+
+            var message = LocalizeCurseForgeApiFailure(
+                error,
+                "client.vm.catalog.curseForge.installFailed");
+            CatalogStatusText = message;
+            ErrorText = message;
+            StatusText = L("client.vm.status.operationFailed");
+            job.MarkFailed(message);
+        }
+        finally
+        {
+            IsBusy = false;
+            CompleteOperation(operation);
+            InstallCatalogPackCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private void RefreshCurseForgeInstallPolicyBindings()
+    {
+        OnPropertyChanged(nameof(IsSelectedCurseForgeManualDownloadRequired));
+        OnPropertyChanged(nameof(ShowsCatalogInstallOptions));
+        OnPropertyChanged(nameof(CatalogInstallActionText));
+        InstallCatalogPackCommand.NotifyCanExecuteChanged();
+    }
+
     private async Task InstallSelectedModrinthPackAsync(
         ClientModpackProjectItemViewModel project,
         ClientCatalogVersionItemViewModel version,
@@ -3746,7 +3968,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             var javaMajor = _javaRecommendation.GetRecommendation(gameVersion, CoreType.Unknown).MajorVersion;
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
             job.Report("prepare-java", StatusText);
-            var java = await ResolveJavaAsync(javaMajor, operation.Token);
+            var java = await _resolveCatalogJavaAsync(javaMajor, operation.Token);
             await CacheCatalogArtworkAsync([project], operation.Token);
             job.UpdateArtworkImagePath(project.CardImagePath);
             operation.Token.ThrowIfCancellationRequested();
@@ -3856,7 +4078,7 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             StatusText = L("client.vm.status.preparingPackJava", project.Title, javaMajor);
             job.Report("prepare-java", StatusText, 0.03d);
             ProgressValue = job.ProgressValue;
-            var java = await ResolveJavaAsync(javaMajor, operation.Token);
+            var java = await _resolveCatalogJavaAsync(javaMajor, operation.Token);
             progressTracker.SetStage("cache-artwork");
             StatusText = L("client.vm.progress.ftb.cacheArtwork");
             job.Report("cache-artwork", StatusText, 0.08d);
@@ -7381,6 +7603,36 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
                 progress.TotalItems),
             "complete" => L("client.vm.progress.modrinth.complete"),
             _ => L("client.vm.progress.working"),
+        };
+
+    private static string LocalizeCurseForgeProgress(CurseForgeClientPackInstallProgress progress) =>
+        progress.Stage switch
+        {
+            "resolve-project" => L("client.vm.progress.curseForge.resolveProject"),
+            "download-pack" => L("client.vm.progress.curseForge.downloadPack"),
+            "inspect-pack" => L("client.vm.progress.curseForge.inspectPack"),
+            "install-game" => L("client.vm.progress.curseForge.installGame"),
+            "download-content" => L(
+                "client.vm.progress.curseForge.downloadContent",
+                progress.CompletedItems,
+                progress.TotalItems),
+            "extract-overrides" => L("client.vm.progress.curseForge.extractOverrides"),
+            "finalize" => L("client.vm.progress.curseForge.finalize"),
+            "complete" => L("client.vm.progress.curseForge.complete"),
+            _ => L("client.vm.progress.working"),
+        };
+
+    private static string LocalizeCurseForgeApiFailure(
+        CurseForgeApiException error,
+        string fallbackLocalizationKey) => error.ErrorCode switch
+        {
+            CurseForgeApiErrorCode.InvalidApiKey =>
+                L("client.vm.catalog.curseForge.invalidCredential"),
+            CurseForgeApiErrorCode.Forbidden =>
+                L("client.vm.catalog.curseForge.forbidden"),
+            CurseForgeApiErrorCode.RateLimited =>
+                L("client.vm.catalog.curseForge.rateLimited"),
+            _ => L(fallbackLocalizationKey),
         };
 
     private static string LocalizeFtbInstallProgress(FtbClientPackInstallProgress progress) =>
