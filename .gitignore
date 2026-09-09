@@ -511,6 +511,7 @@ secrets*.json
 # Publish only current authoritative documentation in the first public snapshot
 /docs/*
 !/docs/ARCHITECTURE.md
+!/docs/RELEASE-1.2.9-beta.24.md
 !/docs/正式產品-自動更新與回復.md
 !/docs/正式產品-架構-1.0.md
 !/docs/正式產品-基線與參考規範.md

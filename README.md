@@ -4,7 +4,7 @@ X MCSV 是為 Windows 10／11 x64 設計的自架 Minecraft 多伺服器與客�
 
 Server 管理採用「Windows Service 唯一寫入者」架構：Server 程序、Port、控制台、備份、模組包更新、遠端帳號、權限、通知、Provider 與產品更新都由背景 Service 統一管理；Windows GUI、Web／PWA 與 Android 客戶端只透過受授權的版本化介面操作。互動式 Minecraft Java 客戶端則在目前登入的 Windows 使用者 Session 中執行，不取得 Service 權限。
 
-> **發行狀態：Beta。** 1.2.9-beta.24 僅進行本機正式發行驗證。透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 發布時仍只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證產生的單一 installer EXE 只用於本機安裝與驗收，不是 GitHub Release 下載項目。
+> **發行狀態：Beta，研發中。** 1.2.9-beta.24 已完成本機正式發行驗證，並以原始碼 Pre-release 發布。透過 [GitHub Releases](https://github.com/llngh39690619-maker/Muhun-MCSV-Manager/releases) 只提供原始碼與技術文件，不上傳 Windows installer EXE、其他可執行檔、APK、簽章、雜湊或二進位成品。GitHub 自動產生的 Source code ZIP／tar.gz 只是原始碼快照，不能直接當作安裝包使用。完整本機發行驗證產生的單一 installer EXE 只用於本機安裝與驗收，不是 GitHub Release 下載項目。
 
 ## English summary
 

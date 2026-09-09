@@ -9,10 +9,10 @@
 - 背景辨識最多兩筆，選取項優先，切換頁面／專案可取消，失敗項可重選重試；401 或 429 會停止整批。成功結果僅短期快取版本資訊，原版 Vanilla 也可正確顯示。
 - 實際官方 API／CDN 驗證 RLCraft 2.9.3、2.9，Pixelmon 9.1.0，以及 SkyFactory 4 的 4.2.4、4.2.2、4.1.0、4.0.8、4.0.5，八個檔案皆由各自 manifest 判讀為 Forge；每筆約 1–3 秒、傳輸不足 1 MiB。
 - 探索頁的遊戲版本、載入器與排序維持固定欄寬並靠右排列，窄視窗自動換行；模組／材質包／光影頁同步調整。下拉選單保留右側箭頭欄，長文字以省略號收尾，避免箭頭被裁切。
-- 本版本僅提供本機安裝驗收，不發布。
+- 本版本以 GitHub Pre-release 發布 beta.21 至 beta.24 的累積原始碼與文件；只保留 GitHub 自動產生的 Source code ZIP／tar.gz，不附加 Windows EXE、APK、簽章、雜湊或其他二進位成品。本機安裝器僅用於安裝驗收。
 - 本機正式發行驗證通過：11 個測試專案共 `3,594 / 3,594` 項通過；Release 建置 `0` 警告、`0` 錯誤；26 個專案的 NuGet 弱點稽核為 `0` advisories；正式套件 manifest 驗證 `30` 個檔案。
 - Android 驗證成品使用 `versionCode 43`，簽署 APK SHA-256 為 `FC4461B19893064148C21E82D104E4956292182CFAE7DBB892DDDF77AFAAC4E2`。單一 Windows 安裝器大小 `259,930,056` bytes，SHA-256 為 `DB3901EBE13A636309CE9EC7449ADBDF86CD7D1F59AA9FFF2C153877EF45DB34`；本機 Authenticode 與 DigiCert 時間戳記驗證為 `Valid`。
-- **狀態：Beta，本機驗證完成，未發布。**
+- **狀態：Beta，研發中。**
 
 ## 1.2.9-beta.23 — CurseForge 客戶端直接安裝版
 
