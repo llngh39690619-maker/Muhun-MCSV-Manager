@@ -1,4 +1,6 @@
+using System.Windows;
 using MinecraftServerManager.App.Infrastructure;
+using MinecraftServerManager.App.Services;
 using MinecraftServerManager.GameClient.Contracts;
 
 namespace MinecraftServerManager.App.ViewModels;
@@ -6,13 +8,17 @@ namespace MinecraftServerManager.App.ViewModels;
 public sealed class ClientContentDownloadProjectItemViewModel : ObservableObject
 {
     private ModrinthClientContentProject _project;
+    private readonly string _targetGameVersion;
 
     public ClientContentDownloadProjectItemViewModel(
         ModrinthClientContentProject project,
-        string compatibilityText)
+        string compatibilityText,
+        string targetGameVersion)
     {
         _project = project ?? throw new ArgumentNullException(nameof(project));
         CompatibilityText = compatibilityText ?? throw new ArgumentNullException(nameof(compatibilityText));
+        _targetGameVersion = targetGameVersion ?? throw new ArgumentNullException(nameof(targetGameVersion));
+        SubscribeToCultureChanges();
     }
 
     public ModrinthClientContentProject Project => _project;
@@ -35,17 +41,45 @@ public sealed class ClientContentDownloadProjectItemViewModel : ObservableObject
 
     public string AuthorText => Author;
 
+    public string LocalizedAuthorText => L("client.vm.catalog.author", Author);
+
     public Uri? IconUri => Project.IconUri;
 
     public Uri? IconImagePath => IconUri;
 
     public long Downloads => Project.Downloads;
 
+    public string DownloadText => Downloads switch
+    {
+        >= 1_000_000 => L("client.vm.catalog.downloads", $"{Downloads / 1_000_000d:0.##}M"),
+        >= 1_000 => L("client.vm.catalog.downloads", $"{Downloads / 1_000d:0.#}K"),
+        _ => L("client.vm.catalog.downloads", Downloads.ToString("N0", LocalizationService.Current.Culture)),
+    };
+
     public DateTimeOffset DateModified => Project.DateModified;
+
+    public string UpdatedText => DateModified <= DateTimeOffset.MinValue
+        ? L("client.vm.catalog.updatedUnavailable")
+        : L("client.vm.catalog.updated", DateModified.ToLocalTime());
 
     public IReadOnlyList<string> GameVersions => Project.GameVersions;
 
     public IReadOnlyList<string> Loaders => Project.Loaders;
+
+    public string GameVersionText => string.IsNullOrWhiteSpace(_targetGameVersion)
+        ? GameVersions.FirstOrDefault() ?? L("client.vm.catalog.multiVersion")
+        : _targetGameVersion;
+
+    public string CompatibilityDetailText
+    {
+        get
+        {
+            var loaderText = string.Join(" / ", Loaders.Take(3));
+            return string.IsNullOrWhiteSpace(loaderText)
+                ? $"Minecraft {GameVersionText}"
+                : $"Minecraft {GameVersionText} · {loaderText}";
+        }
+    }
 
     public string CompatibilityText { get; }
 
@@ -70,14 +104,36 @@ public sealed class ClientContentDownloadProjectItemViewModel : ObservableObject
         OnPropertyChanged(nameof(DetailsText));
         OnPropertyChanged(nameof(Author));
         OnPropertyChanged(nameof(AuthorText));
+        OnPropertyChanged(nameof(LocalizedAuthorText));
         OnPropertyChanged(nameof(IconUri));
         OnPropertyChanged(nameof(IconImagePath));
         OnPropertyChanged(nameof(Downloads));
+        OnPropertyChanged(nameof(DownloadText));
         OnPropertyChanged(nameof(DateModified));
+        OnPropertyChanged(nameof(UpdatedText));
         OnPropertyChanged(nameof(GameVersions));
         OnPropertyChanged(nameof(Loaders));
+        OnPropertyChanged(nameof(CompatibilityDetailText));
         OnPropertyChanged(nameof(ProjectPageUri));
     }
+
+    private void SubscribeToCultureChanges() =>
+        WeakEventManager<LocalizationService, EventArgs>.AddHandler(
+            LocalizationService.Current,
+            nameof(LocalizationService.CultureChanged),
+            OnCultureChanged);
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        OnPropertyChanged(nameof(LocalizedAuthorText));
+        OnPropertyChanged(nameof(DownloadText));
+        OnPropertyChanged(nameof(UpdatedText));
+        OnPropertyChanged(nameof(GameVersionText));
+        OnPropertyChanged(nameof(CompatibilityDetailText));
+    }
+
+    private static string L(string key, params object?[] arguments) =>
+        LocalizationService.Current.Get(key, arguments);
 }
 
 public sealed record ClientContentDownloadLoaderChoice(

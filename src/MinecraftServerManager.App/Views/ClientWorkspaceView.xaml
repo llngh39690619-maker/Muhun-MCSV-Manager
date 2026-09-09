@@ -570,379 +570,472 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
+
                     <ScrollViewer x:Name="CatalogPageScrollViewer" Grid.Row="0"
-                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="26" HorizontalAlignment="Stretch">
-                        <Grid Margin="0,0,0,18">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Visibility="{Binding IsCatalogBrowseView, Converter={StaticResource BoolToVisibility}}">
-                                <TextBlock Text="{DynamicResource L10n.client.catalog.heading}" FontSize="27" FontWeight="SemiBold" />
-                                <TextBlock Text="{DynamicResource L10n.client.catalog.description}"
-                                           Style="{StaticResource MutedText}" Margin="0,5,0,0" TextWrapping="Wrap" />
-                            </StackPanel>
-                            <StackPanel Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}">
-                                <TextBlock Text="{DynamicResource L10n.client.catalog.detailsHeading}" FontSize="14"
-                                           Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold" />
-                                <TextBlock Text="{Binding SelectedCatalogProject.Title}" FontSize="27" FontWeight="SemiBold"
-                                           Margin="0,3,0,0" TextWrapping="Wrap" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
-                                        Margin="14,0,0,0">
-                                <Button Content="{DynamicResource L10n.common.cancel}"
-                                         Command="{Binding CancelOperationCommand}" Margin="0,0,8,0"
-                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
-                                <Button Content="{DynamicResource L10n.client.catalog.backToResults}"
-                                        Command="{Binding CloseCatalogDetailsCommand}" Margin="0,0,8,0"
-                                        Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}" />
-                                <Button Content="{DynamicResource L10n.common.close}"
-                                        Command="{Binding CloseCatalogCommand}" />
-                            </StackPanel>
-                        </Grid>
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="20" HorizontalAlignment="Stretch">
+                            <Grid Margin="0,0,0,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{DynamicResource L10n.client.catalog.heading}"
+                                               FontSize="27" FontWeight="SemiBold" />
+                                    <TextBlock Text="{DynamicResource L10n.client.catalog.description}"
+                                               Style="{StaticResource MutedText}" Margin="0,5,0,0"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                            VerticalAlignment="Center" Margin="16,0,0,0">
+                                    <Button Content="{DynamicResource L10n.common.cancel}"
+                                            Command="{Binding CancelOperationCommand}" Margin="0,0,8,0"
+                                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+                                    <Button Content="{DynamicResource L10n.common.close}"
+                                            Command="{Binding CloseCatalogCommand}" />
+                                </StackPanel>
+                            </Grid>
 
-                        <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14"
-                                Visibility="{Binding IsCatalogBrowseView, Converter={StaticResource BoolToVisibility}}">
-                            <StackPanel>
-                                <TextBlock Text="{DynamicResource L10n.client.catalog.source}" Style="{StaticResource ClientSectionHeading}" />
-                                                <controls:ResponsiveWrapPanel MinItemWidth="180" ItemHeight="66"
-                                                           HorizontalSpacing="10" VerticalSpacing="10" MaximumColumns="3">
-                                    <Button Content="Modrinth" Command="{Binding SelectCatalogSourceCommand}"
-                                            CommandParameter="modrinth">
-                                        <Button.Style>
-                                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CatalogSourceId}" Value="modrinth">
-                                                        <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
-                                                        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Button.Style>
-                                    </Button>
-                                    <Button Command="{Binding SelectCatalogSourceCommand}" CommandParameter="curseforge">
-                                        <Button.Style>
-                                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CatalogSourceId}" Value="curseforge">
-                                                        <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
-                                                        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Button.Style>
-                                        <StackPanel>
-                                            <TextBlock Text="CurseForge" HorizontalAlignment="Center" />
-                                            <TextBlock Text="{DynamicResource L10n.client.catalog.apiAuthorization}" Style="{StaticResource MutedText}"
-                                                       FontSize="10" HorizontalAlignment="Center" />
-                                        </StackPanel>
-                                    </Button>
-                                    <Button Content="FTB" Command="{Binding SelectCatalogSourceCommand}"
-                                            CommandParameter="ftb">
-                                        <Button.Style>
-                                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CatalogSourceId}" Value="ftb">
-                                                        <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
-                                                        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Button.Style>
-                                    </Button>
-                                </controls:ResponsiveWrapPanel>
-
-                                <Border Margin="0,14,0,0" Padding="12"
-                                        Background="{DynamicResource PanelRaisedBrush}"
-                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                        CornerRadius="8"
-                                        Visibility="{Binding IsCurseForgeCatalogSource, Converter={StaticResource BoolToVisibility}}">
-                                    <DockPanel LastChildFill="True">
-                                        <WrapPanel DockPanel.Dock="Right" Margin="14,0,0,0">
-                                            <Button Content="{DynamicResource L10n.client.catalog.curseForge.editCredentialFile}"
-                                                    Command="{Binding OpenCurseForgeCredentialFileCommand}"
-                                                    Margin="0,0,8,0" />
-                                            <Button Content="{DynamicResource L10n.client.catalog.curseForge.deleteCredential}"
-                                                    Command="{Binding DeleteCurseForgeCredentialCommand}" />
-                                        </WrapPanel>
-                                        <StackPanel VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding CurseForgeCredentialStatusText}"
-                                                       TextWrapping="Wrap"
-                                                       AutomationProperties.LiveSetting="Polite" />
-                                            <TextBlock Text="{DynamicResource L10n.client.catalog.curseForge.fileHint}"
-                                                       Style="{StaticResource MutedText}" FontSize="10"
-                                                       Margin="0,3,0,0" TextWrapping="Wrap" />
-                                        </StackPanel>
-                                    </DockPanel>
-                                </Border>
-
-                                <controls:ResponsiveWrapPanel Margin="0,16,0,0" MinItemWidth="155" ItemHeight="68"
-                                                           HorizontalSpacing="10" VerticalSpacing="10" MaximumColumns="6"
-                                                           Visibility="{Binding IsBrowsableCatalogSource, Converter={StaticResource BoolToVisibility}}">
-                                    <StackPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.search}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <TextBox Text="{Binding CatalogSearchText, UpdateSourceTrigger=PropertyChanged}" />
-                                    </StackPanel>
-                                    <StackPanel Visibility="{Binding ShowsCatalogSortFilter, Converter={StaticResource BoolToVisibility}}">
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.sort}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogSortOptions}" SelectedItem="{Binding SelectedCatalogSort}"
-                                                  DisplayMemberPath="Name" />
-                                    </StackPanel>
-                                    <StackPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogGameVersions}" SelectedItem="{Binding SelectedCatalogGameVersion}"
-                                                  DisplayMemberPath="Name" IsTextSearchEnabled="True" />
-                                    </StackPanel>
-                                    <StackPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.loader}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogLoaders}" SelectedItem="{Binding SelectedCatalogLoader}"
-                                                  DisplayMemberPath="Name" />
-                                    </StackPanel>
-                                    <StackPanel Visibility="{Binding ShowsCatalogCategoryFilter, Converter={StaticResource BoolToVisibility}}">
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.category}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogCategories}" SelectedItem="{Binding SelectedCatalogCategory}"
-                                                  DisplayMemberPath="Name" />
-                                    </StackPanel>
-                                    <StackPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.resultLimit}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogResultLimits}" SelectedItem="{Binding CatalogResultLimit}" />
-                                    </StackPanel>
-                                </controls:ResponsiveWrapPanel>
-
-                                <Border Margin="0,14,0,0" Padding="13" CornerRadius="8"
-                                        Background="{DynamicResource PanelRaisedBrush}"
-                                        BorderBrush="{DynamicResource WarningBrush}" BorderThickness="1"
-                                        Visibility="{Binding IsUnavailableCatalogSource, Converter={StaticResource BoolToVisibility}}">
-                                    <TextBlock Text="{Binding CatalogStatusText}" TextWrapping="Wrap"
-                                               Foreground="{DynamicResource WarningBrush}" />
-                                </Border>
-                            </StackPanel>
-                        </Border>
-
-                        <StackPanel Visibility="{Binding IsCatalogResultsView, Converter={StaticResource BoolToVisibility}}">
-                            <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
+                            <Border x:Name="CatalogDiscoveryFilters"
+                                    Style="{StaticResource ClientCard}" Padding="14" Margin="0,0,0,14">
+                                <StackPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding CatalogResultsHeading}" Style="{StaticResource ClientSectionHeading}" Margin="0" />
-                                            <TextBlock Text="{Binding CatalogResultsSummary}" Style="{StaticResource MutedText}" Margin="0,5,0,0" />
-                                        </StackPanel>
-                                        <Button Grid.Column="1" Content="{DynamicResource L10n.client.action.reloadNow}" Command="{Binding SearchCatalogCommand}" />
+                                        <TextBox Text="{Binding CatalogSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                                 MinHeight="40" Padding="12,8"
+                                                 AutomationProperties.Name="{DynamicResource L10n.client.catalog.search}" />
+                                        <Button Grid.Column="1" Content="{DynamicResource L10n.client.catalog.search}"
+                                                Command="{Binding SearchCatalogCommand}"
+                                                Style="{StaticResource PrimaryButton}" MinWidth="104"
+                                                Margin="10,0,0,0" />
                                     </Grid>
 
-                                    <ListBox x:Name="CatalogResultsList" Grid.Row="1" Margin="0,15,0,0"
-                                             ItemsSource="{Binding CatalogProjects}"
-                                             SelectedItem="{Binding SelectedCatalogProject}"
-                                             Background="Transparent" BorderThickness="0">
-                                        <ListBox.Template>
-                                            <!-- The page owns vertical scrolling. Omitting the ListBox's nested
-                                                 ScrollViewer lets wheel input over a result card bubble to it. -->
-                                            <ControlTemplate TargetType="{x:Type ListBox}">
-                                                <ItemsPresenter />
-                                            </ControlTemplate>
-                                        </ListBox.Template>
-                                        <ListBox.ItemContainerStyle>
-                                            <Style TargetType="ListBoxItem">
-                                                <Setter Property="Padding" Value="0" />
-                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                <Setter Property="VerticalContentAlignment" Value="Stretch" />
-                                                <Setter Property="Background" Value="Transparent" />
-                                                <Setter Property="BorderThickness" Value="0" />
-                                                <Setter Property="Template">
-                                                    <Setter.Value>
-                                                        <ControlTemplate TargetType="ListBoxItem">
-                                                            <Border x:Name="Card" Background="{DynamicResource PanelRaisedBrush}"
-                                                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                                                    CornerRadius="11" ClipToBounds="True">
-                                                                <ContentPresenter />
-                                                            </Border>
-                                                            <ControlTemplate.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                                                </Trigger>
-                                                                <Trigger Property="IsSelected" Value="True">
-                                                                    <Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                                                                    <Setter TargetName="Card" Property="Background" Value="{DynamicResource AccentDarkBrush}" />
-                                                                </Trigger>
-                                                            </ControlTemplate.Triggers>
-                                                        </ControlTemplate>
-                                                    </Setter.Value>
-                                                </Setter>
-                                            </Style>
-                                        </ListBox.ItemContainerStyle>
-                                        <ListBox.ItemsPanel>
-                                            <ItemsPanelTemplate>
-                                                <controls:ResponsiveWrapPanel MinItemWidth="240" ItemHeight="324"
-                                                                           HorizontalSpacing="12" VerticalSpacing="12"
-                                                                           MaximumColumns="5" />
-                                            </ItemsPanelTemplate>
-                                        </ListBox.ItemsPanel>
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <Grid>
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="132" />
-                                                        <RowDefinition Height="*" />
-                                                    </Grid.RowDefinitions>
-                                                    <Border Background="{DynamicResource WindowBrush}">
-                                                        <Grid>
-                                                            <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}"
-                                                                       FontSize="35" FontWeight="Bold"
-                                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                            <Image infra:LocalImageThumbnail.SourcePath="{Binding CardImagePath}"
-                                                                   infra:LocalImageThumbnail.DecodePixelWidth="640"
-                                                                   infra:LocalImageThumbnail.DecodePixelHeight="320"
-                                                                   Stretch="UniformToFill" />
-                                                            <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="9"
-                                                                    Background="#C912151A" CornerRadius="12" Padding="8,3">
-                                                                <TextBlock Text="{Binding SourceLabel}" FontSize="10" FontWeight="Bold" />
-                                                            </Border>
-                                                            <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="9"
-                                                                    Background="#C912151A" CornerRadius="12" Padding="8,3">
-                                                                <TextBlock Text="{Binding GameVersionText}" FontSize="10" FontWeight="Bold" />
-                                                            </Border>
-                                                        </Grid>
-                                                    </Border>
-                                                    <Grid Grid.Row="1" Margin="14,12">
-                                                        <Grid.RowDefinitions>
-                                                            <RowDefinition Height="Auto" />
-                                                            <RowDefinition Height="Auto" />
-                                                            <RowDefinition Height="*" />
-                                                            <RowDefinition Height="Auto" />
-                                                        </Grid.RowDefinitions>
-                                                        <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold"
-                                                                   TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Grid.Row="1" Text="{Binding AuthorText}" Style="{StaticResource MutedText}"
-                                                                   FontSize="11" Margin="0,4,0,0" />
-                                                        <TextBlock Grid.Row="2" Text="{Binding Description}" Style="{StaticResource MutedText}"
-                                                                   TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Margin="0,12,0,10" />
-                                                        <Grid Grid.Row="3">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="*" />
-                                                                <ColumnDefinition Width="Auto" />
-                                                            </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="{Binding DownloadText}" Style="{StaticResource MutedText}" FontSize="10" />
-                                                            <TextBlock Grid.Column="1" Text="{Binding UpdatedText}" Style="{StaticResource MutedText}" FontSize="10" />
-                                                        </Grid>
-                                                    </Grid>
-                                                </Grid>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
+                                    <Grid Margin="0,13,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="132" />
+                                            <ColumnDefinition Width="132" />
+                                            <ColumnDefinition Width="132" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Content="Modrinth" Command="{Binding SelectCatalogSourceCommand}"
+                                                CommandParameter="modrinth" Margin="0,0,8,0">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CatalogSourceId}" Value="modrinth">
+                                                            <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
+                                        <Button Grid.Column="1" Command="{Binding SelectCatalogSourceCommand}"
+                                                CommandParameter="curseforge" Margin="0,0,8,0">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CatalogSourceId}" Value="curseforge">
+                                                            <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <StackPanel>
+                                                <TextBlock Text="CurseForge" HorizontalAlignment="Center" />
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.apiAuthorization}"
+                                                           Style="{StaticResource MutedText}" FontSize="9"
+                                                           HorizontalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Grid.Column="2" Content="FTB"
+                                                Command="{Binding SelectCatalogSourceCommand}" CommandParameter="ftb">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CatalogSourceId}" Value="ftb">
+                                                            <Setter Property="Background" Value="{DynamicResource AccentDarkBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
 
-                                    <Button Grid.Row="2" Content="{DynamicResource L10n.client.action.loadMore}" Command="{Binding LoadMoreCatalogCommand}"
-                                            IsEnabled="{Binding HasMoreCatalogResults}" HorizontalAlignment="Center"
-                                            MinWidth="150" Margin="0,14,0,0"
-                                            Visibility="{Binding ShowsCatalogLoadMore, Converter={StaticResource BoolToVisibility}}" />
-                                </Grid>
-                            </Border>
-                        </StackPanel>
+                                        <controls:ResponsiveWrapPanel Grid.Column="3" Margin="12,0,0,0"
+                                                                       MinItemWidth="132" ItemHeight="58"
+                                                                       HorizontalSpacing="9" VerticalSpacing="9"
+                                                                       MaximumColumns="5"
+                                                                       Visibility="{Binding IsBrowsableCatalogSource, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.gameVersion}"
+                                                           Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding CatalogGameVersions}"
+                                                          SelectedItem="{Binding SelectedCatalogGameVersion}"
+                                                          DisplayMemberPath="Name" IsTextSearchEnabled="True" />
+                                            </StackPanel>
+                                            <StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.loader}"
+                                                           Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding CatalogLoaders}"
+                                                          SelectedItem="{Binding SelectedCatalogLoader}"
+                                                          DisplayMemberPath="Name" />
+                                            </StackPanel>
+                                            <StackPanel Visibility="{Binding ShowsCatalogSortFilter, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.sort}"
+                                                           Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding CatalogSortOptions}"
+                                                          SelectedItem="{Binding SelectedCatalogSort}"
+                                                          DisplayMemberPath="Name" />
+                                            </StackPanel>
+                                            <StackPanel Visibility="{Binding ShowsCatalogCategoryFilter, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.category}"
+                                                           Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding CatalogCategories}"
+                                                          SelectedItem="{Binding SelectedCatalogCategory}"
+                                                          DisplayMemberPath="Name" />
+                                            </StackPanel>
+                                            <StackPanel>
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.resultLimit}"
+                                                           Style="{StaticResource ClientFormLabel}" Margin="0,0,0,4" />
+                                                <ComboBox ItemsSource="{Binding CatalogResultLimits}"
+                                                          SelectedItem="{Binding CatalogResultLimit}" />
+                                            </StackPanel>
+                                        </controls:ResponsiveWrapPanel>
+                                    </Grid>
 
-                        <StackPanel Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}">
-                            <Border Style="{StaticResource ClientCard}" Margin="0,0,0,14">
-                                <controls:ResponsiveWrapPanel MinItemWidth="320" HorizontalSpacing="20"
-                                                           VerticalSpacing="16" MaximumColumns="2">
-                                    <StackPanel>
-                                        <TextBlock Text="{Binding CatalogInstallHeading}" Style="{StaticResource ClientSectionHeading}" />
-                                        <Border Height="230" Background="{DynamicResource WindowBrush}" CornerRadius="9"
-                                                ClipToBounds="True" Margin="0,0,0,16">
-                                            <Grid>
-                                                <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}" FontSize="46"
-                                                           FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                <Image infra:LocalImageThumbnail.SourcePath="{Binding SelectedCatalogProject.CardImagePath}"
-                                                       infra:LocalImageThumbnail.DecodePixelWidth="960"
-                                                       infra:LocalImageThumbnail.DecodePixelHeight="540"
-                                                       Stretch="UniformToFill" />
-                                            </Grid>
-                                        </Border>
-                                        <TextBlock Text="{Binding SelectedCatalogProject.AuthorText}" FontWeight="SemiBold" />
-                                        <WrapPanel Margin="0,8,0,14">
-                                            <TextBlock Text="{Binding SelectedCatalogProject.SourceLabel}" Foreground="{DynamicResource AccentBrush}"
-                                                       FontWeight="SemiBold" Margin="0,0,14,0" />
-                                            <TextBlock Text="{Binding SelectedCatalogProject.DownloadText}" Style="{StaticResource MutedText}"
-                                                       Margin="0,0,14,0" />
-                                            <TextBlock Text="{Binding SelectedCatalogProject.UpdatedText}" Style="{StaticResource MutedText}" />
-                                        </WrapPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.fullDescription}" FontSize="16"
-                                                   FontWeight="SemiBold" Margin="0,0,0,7" />
-                                        <TextBlock Text="{Binding SelectedCatalogProject.FullDescription}" Style="{StaticResource MutedText}"
-                                                   TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding SelectedCatalogProject.CategoryText}" Style="{StaticResource MutedText}"
-                                                   TextWrapping="Wrap" Margin="0,12,0,0" />
-                                        <TextBlock Text="{Binding CatalogStatusText}" Margin="0,14,0,0" TextWrapping="Wrap" />
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.ftbInstallPolicy}"
-                                                   Style="{StaticResource MutedText}" Margin="0,10,0,0" TextWrapping="Wrap"
-                                                   Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />
-                                    </StackPanel>
-                                    <StackPanel>
-                                        <TextBlock Text="{DynamicResource L10n.client.catalog.availableVersions}" Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
-                                        <ComboBox ItemsSource="{Binding CatalogVersions}" SelectedItem="{Binding SelectedCatalogVersion}"
-                                                  DisplayMemberPath="Name" />
-                                        <StackPanel Visibility="{Binding ShowsCatalogInstallOptions, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock Text="{DynamicResource L10n.client.catalog.instanceName}" Style="{StaticResource ClientFormLabel}" />
-                                            <TextBox Text="{Binding CatalogInstanceName, UpdateSourceTrigger=PropertyChanged}" />
-                                            <CheckBox Content="{DynamicResource L10n.client.catalog.includeOptional}" IsChecked="{Binding IncludeOptionalPackFiles}"
-                                                      Margin="0,12,0,10"
-                                                      Visibility="{Binding IsModrinthCatalogSource, Converter={StaticResource BoolToVisibility}}" />
-                                        </StackPanel>
-                                        <Button Content="{DynamicResource L10n.client.catalog.ftbFallbackAction}"
-                                                Command="{Binding OpenFtbFallbackCommand}" Margin="0,10,0,0"
-                                                Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />
-                                    </StackPanel>
-                                </controls:ResponsiveWrapPanel>
-                            </Border>
+                                    <Border Margin="0,12,0,0" Padding="11"
+                                            Background="{DynamicResource PanelRaisedBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8"
+                                            Visibility="{Binding IsCurseForgeCatalogSource, Converter={StaticResource BoolToVisibility}}">
+                                        <DockPanel LastChildFill="True">
+                                            <WrapPanel DockPanel.Dock="Right" Margin="14,0,0,0">
+                                                <Button Content="{DynamicResource L10n.client.catalog.curseForge.editCredentialFile}"
+                                                        Command="{Binding OpenCurseForgeCredentialFileCommand}"
+                                                        Margin="0,0,8,0" />
+                                                <Button Content="{DynamicResource L10n.client.catalog.curseForge.deleteCredential}"
+                                                        Command="{Binding DeleteCurseForgeCredentialCommand}" />
+                                            </WrapPanel>
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding CurseForgeCredentialStatusText}"
+                                                           TextWrapping="Wrap"
+                                                           AutomationProperties.LiveSetting="Polite" />
+                                                <TextBlock Text="{DynamicResource L10n.client.catalog.curseForge.fileHint}"
+                                                           Style="{StaticResource MutedText}" FontSize="10"
+                                                           Margin="0,3,0,0" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
 
-                            <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                    BorderThickness="1" CornerRadius="10" Padding="14">
-                                <StackPanel>
-                                    <TextBlock Text="{Binding CatalogStatusText}" TextWrapping="Wrap" />
-                                    <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}"
-                                               TextWrapping="Wrap" Margin="0,7,0,0"
-                                               Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
-                                    <Button Content="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
-                                            Command="{Binding OpenClientDiagnosticsFolderCommand}"
-                                            AutomationProperties.Name="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
-                                            HorizontalAlignment="Left" Margin="0,10,0,0"
-                                            Visibility="{Binding ShowsFtbInstallDiagnostic, Converter={StaticResource BoolToVisibility}}" />
+                                    <Border Margin="0,12,0,0" Padding="11" CornerRadius="8"
+                                            Background="{DynamicResource PanelRaisedBrush}"
+                                            BorderBrush="{DynamicResource WarningBrush}" BorderThickness="1"
+                                            Visibility="{Binding IsUnavailableCatalogSource, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="{Binding CatalogStatusText}" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource WarningBrush}" />
+                                    </Border>
                                 </StackPanel>
                             </Border>
+
+                            <Grid x:Name="CatalogDiscoveryBody"
+                                  Visibility="{Binding IsBrowsableCatalogSource, Converter={StaticResource BoolToVisibility}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="14" />
+                                    <ColumnDefinition Width="356" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border x:Name="CatalogDiscoveryResultsPanel"
+                                        Grid.Column="0" Style="{StaticResource ClientCard}" Padding="14">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding CatalogResultsHeading}"
+                                                           Style="{StaticResource ClientSectionHeading}" Margin="0" />
+                                                <TextBlock Text="{Binding CatalogResultsSummary}"
+                                                           Style="{StaticResource MutedText}" Margin="0,4,0,0" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="{DynamicResource L10n.client.action.reloadNow}"
+                                                    Command="{Binding SearchCatalogCommand}" />
+                                        </Grid>
+
+                                        <ListBox x:Name="CatalogResultsList" Grid.Row="1" Margin="0,13,0,0"
+                                                 ItemsSource="{Binding CatalogProjects}"
+                                                 SelectedItem="{Binding SelectedCatalogProject}"
+                                                 Background="Transparent" BorderThickness="0">
+                                            <ListBox.Template>
+                                                <!-- CatalogPageScrollViewer owns vertical motion so the wheel works
+                                                     over images, text, cards, and empty space alike. -->
+                                                <ControlTemplate TargetType="{x:Type ListBox}">
+                                                    <ItemsPresenter />
+                                                </ControlTemplate>
+                                            </ListBox.Template>
+                                            <ListBox.ItemContainerStyle>
+                                                <Style TargetType="ListBoxItem">
+                                                    <Setter Property="Padding" Value="0" />
+                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                    <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                                                    <Setter Property="Background" Value="Transparent" />
+                                                    <Setter Property="BorderThickness" Value="0" />
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="ListBoxItem">
+                                                                <Border x:Name="Card"
+                                                                        Background="{DynamicResource PanelRaisedBrush}"
+                                                                        BorderBrush="{DynamicResource BorderBrush}"
+                                                                        BorderThickness="1" CornerRadius="10"
+                                                                        ClipToBounds="True">
+                                                                    <ContentPresenter />
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="Card" Property="BorderBrush"
+                                                                                Value="{DynamicResource AccentBrush}" />
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsSelected" Value="True">
+                                                                        <Setter TargetName="Card" Property="BorderBrush"
+                                                                                Value="{DynamicResource AccentBrush}" />
+                                                                        <Setter TargetName="Card" Property="Background"
+                                                                                Value="{DynamicResource AccentDarkBrush}" />
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                            </ListBox.ItemContainerStyle>
+                                            <ListBox.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <controls:ResponsiveWrapPanel MinItemWidth="330" ItemHeight="162"
+                                                                                  HorizontalSpacing="11" VerticalSpacing="11"
+                                                                                  MaximumColumns="2" />
+                                                </ItemsPanelTemplate>
+                                            </ListBox.ItemsPanel>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="128" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border Background="{DynamicResource WindowBrush}">
+                                                            <Grid>
+                                                                <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}"
+                                                                           FontSize="34" FontWeight="Bold"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                <Image infra:LocalImageThumbnail.SourcePath="{Binding CardImagePath}"
+                                                                       infra:LocalImageThumbnail.DecodePixelWidth="384"
+                                                                       infra:LocalImageThumbnail.DecodePixelHeight="384"
+                                                                       Stretch="UniformToFill" />
+                                                                <Border HorizontalAlignment="Left" VerticalAlignment="Top"
+                                                                        Margin="8" Background="#D012151A"
+                                                                        CornerRadius="10" Padding="7,3">
+                                                                    <TextBlock Text="{Binding SourceLabel}" FontSize="9"
+                                                                               FontWeight="Bold" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Border>
+                                                        <Grid Grid.Column="1" Margin="13,11">
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="*" />
+                                                                <RowDefinition Height="Auto" />
+                                                            </Grid.RowDefinitions>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="{Binding Title}" FontSize="15"
+                                                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                                <Border Grid.Column="1" Background="{DynamicResource AccentDarkBrush}"
+                                                                        CornerRadius="9" Padding="7,2" Margin="8,0,0,0">
+                                                                    <TextBlock Text="{Binding GameVersionText}" FontSize="9"
+                                                                               FontWeight="SemiBold" />
+                                                                </Border>
+                                                            </Grid>
+                                                            <TextBlock Grid.Row="1" Text="{Binding AuthorText}"
+                                                                       Style="{StaticResource MutedText}" FontSize="10"
+                                                                       Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Grid.Row="2" Text="{Binding Description}"
+                                                                       Style="{StaticResource MutedText}" FontSize="11"
+                                                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                                                                       Margin="0,8,0,6" />
+                                                            <Grid Grid.Row="3">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="{Binding DownloadText}"
+                                                                           Style="{StaticResource MutedText}" FontSize="9" />
+                                                                <TextBlock Grid.Column="1" Text="{Binding UpdatedText}"
+                                                                           Style="{StaticResource MutedText}" FontSize="9" />
+                                                            </Grid>
+                                                        </Grid>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+
+                                        <Button Grid.Row="2" Content="{DynamicResource L10n.client.action.loadMore}"
+                                                Command="{Binding LoadMoreCatalogCommand}"
+                                                IsEnabled="{Binding HasMoreCatalogResults}"
+                                                HorizontalAlignment="Center" MinWidth="150" Margin="0,13,0,0"
+                                                Visibility="{Binding ShowsCatalogLoadMore, Converter={StaticResource BoolToVisibility}}" />
+                                    </Grid>
+                                </Border>
+
+                                <Border x:Name="CatalogDiscoveryEmptyDetail"
+                                        Grid.Column="2" Style="{StaticResource ClientCard}" Padding="18"
+                                        Visibility="{Binding IsCatalogBrowseView, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{DynamicResource L10n.client.catalog.detailsHeading}"
+                                                   FontSize="18" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="{DynamicResource L10n.client.catalog.description}"
+                                                   Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                                   TextAlignment="Center" Margin="0,8,0,0" />
+                                        <TextBlock Text="{Binding CatalogStatusText}" TextWrapping="Wrap"
+                                                   TextAlignment="Center" Margin="0,14,0,0" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border x:Name="CatalogDiscoveryDetailPanel"
+                                        Grid.Column="2" Style="{StaticResource ClientCard}" Padding="0"
+                                        ClipToBounds="True"
+                                        Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Border Height="188" Background="{DynamicResource WindowBrush}"
+                                                    ClipToBounds="True">
+                                                <Grid>
+                                                    <TextBlock Text="X" Foreground="{DynamicResource AccentBrush}"
+                                                               FontSize="46" FontWeight="Bold"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                    <Image infra:LocalImageThumbnail.SourcePath="{Binding SelectedCatalogProject.CardImagePath}"
+                                                           infra:LocalImageThumbnail.DecodePixelWidth="768"
+                                                           infra:LocalImageThumbnail.DecodePixelHeight="432"
+                                                           Stretch="UniformToFill" />
+                                                </Grid>
+                                            </Border>
+                                            <Button Content="×" Command="{Binding CloseCatalogDetailsCommand}"
+                                                    Width="34" MinWidth="34" Height="32" Padding="2"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                    Margin="10" Background="#D012151A"
+                                                    ToolTip="{DynamicResource L10n.client.catalog.backToResults}" />
+                                        </Grid>
+
+                                        <StackPanel Margin="16,14,16,16">
+                                            <TextBlock Text="{Binding SelectedCatalogProject.Title}"
+                                                       FontSize="22" FontWeight="SemiBold"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding SelectedCatalogProject.AuthorText}"
+                                                       Style="{StaticResource MutedText}" Margin="0,5,0,0" />
+                                            <WrapPanel Margin="0,9,0,0">
+                                                <TextBlock Text="{Binding SelectedCatalogProject.SourceLabel}"
+                                                           Foreground="{DynamicResource AccentBrush}"
+                                                           FontWeight="SemiBold" Margin="0,0,12,5" />
+                                                <TextBlock Text="{Binding SelectedCatalogProject.DownloadText}"
+                                                           Style="{StaticResource MutedText}" Margin="0,0,12,5" />
+                                                <TextBlock Text="{Binding SelectedCatalogProject.UpdatedText}"
+                                                           Style="{StaticResource MutedText}" Margin="0,0,0,5" />
+                                            </WrapPanel>
+                                            <TextBlock Text="{Binding SelectedCatalogProject.CategoryText}"
+                                                       Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                                       Margin="0,5,0,0" />
+                                            <TextBlock Text="{Binding SelectedCatalogProject.FullDescription}"
+                                                       Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                                                       MaxHeight="116" Margin="0,13,0,0" />
+
+                                            <Border Background="{DynamicResource PanelRaisedBrush}"
+                                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                    CornerRadius="9" Padding="12" Margin="0,14,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="{DynamicResource L10n.client.catalog.availableVersions}"
+                                                               Style="{StaticResource ClientFormLabel}" Margin="0,0,0,5" />
+                                                    <ComboBox ItemsSource="{Binding CatalogVersions}"
+                                                              SelectedItem="{Binding SelectedCatalogVersion}"
+                                                              DisplayMemberPath="Name" />
+                                                    <StackPanel Visibility="{Binding ShowsCatalogInstallOptions, Converter={StaticResource BoolToVisibility}}">
+                                                        <TextBlock Text="{DynamicResource L10n.client.catalog.instanceName}"
+                                                                   Style="{StaticResource ClientFormLabel}" />
+                                                        <TextBox Text="{Binding CatalogInstanceName, UpdateSourceTrigger=PropertyChanged}" />
+                                                        <CheckBox Content="{DynamicResource L10n.client.catalog.includeOptional}"
+                                                                  IsChecked="{Binding IncludeOptionalPackFiles}"
+                                                                  Margin="0,12,0,2"
+                                                                  Visibility="{Binding IsModrinthCatalogSource, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                    <Button Content="{DynamicResource L10n.client.catalog.ftbFallbackAction}"
+                                                            Command="{Binding OpenFtbFallbackCommand}" Margin="0,10,0,0"
+                                                            Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <TextBlock Text="{DynamicResource L10n.client.catalog.ftbInstallPolicy}"
+                                                       Style="{StaticResource MutedText}" FontSize="10"
+                                                       Margin="0,11,0,0" TextWrapping="Wrap"
+                                                       Visibility="{Binding IsFtbCatalogSource, Converter={StaticResource BoolToVisibility}}" />
+                                            <TextBlock Text="{Binding ErrorText}" Foreground="{DynamicResource DangerBrush}"
+                                                       TextWrapping="Wrap" Margin="0,10,0,0"
+                                                       Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                                            <Button Content="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
+                                                    Command="{Binding OpenClientDiagnosticsFolderCommand}"
+                                                    AutomationProperties.Name="{DynamicResource L10n.client.catalog.openDiagnosticsFolder}"
+                                                    HorizontalAlignment="Left" Margin="0,10,0,0"
+                                                    Visibility="{Binding ShowsFtbInstallDiagnostic, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
                         </StackPanel>
-                    </StackPanel>
                     </ScrollViewer>
 
                     <Border x:Name="CatalogDetailActionBar" Grid.Row="1"
                             Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                            BorderThickness="0,1,0,0" Padding="18,12"
+                            BorderThickness="0,1,0,0" Padding="20,11"
                             Visibility="{Binding IsCatalogDetailOpen, Converter={StaticResource BoolToVisibility}}">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="14" />
+                                <ColumnDefinition Width="356" />
                             </Grid.ColumnDefinitions>
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="{Binding SelectedCatalogProject.Title}" FontWeight="SemiBold"
-                                           FontSize="15" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Text="{Binding CatalogStatusText}" Style="{StaticResource MutedText}"
+                                <TextBlock Text="{Binding SelectedCatalogProject.Title}"
+                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding CatalogStatusText}"
+                                           Style="{StaticResource MutedText}" FontSize="11"
                                            Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
                             </StackPanel>
-                            <WrapPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                            <Grid Grid.Column="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
                                 <Button Content="{DynamicResource L10n.common.cancel}"
                                         Command="{Binding CancelOperationCommand}" Margin="0,0,8,0"
                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
-                                <Button Content="{Binding CatalogInstallActionText}" Style="{StaticResource PrimaryButton}"
+                                <Button Grid.Column="1" Content="{Binding CatalogInstallActionText}"
+                                        Style="{StaticResource PrimaryButton}"
                                         Command="{Binding InstallCatalogPackCommand}" MinWidth="150"
                                         AutomationProperties.Name="{Binding CatalogInstallActionText}" />
-                            </WrapPanel>
+                            </Grid>
                         </Grid>
                     </Border>
                 </Grid>

@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using MinecraftServerManager.App.ViewModels;
+using MinecraftServerManager.App.Views;
 
 namespace MinecraftServerManager.App.Dialogs;
 
@@ -49,6 +50,20 @@ public partial class ClientContentDownloadCenterWindow : Window
         {
             command.Execute(null);
         }
+    }
+
+    private void OnScrollableRegionPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Handled
+            || e.Delta == 0
+            || sender is not DependencyObject scope
+            || e.OriginalSource is not DependencyObject source
+            || !ClientWorkspaceView.TryRouteMouseWheel(source, e.Delta, scope))
+        {
+            return;
+        }
+
+        e.Handled = true;
     }
 
     private void OnContentDownloadTabSelectionChanged(

@@ -240,9 +240,21 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         Assert.Equal("Auto", (string?)results.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
         Assert.Equal("OnResultsScrollChanged", (string?)results.Attribute("ScrollViewer.ScrollChanged"));
         Assert.Equal(
+            "OnScrollableRegionPreviewMouseWheel",
+            (string?)results.Attribute("PreviewMouseWheel"));
+        Assert.Equal(
             "{Binding LoadMoreContentDownloadCommand}",
             (string?)results.Attribute("Tag"));
-        Assert.Equal("True", (string?)results.Attribute("VirtualizingPanel.IsVirtualizing"));
+        Assert.Equal("False", (string?)results.Attribute("ScrollViewer.CanContentScroll"));
+        var resultsPanel = Assert.Single(
+            results.Descendants(),
+            element => string.Equals(
+                element.Name.LocalName,
+                "ResponsiveWrapPanel",
+                StringComparison.Ordinal));
+        Assert.Equal("300", (string?)resultsPanel.Attribute("MinItemWidth"));
+        Assert.Equal("146", (string?)resultsPanel.Attribute("ItemHeight"));
+        Assert.Equal("2", (string?)resultsPanel.Attribute("MaximumColumns"));
         Assert.DoesNotContain(results.Ancestors(), ancestor => ancestor.Name == Presentation + "ScrollViewer");
 
         var detailsPanel = FindNamedElement(document, "Border", "ContentDownloadDetailsPanel");
@@ -265,9 +277,12 @@ public sealed class ClientContentDownloadCenterWindowContractTests
             "FixedContentDownloadDetailActions");
         Assert.Same(detailsLayout, versionSelector.Parent);
         Assert.Same(detailsLayout, detailActions.Parent);
-        Assert.Equal("0", (string?)versionSelector.Attribute("Grid.Row"));
-        Assert.Equal("1", (string?)detailsScrollViewer.Attribute("Grid.Row"));
+        Assert.Equal("1", (string?)versionSelector.Attribute("Grid.Row"));
+        Assert.Equal("0", (string?)detailsScrollViewer.Attribute("Grid.Row"));
         Assert.Equal("2", (string?)detailActions.Attribute("Grid.Row"));
+        Assert.Equal(
+            "OnScrollableRegionPreviewMouseWheel",
+            (string?)detailsScrollViewer.Attribute("PreviewMouseWheel"));
         Assert.DoesNotContain(
             versionSelector.Ancestors(),
             ancestor => ancestor.Name == Presentation + "ScrollViewer");
@@ -296,6 +311,7 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         var mainSplit = FindNamedElement(document, "Grid", "ContentDownloadMainSplit");
         Assert.Null(queue.Attribute("Grid.Row"));
         Assert.Equal("0", (string?)queue.Attribute("Grid.Column"));
+        Assert.Equal("3", (string?)queue.Attribute("Grid.ColumnSpan"));
         Assert.Equal("20", (string?)queue.Attribute("Panel.ZIndex"));
         Assert.Equal("Bottom", (string?)queue.Attribute("VerticalAlignment"));
         Assert.Equal("240", (string?)queue.Attribute("MaxHeight"));
@@ -313,6 +329,9 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         var queueList = FindNamedElement(document, "ListBox", "ContentDownloadQueueList");
         Assert.Same(queue, queueList.Ancestors().First(ancestor => ancestor.Name == Presentation + "Border"));
         Assert.Equal("Auto", (string?)queueList.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+        Assert.Equal(
+            "OnScrollableRegionPreviewMouseWheel",
+            (string?)queueList.Attribute("PreviewMouseWheel"));
         AssertButtonCommand(fixedBar, "{Binding ToggleContentDownloadQueueCommand}");
         AssertButtonCommand(fixedBar, "{Binding ClearCompletedContentDownloadJobsCommand}");
 
@@ -419,7 +438,11 @@ public sealed class ClientContentDownloadCenterWindowContractTests
                     AssertRectNearlyEqual(mainBefore, mainAfter);
                     AssertRectNearlyEqual(fixedBarBefore, fixedBarAfter);
                     Assert.True(queueBounds.Left >= mainAfter.Left - 0.5d);
-                    Assert.True(queueBounds.Right <= detailsBounds.Left + 0.5d);
+                    Assert.True(queueBounds.Right <= mainAfter.Right + 0.5d);
+                    Assert.InRange(
+                        detailsBounds.Right - queueBounds.Right,
+                        9.5d,
+                        10.5d);
                     Assert.True(queueBounds.Bottom <= mainAfter.Bottom + 0.5d);
                     Assert.True(mainAfter.Bottom <= fixedBarAfter.Top + 0.5d);
                     Assert.True(fixedBarAfter.Bottom <= root.ActualHeight + 0.5d);
@@ -483,6 +506,41 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         Assert.Contains("e.ExtentHeight - e.VerticalOffset - e.ViewportHeight", codeBehind, StringComparison.Ordinal);
         Assert.Contains("command.CanExecute(null)", codeBehind, StringComparison.Ordinal);
         Assert.Contains("command.Execute(null)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("OnScrollableRegionPreviewMouseWheel", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("ClientWorkspaceView.TryRouteMouseWheel", codeBehind, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DiscoverySurface_UsesRichRealMetadataCardsAndASelectedProjectDetailRail()
+    {
+        var document = LoadWindow();
+        var toolbar = FindNamedElement(document, "Border", "ContentDownloadToolbar");
+        var search = FindNamedElement(document, "TextBox", "ContentDownloadSearchBox");
+        var results = FindNamedElement(document, "ListBox", "ContentDownloadResultsList");
+        var details = FindNamedElement(document, "Border", "ContentDownloadDetailsPanel");
+
+        Assert.Same(toolbar, search.Ancestors().First(element => element.Name == Presentation + "Border"));
+        Assert.Contains("Binding ContentDownloadLoaders", toolbar.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Binding ContentDownloadCategories", toolbar.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Binding ContentDownloadSortOptions", toolbar.ToString(), StringComparison.Ordinal);
+
+        var cardTemplate = Assert.Single(results.Elements(Presentation + "ListBox.ItemTemplate"));
+        var cardSource = cardTemplate.ToString();
+        Assert.Contains("Binding IconUri", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding Title", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding Summary", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding LocalizedAuthorText", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding DownloadText", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding UpdatedText", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding GameVersionText", cardSource, StringComparison.Ordinal);
+        Assert.Contains("Binding CompatibilityDetailText", cardSource, StringComparison.Ordinal);
+
+        var detailSource = details.ToString();
+        Assert.Contains("Binding SelectedContentDownloadProject.IconUri", detailSource, StringComparison.Ordinal);
+        Assert.Contains("Binding SelectedContentDownloadProject.Title", detailSource, StringComparison.Ordinal);
+        Assert.Contains("Binding SelectedContentDownloadProject.FullDescription", detailSource, StringComparison.Ordinal);
+        Assert.Contains("Binding ContentDownloadVersions", detailSource, StringComparison.Ordinal);
+        Assert.Contains("Binding InstallContentDownloadCommand", detailSource, StringComparison.Ordinal);
     }
 
     private static void AssertButtonCommand(XElement parent, string command) =>
@@ -508,10 +566,10 @@ public sealed class ClientContentDownloadCenterWindowContractTests
         var scrollBounds = BoundsWithin(detailsScroll, root);
         var actionsBounds = BoundsWithin(detailActions, root);
 
+        Assert.True(scrollBounds.Top >= panelBounds.Top - 0.5d);
+        Assert.True(scrollBounds.Bottom <= versionBounds.Top + 0.5d);
+        Assert.True(versionBounds.Bottom <= actionsBounds.Top + 0.5d);
         Assert.True(versionBounds.Top >= panelBounds.Top - 0.5d);
-        Assert.True(versionBounds.Bottom <= panelBounds.Bottom + 0.5d);
-        Assert.True(scrollBounds.Top >= versionBounds.Bottom - 0.5d);
-        Assert.True(scrollBounds.Bottom <= actionsBounds.Top + 0.5d);
         Assert.True(actionsBounds.Top >= panelBounds.Top - 0.5d);
         Assert.True(actionsBounds.Bottom <= panelBounds.Bottom + 0.5d);
         Assert.True(detailsScroll.ActualHeight > 1d);

@@ -7118,7 +7118,8 @@ public sealed class ClientWorkspaceViewModel : ObservableObject, IAsyncDisposabl
             : string.Join(" / ", project.Loaders);
         return new ClientContentDownloadProjectItemViewModel(
             project,
-            L("client.vm.contentDownload.compatibility", project.Downloads, compatibility));
+            L("client.vm.contentDownload.compatibility", project.Downloads, compatibility),
+            gameVersion);
     }
 
     private void RefreshLocalizedCatalogChoices()
